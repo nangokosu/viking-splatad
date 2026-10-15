@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "viking_splatad"
+version = "0.1.0"
+description = "Convert the Viking Hill ROS2 dataset into SplatAD (neurad-studio) inputs"
+requires-python = ">=3.10"
+# numpy kept compatible with both 1.x (neurad-studio pins <2) and 2.x (local Mac)
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "opencv-python-headless>=4.8",
+  "pyyaml>=6",
+  "mcap>=1.1",
+  "mcap-ros2-support>=0.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "covers(transform_id): unit test covering a registered transform (see registry.py)",
+  "gpu: needs the remote NVIDIA GPU box (neurad-studio + CUDA)",
+]
+addopts = "-m 'not gpu'"
