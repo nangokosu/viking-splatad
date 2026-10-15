@@ -18,6 +18,7 @@ selected test files.
 
 import argparse
 import ast
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -187,6 +188,59 @@ def select_tests(changed_files: Iterable[Path], tests_root: Path = TESTS_ROOT,
     }
 
 
+# Substrings that indicate an assertion or a numeric tolerance on a diff line.
+ASSERTION_PATTERN = re.compile(r"\bassert\b|pytest\.approx|allclose|atol|rtol|tolerance|abs=|rel=")
+TOLERANCE_PATTERN = re.compile(r"atol|rtol|tolerance|abs=|rel=|pytest\.approx")
+
+
+def audit_modified_tests(base_ref: str, project_root: Path = PROJECT_ROOT) -> List[Dict[str, object]]:
+    """Report edits to tests that already existed at `base_ref` (tests are the spec).
+
+    A test file counts as an edit when git reports it as modified (M) or deleted (D); newly
+    added tests are not flagged. For each edited file the diff is scanned for weakening signals:
+    removed assertion lines not matched by added ones, and any changed tolerance expression.
+
+    Args:
+        base_ref: Git ref holding the trusted version of the tests (e.g. "HEAD").
+        project_root: Repository root.
+
+    Returns:
+        One dict per edited test file with keys: "path", "status", "removed_assertions",
+        "added_assertions", "tolerance_lines_changed", "suspicious" (bool).
+    """
+    def git_output(arguments: List[str]) -> str:
+        """Run git in the project root and return stdout."""
+        return subprocess.run(
+            ["git", *arguments], cwd=project_root, capture_output=True, text=True, check=True
+        ).stdout
+
+    findings: List[Dict[str, object]] = []
+    for status_line in git_output(["diff", "--name-status", base_ref, "--", "tests"]).splitlines():
+        status, _, relative_path = status_line.partition("\t")
+        # Only modified/deleted files existed before; additions are new tests and are fine.
+        if status not in ("M", "D"):
+            continue
+        # -U0 keeps only changed lines so counting +/- lines is exact.
+        diff_lines = git_output(["diff", "-U0", base_ref, "--", relative_path]).splitlines()
+        removed = [line[1:] for line in diff_lines if line.startswith("-") and not line.startswith("---")]
+        added = [line[1:] for line in diff_lines if line.startswith("+") and not line.startswith("+++")]
+        removed_assertions = sum(1 for line in removed if ASSERTION_PATTERN.search(line))
+        added_assertions = sum(1 for line in added if ASSERTION_PATTERN.search(line))
+        # Only REMOVED lines matter: loosening a tolerance means editing/removing an existing line;
+        # purely added tolerance expressions belong to new tests.
+        tolerance_changed = sum(1 for line in removed if TOLERANCE_PATTERN.search(line))
+        findings.append({
+            "path": relative_path,
+            "status": status,
+            "removed_assertions": removed_assertions,
+            "added_assertions": added_assertions,
+            "tolerance_lines_changed": tolerance_changed,
+            # Deleted files, fewer assertions afterwards, or any tolerance edit all need human scrutiny.
+            "suspicious": status == "D" or removed_assertions > added_assertions or tolerance_changed > 0,
+        })
+    return findings
+
+
 def main() -> int:
     """CLI entry point: print the selection and optionally run it.
 
@@ -209,6 +263,13 @@ def main() -> int:
     print("test files      :")
     for test_file in selection["test_files"]:
         print(f"  {test_file}")
+    # Tests are the spec: surface any edit to a pre-existing test so a reviewer can challenge it.
+    edited_tests = audit_modified_tests(arguments.base)
+    print("existing tests modified:" + (" none" if not edited_tests else ""))
+    for finding in edited_tests:
+        print(f"  {'SUSPICIOUS ' if finding['suspicious'] else ''}{finding['status']} {finding['path']}: "
+              f"-{finding['removed_assertions']}/+{finding['added_assertions']} assertion lines, "
+              f"{finding['tolerance_lines_changed']} tolerance lines changed")
     if not arguments.run:
         return 0
     # `-p no:cacheprovider` keeps the read-only agent from writing .pytest_cache into the repo.

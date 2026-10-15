@@ -110,6 +110,35 @@ def _manifest_dict(dataset: IntermediateDataset) -> Dict[str, Any]:
     }
 
 
+def write_frame_file(
+    root: Path, kind: str, sensor_name: str, frame_index: int, timestamp_ns: int, frame: np.ndarray
+) -> Path:
+    """Write one camera/lidar frame in the dataset layout (also used for incremental writes).
+
+    Args:
+        root: Dataset directory.
+        kind: "camera" (JPEG) or "lidar" (.npy).
+        sensor_name: Sensor subdirectory name.
+        frame_index: Zero-based frame index (zero-padded to INDEX_DIGITS in the file name).
+        timestamp_ns: Absolute header stamp in nanoseconds (part of the file name).
+        frame: uint8 BGR image (camera) or float32 sweep array (lidar).
+
+    Returns:
+        Path of the written file.
+    """
+    # One subdirectory per sensor, created on demand.
+    frame_directory = Path(root) / kind / sensor_name
+    frame_directory.mkdir(parents=True, exist_ok=True)
+    stem = f"{int(frame_index):0{INDEX_DIGITS}d}_{int(timestamp_ns)}"
+    if kind == "camera":
+        frame_path = frame_directory / f"{stem}.jpg"
+        cv2.imwrite(str(frame_path), frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    else:
+        frame_path = frame_directory / f"{stem}.npy"
+        np.save(frame_path, frame)
+    return frame_path
+
+
 @transform("T26", "write the intermediate dataset (manifest, poses, frames, sidecar) to disk")
 def write_dataset(root: Path, dataset: IntermediateDataset) -> None:
     """Write a dataset in the layout described in the module docstring.
@@ -130,19 +159,12 @@ def write_dataset(root: Path, dataset: IntermediateDataset) -> None:
     np.savez(root / "poses.npz", **pose_arrays)
     # 3) frames, one directory per sensor
     for name, stream in dataset.streams.items():
-        frame_directory = root / stream.kind / name
-        frame_directory.mkdir(parents=True, exist_ok=True)
+        # Directory exists even for a sensor without frames, so the reader can list it.
+        (root / stream.kind / name).mkdir(parents=True, exist_ok=True)
         for frame_index, timestamp_ns, frame in zip(
             stream.frame_indices, stream.frame_timestamps_ns, stream.frames
         ):
-            stem = f"{int(frame_index):0{INDEX_DIGITS}d}_{int(timestamp_ns)}"
-            if stream.kind == "camera":
-                cv2.imwrite(
-                    str(frame_directory / f"{stem}.jpg"), frame,
-                    [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY],
-                )
-            else:
-                np.save(frame_directory / f"{stem}.npy", frame)
+            write_frame_file(root, stream.kind, name, frame_index, timestamp_ns, frame)
     # 4) radar sidecar (directory always created so the layout is stable)
     radar_directory = root / "sidecar" / "radar"
     radar_directory.mkdir(parents=True, exist_ok=True)

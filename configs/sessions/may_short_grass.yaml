@@ -1,0 +1,87 @@
+# Session config: May 2024 short-grass run. One file per session keeps May and June
+# strictly separate (own paths, own radar extrinsic variant, own labels sample, own output).
+session:
+  name: may_short_grass
+  # Selects the per-run hugin radar variant inside calibration/extrinsics/extrinsics.txt
+  # (the file lists "short_grass__ros1__" (2024-05) and "high_grass__ros1__" (2024-06) separately).
+  extrinsics_variant: short_grass
+  bag_dir: data/raw/may_short_grass/extracted/ros2_jazzy/data/2024_05_short_grass_run/bag/short_grass__ros2
+  calibration_dir: data/raw/may_short_grass/extracted/ros2_jazzy/calibration
+  labels_json: data/raw/may_short_grass/extracted/ros2_jazzy/cuboid_labels/short_and_tall_grass_labels.json
+  # Substring selecting this session's sample (map) in the labels JSON (see reports/may_chunk0_inspection.md).
+  labels_sample_key: "2024_05"
+  output_dir: data/intermediate/may_short_grass
+  gt_dir: data/gt/may_short_grass
+
+# Which bag chunks / time span to convert. Offsets are seconds from the first message of
+# the selected chunk files; null means "everything present". The chunk list is explicit so a
+# newly downloaded chunk is picked up by adding its file name (or leaving the list null = all
+# *.mcap files found in bag_dir, sorted by name index).
+window:
+  chunk_files: null
+  start_offset_s: null
+  end_offset_s: null
+
+topics:
+  camera_image: /ids_camera/image_raw/compressed
+  camera_info: /ids_camera/image_raw/camera_info
+  lidar_raw: /ouster/points
+  lidar_deskewed: /point_cloud_deskewed
+  radar: /hugin_raf_1/radar_data
+  pose: /icp_odom
+  tf: /tf
+
+frames:
+  base: base_link
+  camera: camera
+  lidar: os_sensor
+  radar: hugin_radar
+  map: map
+
+camera:
+  name: ids_camera
+  # Timestamp convention and readout duration are NOT documented for the IDS uEye. Until measured,
+  # readout is 0 which disables SplatAD rolling-shutter compensation (plan: start at 0, then ablate).
+  timestamp_convention: center
+  readout_seconds: 0.0
+  # Undistortion crop: alpha=0 keeps only valid pixels (no black borders), as SplatAD cannot mask them.
+  undistort_alpha: 0.0
+  # 1.0 = keep full 2056x1542 resolution; SplatAD downscales internally (num_downscales=2).
+  resize_factor: 1.0
+  jpeg_quality: 95
+
+lidar:
+  name: ouster
+  # deskewed = dataset's /point_cloud_deskewed (reference time ~ sweep start, inferred in Phase 1);
+  # raw_own_deskew = /ouster/points deskewed here with /icp_odom (used as cross-check, see align report).
+  source: deskewed
+  # Reference time inside the sweep that lidars.times refers to and that points are compensated to.
+  reference: start
+  # Per-point time field (uint32 nanoseconds from sweep start) and its unit conversion.
+  point_time_field: t
+  point_time_unit_seconds: 1.0e-9
+  range_field: range
+  # Ouster range is uint32 millimetres; points with range 0 are no-return.
+  range_unit_meters: 1.0e-3
+  intensity_field: reflectivity
+  # Percentile used to scale intensity to [0,1] (T14); 99 keeps a few bright retro-reflectors from
+  # compressing the rest of the range.
+  intensity_percentile: 99.0
+  ring_field: ring
+  # Margin added around the derived robot-body cluster when computing min_lidar_dist (T15), metres.
+  ego_margin_m: 0.05
+  # Scans pooled to derive elevation mapping / ego box (T15/T16); every scan is overkill.
+  model_derivation_scan_count: 50
+
+radar:
+  name: hugin
+  fields: [x, y, z, power, doppler]
+
+split:
+  # Single-trajectory capture: use most frames for training, keep an interleaved eval set (T21).
+  train_fraction: 0.9
+
+splatad:
+  # Passed to the dataparser config; see plan contract table.
+  load_cuboids: false
+  add_missing_points: false

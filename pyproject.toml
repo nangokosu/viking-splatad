@@ -28,5 +28,6 @@ testpaths = ["tests"]
 markers = [
   "covers(transform_id): unit test covering a registered transform (see registry.py)",
   "gpu: needs the remote NVIDIA GPU box (neurad-studio + CUDA)",
+  "real_data: needs the downloaded Viking Hill bag chunk (slow; run with -m real_data)",
 ]
-addopts = "-m 'not gpu'"
+addopts = "-m 'not gpu and not real_data'"
