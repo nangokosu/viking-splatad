@@ -12,3 +12,9 @@ Goal: render the Viking Hill forest with SplatAD (neurad-studio). Plan: `~/.clau
 7. SplatAD training/rendering only runs on the remote NVIDIA box; the Mac runs CPU tests.
 8. Network fetches use an anonymous identifier (e.g. `viking-splatad/0.1`); no personal info in headers, URLs or bodies.
 9. Run Python with the project venv: `uv run pytest`.
+
+## Verification workflow (independent test agent)
+- Transformation/calibration tests are run by the project agent `transform-test-runner` (`.claude/agents/`), which has its own context and is READ-ONLY (no Edit/Write; a PreToolUse hook, `.claude/hooks/readonly_bash_guard.py`, blocks any shell command that could write).
+- After modifying anything under `src/`, `tests/`, `scripts/` or `configs/`, the main agent calls `transform-test-runner` with what changed (files and/or transform ids). The main agent owns all fixes; the test agent only reports.
+- The agent runs only affected tests (`scripts/affected_tests.py`: changed modules + transitive importers + traceability) and the full suite only when asked or when `pyproject.toml`/`configs/`/`conftest.py` changed.
+- Do not weaken a test to get green; if the agent flags a test-quality issue, fix the cause.
