@@ -78,7 +78,9 @@ def lidar_to_world_at_reference_time(
     """
     if reference_mode not in SWEEP_REFERENCE_FRACTIONS:
         raise ValueError(f"reference_mode must be one of {sorted(SWEEP_REFERENCE_FRACTIONS)}")
+    # Reference time inside the sweep at the mode's fraction of its duration.
     reference_time = sweep_start_time + SWEEP_REFERENCE_FRACTIONS[reference_mode] * sweep_duration
+    # Base pose at that time (lerp/slerp), then chain base -> lidar extrinsic.
     T_world_base = interpolate_pose_se3(trajectory, np.array([reference_time]))[0]
     return T_world_base @ np.asarray(T_base_lidar, dtype=np.float64), float(reference_time)
 
@@ -103,10 +105,12 @@ def assign_sensor_indices(
     if set(lidar_indices.values()) & set(camera_indices.values()):
         lidar_indices = {name: index + camera_count for name, index in lidar_indices.items()}
     name_to_index = {**camera_indices, **lidar_indices}
+    # Invert the mapping into a list addressed by sensor index.
     index_to_name = [""] * len(name_to_index)
     for name, index in name_to_index.items():
         index_to_name[index] = name
-    # Contiguity: indices must be exactly 0..N-1 with unique names.
+    # Contiguity: indices must be exactly 0..N-1 with unique names (a duplicate name
+    # would shrink name_to_index and leave a gap or out-of-range index).
     assert sorted(name_to_index.values()) == list(range(len(name_to_index))), "sensor indices not contiguous"
     assert "" not in index_to_name
     return name_to_index, index_to_name

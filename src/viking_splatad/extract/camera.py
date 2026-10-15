@@ -38,14 +38,26 @@ class CameraIntrinsics:
     projection_matrix: Optional[np.ndarray] = None
 
     def camera_matrix(self) -> np.ndarray:
-        """Return the 3x3 pinhole matrix K."""
+        """Build the pinhole matrix K = [[fx, 0, cx], [0, fy, cy], [0, 0, 1]].
+
+        Returns:
+            3x3 float64 array.
+        """
         return np.array(
             [[self.fx, 0.0, self.cx], [0.0, self.fy, self.cy], [0.0, 0.0, 1.0]],
             dtype=np.float64,
         )
 
     def __eq__(self, other: object) -> bool:
-        """Value equality (numpy fields need element-wise comparison)."""
+        """Value equality (numpy fields need element-wise comparison).
+
+        Args:
+            other: Object to compare against.
+
+        Returns:
+            True if scalars and distortion match (projection_matrix is ignored);
+            NotImplemented for a different type.
+        """
         if not isinstance(other, CameraIntrinsics):
             return NotImplemented
         scalars_equal = (
@@ -217,6 +229,7 @@ def decode_and_resize_image(
     """
     if resize_factor <= 0:
         raise ValueError("resize_factor must be positive")
+    # Decode JPEG bytes to a BGR array (None on corrupt data).
     bgr_image = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
     if bgr_image is None:
         raise ValueError("Could not decode JPEG bytes")
@@ -230,6 +243,7 @@ def decode_and_resize_image(
         )
     if resize_factor == 1.0:
         return rgb_image, intrinsics
+    # Output size is rounded to whole pixels.
     new_width = int(round(decoded_width * resize_factor))
     new_height = int(round(decoded_height * resize_factor))
     # INTER_AREA is the anti-aliased choice for downscaling.

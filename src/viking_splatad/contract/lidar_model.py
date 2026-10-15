@@ -114,7 +114,9 @@ def derive_elevation_mapping(
     """
     points_xyz = np.asarray(points_xyz, dtype=np.float64)
     distances = np.linalg.norm(points_xyz, axis=1)
+    # Drop non-finite and zero-range points: asin(z/d) is undefined for them.
     valid = np.isfinite(distances) & (distances > 0)
+    # Elevation above the sensor xy-plane: asin(z/d), in degrees.
     elevation_deg = np.degrees(np.arcsin(points_xyz[valid, 2] / distances[valid]))
     if ring is not None:
         ring_valid = np.asarray(ring)[valid]
@@ -126,6 +128,7 @@ def derive_elevation_mapping(
         ordered_items = sorted(medians.items(), key=lambda item: item[1])
         mapping = dict(ordered_items)
     else:
+        # No ring ids: sort, cluster by gap size, and take each cluster's median as one beam.
         order = np.argsort(elevation_deg)
         sorted_elevation = elevation_deg[order]
         labels = split_sorted_by_otsu_gap(sorted_elevation)
@@ -164,12 +167,15 @@ def derive_azimuth_tiling(
     Raises:
         ValueError: If tiles is not integral.
     """
+    # Median over rings is robust to rings with dropped returns.
     column_count = float(np.median(np.atleast_1d(columns_per_ring)))
     full_circle_deg = 360.0
     resolution_deg = full_circle_deg / column_count
-    tiles = full_circle_deg / (resolution_deg * AZIMUTH_COLUMNS_PER_TILE)
+    # Tiles per full sweep (algebraically equal to column_count / 32).
+    tiles =full_circle_deg / (resolution_deg * AZIMUTH_COLUMNS_PER_TILE)
     if abs(tiles - round(tiles)) > integral_tolerance:
         raise ValueError(
             f"{column_count} columns gives {tiles} tiles of {AZIMUTH_COLUMNS_PER_TILE}: not integral"
         )
+    # Subtracting the tolerance stops ceil from rounding a round-off-high integer up by one.
     return resolution_deg, int(math.ceil(tiles - integral_tolerance))

@@ -247,6 +247,7 @@ def parse_cuboids(
         # Only cuboids are boxes; other annotation types (if any) are ignored.
         if annotation.get("type", "cuboid") != "cuboid":
             continue
+        # Extract fields; dimensions stay FULL sizes, rotation is normalised to a unit quaternion.
         class_id = int(annotation["category_id"])
         position = annotation["position"]
         dimensions = annotation["dimensions"]
@@ -277,6 +278,8 @@ def quaternion_to_rotation_matrix(quaternion_xyzw: Iterable[float]) -> np.ndarra
     """
     quat = np.asarray(list(quaternion_xyzw), dtype=np.float64)
     qx, qy, qz, qw = quat / np.linalg.norm(quat)
+    # Rows of the standard unit-quaternion rotation matrix; diagonal terms use
+    # 1 - 2(sum of the other two squared components), valid since |q| = 1.
     return np.array(
         [
             [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],

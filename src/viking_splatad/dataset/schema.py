@@ -24,6 +24,8 @@ def values_equal(left: Any, right: Any) -> bool:
     Returns:
         True when types, shapes, dtypes and every element match exactly (NaN == NaN).
     """
+    # Arrays: both sides must be arrays with identical dtype and shape before comparing
+    # elements; NaN equality is enabled only for float dtypes (equal_nan is invalid otherwise).
     if isinstance(left, np.ndarray) or isinstance(right, np.ndarray):
         return (
             isinstance(left, np.ndarray)
@@ -32,10 +34,13 @@ def values_equal(left: Any, right: Any) -> bool:
             and left.shape == right.shape
             and np.array_equal(left, right, equal_nan=left.dtype.kind == "f")
         )
+    # Dicts: same key set, then recurse on each value.
     if isinstance(left, dict) and isinstance(right, dict):
         return left.keys() == right.keys() and all(
             values_equal(left[key], right[key]) for key in left
         )
+    # Sequences: list and tuple are interchangeable (JSON round-trips tuples as lists);
+    # same length, then recurse element-wise.
     if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
         return len(left) == len(right) and all(
             values_equal(left_item, right_item) for left_item, right_item in zip(left, right)
@@ -54,7 +59,14 @@ class ExactEqualityMixin:
     """Gives dataclasses (declared with ``eq=False``) array-safe exact equality."""
 
     def __eq__(self, other: object) -> bool:
-        """Field-wise ``values_equal`` comparison."""
+        """Field-wise ``values_equal`` comparison.
+
+        Args:
+            other: Object to compare against.
+
+        Returns:
+            True if every dataclass field is exactly equal; NotImplemented for a different type.
+        """
         if type(other) is not type(self):
             return NotImplemented
         return all(
@@ -152,9 +164,18 @@ class SensorStream(ExactEqualityMixin):
     frames: List[np.ndarray] = field(default_factory=list)
 
     def __eq__(self, other: object) -> bool:
-        """Exact equality; camera pixel content is excluded (JPEG is lossy)."""
+        """Exact equality; camera pixel content is excluded (JPEG is lossy).
+
+        Args:
+            other: Object to compare against.
+
+        Returns:
+            True if all fields match (camera frames: shape and dtype only);
+            NotImplemented for a different type.
+        """
         if type(other) is not type(self):
             return NotImplemented
+        # Compare field by field, short-circuiting on the first mismatch.
         for spec in dataclasses.fields(self):
             left, right = getattr(self, spec.name), getattr(other, spec.name)
             if spec.name == "frames" and self.kind == "camera":

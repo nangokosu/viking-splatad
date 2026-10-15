@@ -27,6 +27,7 @@ def linspace_train_eval_split(
     train_count = math.ceil(num_frames * train_fraction)
     # Evenly spaced real positions on [0, N-1], truncated to frame indices.
     train_indices = np.unique(np.linspace(0, num_frames - 1, train_count).astype(int))
+    # Eval = complement of train; setdiff1d returns sorted values.
     eval_indices = np.setdiff1d(np.arange(num_frames), train_indices)
     return train_indices, eval_indices
 
@@ -48,6 +49,7 @@ def split_problems(
         Human-readable problems; empty list when the split is sound.
     """
     problems = []
+    # Partition checks: both sides non-empty, disjoint, and together covering all frames.
     if train_indices.size == 0:
         problems.append("train split is empty")
     if eval_indices.size == 0:

@@ -66,22 +66,56 @@ class ContractReport:
 
 
 def _result(name: str, problems: List[str]) -> CheckResult:
-    """Build a CheckResult: passes iff ``problems`` is empty."""
+    """Build a CheckResult: passes iff ``problems`` is empty.
+
+    Args:
+        name: Check name.
+        problems: Human-readable violation strings collected by the check.
+
+    Returns:
+        CheckResult with message "ok" or the problems joined by "; ".
+    """
     return CheckResult(name, not problems, "ok" if not problems else "; ".join(problems))
 
 
 def _lidar_streams(dataset: IntermediateDataset):
-    """Lidar streams of the dataset."""
+    """Select lidar streams.
+
+    Args:
+        dataset: Loaded intermediate dataset.
+
+    Returns:
+        List of streams whose ``kind`` is "lidar".
+    """
     return [stream for stream in dataset.streams.values() if stream.kind == "lidar"]
 
 
 def _is_plain_int(value) -> bool:
-    """True for integers (numpy ints included) but not bools."""
+    """True for integers (numpy ints included) but not bools.
+
+    Args:
+        value: Any object.
+
+    Returns:
+        Whether ``value`` is an int/np.integer and not a bool (bool subclasses int).
+    """
     return isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_))
 
 
 def check_poses(dataset: IntermediateDataset) -> CheckResult:
-    """Poses are [N,4,4] with N>=2, finite, rigid last row, finite after float32 cast."""
+    """Poses are [N,4,4] with N>=2, finite, rigid last row, finite after float32 cast.
+
+    Enforces SplatAD's pose requirement: it consumes a float32 3x4 world-from-sensor
+    block per frame and needs at least two poses per sensor to interpolate motion.
+
+    Args:
+        dataset: Loaded intermediate dataset; ``streams`` maps sensor name to a stream
+            whose ``poses_world_sensor`` is the pose array under test.
+
+    Returns:
+        CheckResult "poses_finite_and_count": passed with message "ok" when every
+        stream complies; otherwise failed with one message per violating sensor.
+    """
     problems = []
     for name, stream in dataset.streams.items():
         poses = stream.poses_world_sensor
@@ -100,7 +134,18 @@ def check_poses(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_intrinsics_integer_size(dataset: IntermediateDataset) -> CheckResult:
-    """Declared width/height are positive integers."""
+    """Declared width/height are positive integers.
+
+    Enforces SplatAD's requirement that camera image sizes are integer pixel counts.
+
+    Args:
+        dataset: Loaded intermediate dataset; ``cameras`` maps camera name to intrinsics
+            with ``width`` and ``height`` fields.
+
+    Returns:
+        CheckResult "intrinsics_integer_size": passed ("ok") when every camera has
+        positive integer width and height; otherwise failed listing offending cameras.
+    """
     problems = [
         f"{name}: width/height {camera.width!r}x{camera.height!r} not positive ints"
         for name, camera in dataset.cameras.items()
@@ -111,7 +156,20 @@ def check_intrinsics_integer_size(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_image_shape(dataset: IntermediateDataset) -> CheckResult:
-    """Every stored image has shape (height, width, ...) equal to the declared size."""
+    """Every stored image has shape (height, width, ...) equal to the declared size.
+
+    Enforces SplatAD's requirement that images match the intrinsics' resolution, since
+    the projection model uses the declared size.
+
+    Args:
+        dataset: Loaded intermediate dataset; camera-kind ``streams`` hold image arrays in
+            ``frames`` and ``cameras`` holds the declared width/height per camera.
+
+    Returns:
+        CheckResult "image_shape_matches": passed ("ok") when all images match; otherwise
+        failed listing each mismatching ``camera[frame]``. Cameras with non-integer sizes
+        are skipped (reported by check_intrinsics_integer_size).
+    """
     problems = []
     for name, stream in dataset.streams.items():
         if stream.kind != "camera" or name not in dataset.cameras:
@@ -130,7 +188,18 @@ def check_image_shape(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_distortion_k4(dataset: IntermediateDataset) -> CheckResult:
-    """Distortion is absent or has k4 == 0."""
+    """Distortion is absent or has k4 == 0.
+
+    Enforces SplatAD's camera model, which supports no fourth radial distortion term.
+
+    Args:
+        dataset: Loaded intermediate dataset; ``cameras`` maps camera name to intrinsics
+            whose optional ``distortion`` is [k1, k2, k3, k4, p1, p2].
+
+    Returns:
+        CheckResult "distortion_k4_zero": passed ("ok") when no camera has nonzero k4;
+        otherwise failed listing each camera and its k4 value.
+    """
     problems = [
         f"{name}: k4={camera.distortion[DISTORTION_K4_INDEX]}"
         for name, camera in dataset.cameras.items()
@@ -142,7 +211,20 @@ def check_distortion_k4(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_times(dataset: IntermediateDataset) -> CheckResult:
-    """Pose times are float64, finite and strictly increasing per sensor."""
+    """Pose times are float64, finite and strictly increasing per sensor.
+
+    Enforces SplatAD's requirement for float64 timestamps (float32 loses sub-ms
+    precision at epoch scale) that are strictly ordered for pose interpolation.
+
+    Args:
+        dataset: Loaded intermediate dataset; ``streams`` maps sensor name to a stream
+            whose ``times`` array holds one timestamp per pose.
+
+    Returns:
+        CheckResult "times_strictly_increasing": passed ("ok") when all streams comply;
+        otherwise failed with the first violated property (dtype, finiteness, ordering)
+        per offending sensor.
+    """
     problems = []
     for name, stream in dataset.streams.items():
         times = stream.times
@@ -156,7 +238,19 @@ def check_times(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_index_contiguity(dataset: IntermediateDataset) -> CheckResult:
-    """Camera/lidar frame indices are exactly 0..n-1."""
+    """Camera/lidar frame indices are exactly 0..n-1.
+
+    Enforces SplatAD's requirement that frame indices are contiguous from zero, so they
+    can index poses, times and frames directly.
+
+    Args:
+        dataset: Loaded intermediate dataset; ``streams`` maps sensor name to a stream
+            whose ``frame_indices`` array is under test.
+
+    Returns:
+        CheckResult "sensor_index_contiguity": passed ("ok") when every stream's indices
+        equal arange(n); otherwise failed listing offending sensors.
+    """
     problems = [
         f"{name}: frame indices are not 0..{stream.frame_indices.size - 1}"
         for name, stream in dataset.streams.items()
@@ -166,7 +260,19 @@ def check_index_contiguity(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_lidar_format(dataset: IntermediateDataset) -> CheckResult:
-    """Each sweep is float32 with shape [n,5] or [n,6]."""
+    """Each sweep is float32 with shape [n,5] or [n,6].
+
+    Enforces SplatAD's lidar array layout: x, y, z, intensity, time, plus an optional
+    channel column.
+
+    Args:
+        dataset: Loaded intermediate dataset; lidar-kind ``streams`` hold one point
+            array per sweep in ``frames``.
+
+    Returns:
+        CheckResult "lidar_array_format": passed ("ok") when all sweeps match; otherwise
+        failed listing each ``sensor[frame]`` with its dtype and shape.
+    """
     problems = []
     for stream in _lidar_streams(dataset):
         for frame_number, sweep in enumerate(stream.frames):
@@ -176,7 +282,19 @@ def check_lidar_format(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_intensity(dataset: IntermediateDataset) -> CheckResult:
-    """Intensity column lies in [0, 1]."""
+    """Intensity column lies in [0, 1].
+
+    Enforces SplatAD's requirement for normalized lidar intensity, which it regresses
+    directly.
+
+    Args:
+        dataset: Loaded intermediate dataset; lidar-kind ``streams`` hold sweeps whose
+            column ``INTENSITY_COLUMN`` is under test.
+
+    Returns:
+        CheckResult "lidar_intensity_range": passed ("ok") when every sweep's intensities
+        are finite and within [0, 1]; otherwise failed listing offending sweeps.
+    """
     problems = []
     for stream in _lidar_streams(dataset):
         for frame_number, sweep in enumerate(stream.frames):
@@ -187,7 +305,19 @@ def check_intensity(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_point_time(dataset: IntermediateDataset) -> CheckResult:
-    """Per-point time offset lies within +/- one sweep period."""
+    """Per-point time offset lies within +/- one sweep period.
+
+    Enforces SplatAD's requirement that per-point times are offsets relative to the
+    sweep timestamp (for rolling-shutter compensation), not absolute times.
+
+    Args:
+        dataset: Loaded intermediate dataset; lidar-kind ``streams`` hold sweeps whose
+            column ``TIME_COLUMN`` is under test, and ``lidar.sweep_period`` is the bound.
+
+    Returns:
+        CheckResult "lidar_point_time_range": passed ("ok") when max |t| <= sweep period
+        for every sweep; otherwise failed listing offending sweeps.
+    """
     problems = []
     for stream in _lidar_streams(dataset):
         for frame_number, sweep in enumerate(stream.frames):
@@ -197,7 +327,20 @@ def check_point_time(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_channels(dataset: IntermediateDataset) -> CheckResult:
-    """When a channel column exists, its values are integers that are mapping keys."""
+    """When a channel column exists, its values are integers that are mapping keys.
+
+    Enforces SplatAD's requirement that each point's channel indexes the lidar
+    elevation mapping.
+
+    Args:
+        dataset: Loaded intermediate dataset; lidar-kind ``streams`` hold sweeps (sweeps
+            without ``CHANNEL_COLUMN`` are skipped) and ``lidar.elevation_mapping`` provides
+            the valid channel keys.
+
+    Returns:
+        CheckResult "lidar_channel_in_mapping": passed ("ok") when all channels are
+        integral and valid keys; otherwise failed listing offending sweeps.
+    """
     problems = []
     valid_channels = set(dataset.lidar.elevation_mapping)
     for stream in _lidar_streams(dataset):
@@ -212,7 +355,18 @@ def check_channels(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_elevation_mapping(dataset: IntermediateDataset) -> CheckResult:
-    """Elevation mapping length is a multiple of 8."""
+    """Elevation mapping length is a positive multiple of ELEVATION_TILE_CHANNELS (8).
+
+    Enforces SplatAD's lidar tiling, which groups channels in blocks of 8.
+
+    Args:
+        dataset: Loaded intermediate dataset; ``lidar.elevation_mapping`` is the
+            per-channel elevation table whose length is tested.
+
+    Returns:
+        CheckResult "elevation_mapping_multiple_of_8": passed ("ok") when the length is
+        positive and divisible by 8; otherwise failed stating the length.
+    """
     length = len(dataset.lidar.elevation_mapping)
     problems = [] if length > 0 and length % ELEVATION_TILE_CHANNELS == 0 else [
         f"length {length} not a positive multiple of {ELEVATION_TILE_CHANNELS}"
@@ -221,11 +375,25 @@ def check_elevation_mapping(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_azimuth_tiles(dataset: IntermediateDataset) -> CheckResult:
-    """Azimuth bins = 2*pi / resolution is an integer divisible by the tile width."""
+    """Azimuth bins = 2*pi / resolution is an integer divisible by the tile width.
+
+    Enforces SplatAD's lidar azimuth tiling: a full turn must split into whole bins
+    that group evenly into tiles.
+
+    Args:
+        dataset: Loaded intermediate dataset; ``lidar`` provides ``azimuth_resolution``
+            (radians per bin) and ``azimuth_tile_width`` (bins per tile).
+
+    Returns:
+        CheckResult "azimuth_tile_integral": passed ("ok") when the bin count is an
+        integer (within AZIMUTH_INTEGER_RTOL) divisible by the tile width; otherwise
+        failed describing which condition broke.
+    """
     lidar = dataset.lidar
     problems = []
     # Number of azimuth bins around a full turn: B = 2*pi / resolution.
     bin_count = 2.0 * np.pi / lidar.azimuth_resolution
+    # Integrality is checked first; only then is divisibility by the tile width meaningful.
     if not np.isclose(bin_count, np.rint(bin_count), rtol=AZIMUTH_INTEGER_RTOL, atol=0.0):
         problems.append(f"2*pi/resolution = {bin_count} is not an integer")
     elif int(np.rint(bin_count)) % lidar.azimuth_tile_width != 0:
@@ -234,7 +402,19 @@ def check_azimuth_tiles(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_splits(dataset: IntermediateDataset) -> CheckResult:
-    """Train and eval splits are non-empty for every camera/lidar sensor."""
+    """Train and eval splits are non-empty for every camera/lidar sensor.
+
+    Enforces SplatAD's need for both training and evaluation frames per sensor, using
+    the same linspace split the converter applies.
+
+    Args:
+        dataset: Loaded intermediate dataset; ``streams`` give per-sensor frame counts
+            and ``session.train_fraction`` sets the split ratio.
+
+    Returns:
+        CheckResult "splits_non_empty": passed ("ok") when every sensor has at least one
+        train and one eval frame; otherwise failed listing sensors with their counts.
+    """
     problems = []
     for name, stream in dataset.streams.items():
         train_indices, eval_indices = linspace_train_eval_split(
@@ -246,7 +426,18 @@ def check_splits(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_world_up(dataset: IntermediateDataset) -> CheckResult:
-    """World up axis is +z."""
+    """World up axis is +z.
+
+    Enforces SplatAD's z-up world-frame convention.
+
+    Args:
+        dataset: Loaded intermediate dataset; ``session.world_up`` is the 3-vector tested
+            against ``Z_UP``.
+
+    Returns:
+        CheckResult "world_up_is_z": passed ("ok") when world_up is close to [0, 0, 1];
+        otherwise failed showing the actual vector.
+    """
     problems = [] if np.allclose(dataset.session.world_up, Z_UP) else [
         f"world_up {dataset.session.world_up.tolist()} != +z"
     ]

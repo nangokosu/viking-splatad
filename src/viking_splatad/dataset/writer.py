@@ -45,7 +45,14 @@ class SchemaVersionError(ValueError):
 
 
 def _array_to_list(array: Any) -> Any:
-    """ndarray -> nested list (JSON-safe, float64 repr round-trips exactly); None passes through."""
+    """Convert an array to a nested list (JSON-safe; float64 repr round-trips exactly).
+
+    Args:
+        array: Array-like or None.
+
+    Returns:
+        Nested list, or None if ``array`` is None.
+    """
     return None if array is None else np.asarray(array).tolist()
 
 
@@ -163,6 +170,7 @@ def read_dataset(root: Path) -> IntermediateDataset:
             f"dataset schema_version {manifest['schema_version']} != supported {SCHEMA_VERSION}"
         )
     pose_archive = np.load(root / "poses.npz")
+    # Rebuild one SensorStream per manifest entry from poses.npz plus its frame files.
     streams = {}
     for sensor in manifest["sensors"]:
         name, kind = sensor["name"], sensor["kind"]
@@ -173,6 +181,7 @@ def read_dataset(root: Path) -> IntermediateDataset:
             if match:
                 frame_files.append((int(match.group(1)), int(match.group(2)), path))
         frame_files.sort(key=lambda record: record[0])
+        # Load frame content in index order (cv2.imread yields BGR, matching what was written).
         frames = [
             cv2.imread(str(path)) if kind == "camera" else np.load(path)
             for _, _, path in frame_files
@@ -186,11 +195,13 @@ def read_dataset(root: Path) -> IntermediateDataset:
             frame_timestamps_ns=np.array([record[1] for record in frame_files], dtype=np.int64),
             frames=frames,
         )
+    # Sidecar arrays are keyed by file stem.
     radar_sidecar = {
         path.stem: np.load(path)
         for path in sorted((root / "sidecar" / "radar").glob("*.npy"))
     }
     lidar = manifest["lidar"]
+    # JSON stores tuples/arrays as lists and int keys as strings; restore dtypes and key types.
     return IntermediateDataset(
         schema_version=manifest["schema_version"],
         cameras={

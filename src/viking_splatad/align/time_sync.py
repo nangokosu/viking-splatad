@@ -127,7 +127,8 @@ def fit_radar_drift_model(
 ) -> RadarDriftModel:
     """Least-squares line fit of per-window offsets against window time.
 
-    Minimises sum_k (a + b t_k - o_k)^2 via the normal equations (np.linalg.lstsq).
+    Minimises sum_k (a + b t_k - o_k)^2; np.linalg.lstsq solves it by SVD, which is
+    more stable than forming the normal equations A^T A x = A^T o explicitly.
 
     Args:
         window_times: [W] window centre times [s].
@@ -139,6 +140,7 @@ def fit_radar_drift_model(
     # Design matrix columns: [1, t] -> solution [a, b].
     design_matrix = np.column_stack([np.ones_like(window_times), window_times])
     (intercept, slope), *_ = np.linalg.lstsq(design_matrix, measured_offsets, rcond=None)
+    # Residual = measured - fitted; its RMS measures how well a line explains the drift.
     residuals = measured_offsets - design_matrix @ np.array([intercept, slope])
     return RadarDriftModel(
         float(intercept), float(slope), float(np.sqrt(np.mean(residuals**2)))

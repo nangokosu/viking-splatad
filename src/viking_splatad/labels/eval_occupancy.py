@@ -58,12 +58,15 @@ def compute_binary_metrics(predicted: np.ndarray, ground_truth: np.ndarray) -> O
     Returns:
         OccupancyMetrics.
     """
+    # Confusion counts from elementwise boolean algebra.
     true_positives = int(np.count_nonzero(predicted & ground_truth))
     false_positives = int(np.count_nonzero(predicted & ~ground_truth))
     false_negatives = int(np.count_nonzero(~predicted & ground_truth))
+    # |P union G| = TP + FP + FN; |P| = TP + FP; |G| = TP + FN.
     union = true_positives + false_positives + false_negatives
     predicted_total = true_positives + false_positives
     ground_truth_total = true_positives + false_negatives
+    # IoU = |P and G| / |P union G|; empty union -> perfect agreement.
     iou = true_positives / union if union else PERFECT_SCORE
     if predicted_total:
         precision = true_positives / predicted_total
@@ -103,6 +106,7 @@ def evaluate_occupancy(
     Raises:
         ValueError: If any provided grids differ in shape.
     """
+    # Normalise inputs and validate that every supplied grid shares one shape.
     predicted = np.asarray(predicted, dtype=bool)
     ground_truth = np.asarray(ground_truth, dtype=bool)
     provided_grids = [predicted, ground_truth]
@@ -114,6 +118,7 @@ def evaluate_occupancy(
     overall = compute_binary_metrics(predicted, ground_truth)
     per_class: Dict[int, OccupancyMetrics] = {}
     if predicted_classes is not None and ground_truth_classes is not None:
+        # Default report set: every non-empty class id appearing in either grid.
         if class_ids is None:
             present_ids = np.union1d(np.unique(predicted_classes), np.unique(ground_truth_classes))
             class_ids = [int(class_id) for class_id in present_ids if class_id != 0]

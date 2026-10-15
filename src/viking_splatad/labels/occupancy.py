@@ -58,7 +58,9 @@ def compute_default_bounds(cuboids: Sequence[Cuboid], margin_meters: float) -> T
     Returns:
         (minimum corner, maximum corner), each (3,).
     """
+    # Stack the 8 corners of every box; the AABB of a rotated box is the min/max of its corners.
     all_corners = np.concatenate([compute_cuboid_geometry(box).corners for box in cuboids])
+    # Per-axis min/max over all corners = union AABB, then pad each side.
     return all_corners.min(axis=0) - margin_meters, all_corners.max(axis=0) + margin_meters
 
 
@@ -122,8 +124,10 @@ def voxelize_cuboids(
         index_high = np.minimum(np.ceil((geometry.corners.max(axis=0) - bounds_min) / voxel_size).astype(int), grid_shape)
         if np.any(index_high <= index_low):
             continue  # box entirely outside the grid
+        # Enumerate every voxel index in the AABB window as an (nx, ny, nz, 3) mesh.
         axis_index_ranges = [np.arange(low, high) for low, high in zip(index_low, index_high)]
         index_mesh = np.stack(np.meshgrid(*axis_index_ranges, indexing="ij"), axis=-1)
+        # Voxel centres in the map frame, then exact point-in-box test (box may be rotated).
         centers = bounds_min + (index_mesh + 0.5) * voxel_size
         inside_mask = points_in_cuboid(geometry, centers.reshape(-1, 3)).reshape(index_mesh.shape[:3])
         # Write only voxels inside the box that this box outranks.
@@ -147,7 +151,7 @@ def crop_occupancy_to_sensor_fov(
     Sensor frame: x forward, y left, z up. A voxel centre p_s = T_sensor_map @ p_map
     is kept when |p_s| <= max_range, |atan2(y, x)| <= horizontal_fov/2 and
     |atan2(z, hypot(x, y))| <= vertical_fov/2 (a full 2*pi horizontal FOV keeps all
-    azimuths except exactly behind, where atan2 wraps; pass pi*2 to include it).
+    azimuths: atan2 returns values in [-pi, pi], so |azimuth| <= pi always holds).
     No occlusion reasoning is done. Cost is O(occupied voxels).
 
     Args:
@@ -165,7 +169,9 @@ def crop_occupancy_to_sensor_fov(
     rotation_map_sensor = T_map_sensor[:3, :3]
     translation_map_sensor = T_map_sensor[:3, 3]
     centers_sensor = (centers_map - translation_map_sensor) @ rotation_map_sensor
+    # Row-vector form: (p - t) @ R == R^T (p - t) for each centre p.
     forward, left, up = centers_sensor[:, 0], centers_sensor[:, 1], centers_sensor[:, 2]
+    # Range test, azimuth (yaw about z) test, elevation (angle above the xy plane) test.
     range_ok = np.linalg.norm(centers_sensor, axis=1) <= max_range
     azimuth_ok = np.abs(np.arctan2(left, forward)) <= horizontal_fov_radians / 2.0
     elevation_ok = np.abs(np.arctan2(up, np.hypot(forward, left))) <= vertical_fov_radians / 2.0
