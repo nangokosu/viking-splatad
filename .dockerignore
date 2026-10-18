@@ -1,0 +1,15 @@
+# Whitelist build context: only what docker/Dockerfile.splatad COPYs.
+# Keeps multi-GB data/, the Mac .venv and the local (already patched)
+# third_party/ checkout out of the image so the build is from pinned sources.
+*
+!pyproject.toml
+!src/
+!tests/
+!configs/
+!scripts/
+!docker/constraints.txt
+# tests/unit/test_readonly_guard.py loads this hook by path
+!.claude/hooks/readonly_bash_guard.py
+**/__pycache__
+**/*.pyc
+**/.pytest_cache

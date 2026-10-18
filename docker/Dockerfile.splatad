@@ -1,0 +1,170 @@
+# syntax=docker/dockerfile:1
+# check=skip=FromPlatformFlagConstDisallowed
+# (Directive above: the FROM digest is the linux/amd64 manifest, so its platform
+# must be the constant linux/amd64; that lint rule does not apply here.)
+# =============================================================================
+# Reproducible SplatAD (neurad-studio) environment for the Viking Hill project.
+#
+# Purpose: one image that contains everything needed to train/render SplatAD on
+# the converted Viking Hill dataset: CUDA toolchain, PyTorch, tiny-cuda-nn,
+# neurad-studio (with our OUSTER_OS0_32 patch, T28), splatad/gsplat with its
+# CUDA kernels compiled ahead of time, and this repo installed editable with the
+# `viking-data` dataparser (T27) registered.
+#
+# Reproducibility measures (each pin below is resolved, not guessed):
+#   * base image pinned by its linux/amd64 manifest digest
+#     (`docker buildx imagetools inspect nvidia/cuda:11.8.0-devel-ubuntu22.04`);
+#   * every git dependency pinned to a full commit SHA (`git ls-remote <url> HEAD`
+#     on 2026-10-18);
+#   * pip resolution constrained by docker/constraints.txt (regenerate from a
+#     built image, see docker/README.md);
+#   * this repo's CPU test suite runs as the last build step, so an image that
+#     builds is an image whose converter/dataparser tests pass inside it.
+#
+# Build (from repo root; amd64 because the cluster GPUs are x86_64 hosts):
+#   docker build --platform linux/amd64 -f docker/Dockerfile.splatad \
+#       --build-arg CUDA_ARCHITECTURES="<from cluster nvidia-smi>" \
+#       -t viking-splatad:cu118 .
+# On the Slurm cluster, run it through Apptainer (docker/README.md).
+# =============================================================================
+
+# Base image: CUDA 11.8 devel on Ubuntu 22.04, the version neurad-studio's own
+# Dockerfile and Apptainer recipe target (torch 2.0.1+cu118 wheels match it).
+# Digest = linux/amd64 manifest of nvidia/cuda:11.8.0-devel-ubuntu22.04.
+FROM --platform=linux/amd64 nvidia/cuda:11.8.0-devel-ubuntu22.04@sha256:60eda04ab6790aa76d73bf0df245b361eabc6d8f7b6f6cf9846c70f399b9a1eb
+
+# --- Pinned upstream revisions (full SHAs from `git ls-remote ... HEAD`) -------
+ARG NEURAD_STUDIO_COMMIT=8ba9b5116b8a2822a80c64f63a4ae64c5871aa68
+ARG SPLATAD_COMMIT=6e31ad766d39e0c33f9034a2ed772d51364b2343
+ARG TINY_CUDA_NN_COMMIT=3daa6e5b8b8e0fa17971a1a20acfbb3754494b38
+
+# CUDA SM architectures to compile kernels for (tiny-cuda-nn + gsplat).
+# Default = neurad-studio's upstream Dockerfile list (covers H100/L40/A40/A100/T4
+# class GPUs); it is a fallback only. Override with the compute capabilities the
+# cluster actually reports (`nvidia-smi --query-gpu=compute_cap --format=csv`
+# on each gpunodes host) to cut build time and image size.
+ARG CUDA_ARCHITECTURES="90;89;86;80;75"
+
+# Parallel compile jobs for nvcc. Unset (empty) lets the build tools pick the
+# CPU count of the build machine; set it lower if the builder runs out of RAM.
+ARG MAX_JOBS=""
+
+# Non-interactive apt; UTC so builds do not depend on the builder's timezone.
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Etc/UTC \
+    CUDA_HOME=/usr/local/cuda \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu118 \
+    PIP_CONSTRAINT=/opt/viking/constraints.txt \
+    PYTHONDONTWRITEBYTECODE=1
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# --- System packages ----------------------------------------------------------
+# Same package set as neurad-studio's Dockerfile/Apptainer recipe (build tools,
+# COLMAP-style libs, ffmpeg for rendering videos, python3.10 headers).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential cmake curl wget ffmpeg git vim-tiny ninja-build \
+        libatlas-base-dev libhdf5-dev libprotobuf-dev protobuf-compiler \
+        libboost-filesystem-dev libboost-graph-dev libboost-program-options-dev \
+        libboost-system-dev libboost-test-dev libcgal-dev libeigen3-dev \
+        libflann-dev libfreeimage-dev libgflags-dev libglew-dev libmetis-dev \
+        libqt5opengl5-dev libsuitesparse-dev qtbase5-dev \
+        python-is-python3 python3.10-dev python3-pip && \
+    rm -rf /var/lib/apt/lists/*
+
+# Constraints file first: every later pip call honours it via PIP_CONSTRAINT.
+COPY docker/constraints.txt /opt/viking/constraints.txt
+
+# --- Python toolchain + PyTorch -----------------------------------------------
+# setuptools<70 and torch 2.0.1+cu118 come from neurad-studio's recipe
+# (its pyproject caps torch <2.2; newer setuptools breaks the tcnn build).
+RUN python3.10 -m pip install --upgrade pip "setuptools<70.0" wheel ninja \
+        pathtools promise pybind11 && \
+    python3.10 -m pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118
+
+# --- tiny-cuda-nn torch bindings (pinned SHA) ---------------------------------
+# --no-build-isolation: build against the torch installed above, not a fresh one.
+RUN TCNN_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
+    MAX_JOBS="${MAX_JOBS}" \
+    python3.10 -m pip install --no-build-isolation \
+        "git+https://github.com/NVlabs/tiny-cuda-nn.git@${TINY_CUDA_NN_COMMIT}#subdirectory=bindings/torch"
+
+# Convert "90;89;86" (tcnn style) to "9.0 8.9 8.6" (TORCH_CUDA_ARCH_LIST style),
+# keeping only sm >= 7.0 as neurad-studio's Dockerfile does. Stored in a file so
+# later RUN steps share one derivation instead of repeating the conversion.
+RUN echo "${CUDA_ARCHITECTURES}" | tr ';' '\n' \
+      | awk '$0 >= 70 {print substr($0,1,length($0)-1)"."substr($0,length($0),1)}' \
+      | paste -sd' ' > /opt/viking/torch_cuda_arch_list && \
+    echo "TORCH_CUDA_ARCH_LIST=$(cat /opt/viking/torch_cuda_arch_list)"
+
+WORKDIR /workspace
+
+# --- This repo (patcher + dataparser + tests) ---------------------------------
+# Copied before neurad-studio so the OUSTER_OS0_32 patch can be applied to the
+# fresh checkout. .dockerignore keeps data/, .venv and third_party/ out.
+COPY pyproject.toml /workspace/viking-splatad/pyproject.toml
+COPY src /workspace/viking-splatad/src
+
+# --- neurad-studio at the pinned commit, patched, editable install ------------
+# Step 1: shallow-fetch exactly the pinned commit (no moving branch heads).
+# Step 2: apply T28 (OUSTER_OS0_32 lidar type) via our idempotent installer.
+# Step 3: editable install with [dev] extras (as upstream's recipes do).
+# dataclass-wizard<0.23: nerfstudio imports JSONSerializable, removed later
+# (fix taken from neurad-studio's Apptainer recipe).
+RUN git init neurad-studio && cd neurad-studio && \
+    git remote add origin https://github.com/georghess/neurad-studio.git && \
+    git fetch --depth 1 origin "${NEURAD_STUDIO_COMMIT}" && \
+    git checkout --detach FETCH_HEAD && \
+    bash /workspace/viking-splatad/src/viking_splatad/splatad/install_into_neurad.sh /workspace/neurad-studio && \
+    TORCH_CUDA_ARCH_LIST="$(cat /opt/viking/torch_cuda_arch_list)" \
+        python3.10 -m pip install -e ".[dev]" "dataclass-wizard<0.23"
+
+# --- splatad (gsplat fork) at the pinned commit, CUDA kernels compiled AOT ----
+# neurad-studio's pyproject depends on gsplat@git+splatad *without* a commit, so
+# the step above pulled whatever HEAD was. Overwrite it with the pinned SHA.
+# BUILD_CUDA=1 is this fork's switch for ahead-of-time compilation (its setup.py
+# reads BUILD_CUDA; upstream's BUILD_NO_CUDA flag is ignored and would leave the
+# kernels to JIT-compile on every fresh cluster node).
+RUN git init splatad && cd splatad && \
+    git remote add origin https://github.com/carlinds/splatad.git && \
+    git fetch --depth 1 origin "${SPLATAD_COMMIT}" && \
+    git checkout --detach FETCH_HEAD && \
+    git submodule update --init --recursive --depth 1 && \
+    BUILD_CUDA=1 MAX_JOBS="${MAX_JOBS}" \
+    TORCH_CUDA_ARCH_LIST="$(cat /opt/viking/torch_cuda_arch_list)" \
+        python3.10 -m pip install --no-build-isolation --no-deps --force-reinstall -e .
+
+# --- This repo, editable, with test deps ---------------------------------------
+COPY tests /workspace/viking-splatad/tests
+COPY configs /workspace/viking-splatad/configs
+COPY scripts /workspace/viking-splatad/scripts
+# Loaded by path in tests/unit/test_readonly_guard.py.
+COPY .claude/hooks/readonly_bash_guard.py /workspace/viking-splatad/.claude/hooks/readonly_bash_guard.py
+RUN python3.10 -m pip install -e "/workspace/viking-splatad[dev]"
+
+# Register the `viking-data` dataparser with ns-train (value printed by
+# install_into_neurad.sh; T27).
+ENV NERFSTUDIO_DATAPARSER_CONFIGS=viking-data=viking_splatad.splatad.viking_dataparser:VIKING_DATAPARSER_SPEC
+
+# Build the viser web client now (otherwise it downloads at first ns-train run,
+# which fails on network-less compute nodes); install ns-* shell completion.
+RUN python -c "import viser; viser.ViserServer()" && ns-install-cli --mode install
+
+# --- Build-time verification (no GPU needed) ----------------------------------
+# 1. pip's dependency graph is consistent.
+# 2. CUDA extensions import (they link against libcuda only at call time; the
+#    stub lib from the devel image satisfies the loader at import).
+# 3. ns-train sees the splatad method and our registered dataparser.
+# 4. This repo's default (CPU, non-real-data) test suite passes in this env.
+RUN python3.10 -m pip check && \
+    LD_LIBRARY_PATH="/usr/local/cuda/lib64/stubs:${LD_LIBRARY_PATH}" \
+        python -c "import gsplat.csrc, tinycudann; print('cuda extensions import OK')" && \
+    ns-train splatad --help > /dev/null && \
+    ns-train splatad viking-data --help > /dev/null && \
+    cd /workspace/viking-splatad && python -m pytest -q
+
+WORKDIR /workspace/viking-splatad
+CMD ["/bin/bash", "-l"]

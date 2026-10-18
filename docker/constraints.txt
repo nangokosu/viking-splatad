@@ -1,0 +1,12 @@
+# pip constraints for docker/Dockerfile.splatad (applied to every pip call via
+# PIP_CONSTRAINT). Bootstrap set: only the pins neurad-studio's own recipes
+# require. After the first successful build, replace with the full lock:
+#   docker run --rm viking-splatad:cu118 \
+#     pip freeze --exclude-editable --exclude tinycudann > docker/constraints.txt
+# (tinycudann is a git URL install pinned by SHA in the Dockerfile; pip
+# constraints cannot hold URLs.)
+torch==2.0.1+cu118
+torchvision==0.15.2+cu118
+setuptools<70.0
+dataclass-wizard<0.23
+numpy<2.0

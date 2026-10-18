@@ -12,6 +12,7 @@ Goal: render the Viking Hill forest with SplatAD (neurad-studio). Plan: `~/.clau
 7. SplatAD training/rendering needs CUDA, so it runs only on the CS Lab Slurm cluster (see "GPU training on Slurm" below). Everything else (tests, conversion, non-CUDA GPU work) runs on the Mac, which may use its own GPU (MPS).
 8. Network fetches use an anonymous identifier (e.g. `viking-splatad/0.1`); no personal info in headers, URLs or bodies.
 9. Run Python with the project venv: `uv run pytest`.
+10. **Reproducibility (core goal):** every SplatAD run uses the image from `docker/Dockerfile.splatad` (run with Apptainer on Slurm, see `docker/README.md`). New dependencies go into the Dockerfile and `docker/constraints.txt`, never installed by hand on the cluster. Every upstream is pinned: base image by digest, git by full SHA, pip by constraints.
 
 ## GPU training on Slurm (every run)
 Only for SplatAD (CUDA-only). Other GPU work uses the Mac's GPU.
