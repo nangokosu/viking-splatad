@@ -24,8 +24,11 @@ Chosen 2026-10-19 with `scripts/02_scene_quicklook.py`; the contact sheets and t
 |---|---|---|---|---|---|
 | may_smoke | `data/intermediate/may_chunks0_1_smoke` (May chunks 0+1, already extracted) | `splatad` | – | – | Slurm/Docker smoke run only. |
 | may_A | may_short_grass (Scene A chunks) | `splatad` | – | – | SplatAD out of the box on forest. Held-out PSNR/SSIM/LPIPS, lidar metrics, rendered point cloud. |
-| june_B | june_tall_grass (Scene A chunks) | `splatad` | – | – | Model 1: lidar + camera under high vegetation. |
-| june_R | june_tall_grass (same chunks, split, seed and steps) | `splatad-radar` | yes | opacity loss (depth loss optional, later) | Model 2: radar init + radar opacity loss. |
+| june_B | june_tall_grass (Scene A chunks) | `splatad`, lidar-only | – | – | Core Model 1: lidar under high vegetation. |
+| june_R | june_tall_grass (same chunks, split, seed and steps) | `splatad-radar`, lidar-only | yes | opacity loss | Core Model 2: radar init + radar opacity loss. |
+| june_B_cam | as june_B | `splatad` (camera on) | – | – | Extension (approval needed): photometric loss added to B. |
+| june_R_cam | as june_R | `splatad-radar` (camera on) | yes | opacity loss | Extension (approval needed): photometric loss added to R. |
+| june_R_depth | as june_R | `splatad-radar`, lidar-only | yes | opacity + depth loss | Extension (approval needed): radar depth loss (T44). |
 
 ## Results
 _Not run yet._
@@ -34,5 +37,5 @@ June metrics are computed at held-out June poses, against June cuboids (Tree_tru
 - **Object detection rate per class:** does the rendered lidar put points on each in-range cuboid?
 - **Trunk precision and false-positive trunk clusters.**
 - **Built-in lidar metrics:** depth, Chamfer and ray-drop.
-- **Camera metrics:** PSNR/SSIM/LPIPS, full frame and inside the trunk-above-grass mask; a "radar does not hurt" check (camera loss on for both runs, PLAN §4.3).
 - **Figures:** BEV and occupancy figures B | R | GT lidar.
+- **Extension runs only, camera metrics:** PSNR/SSIM/LPIPS, full frame and inside the trunk-above-grass mask, as a "radar does not hurt" check (PLAN §4.3).

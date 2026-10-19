@@ -33,4 +33,4 @@
    - radar seeds T34–T36 + `07`;
    - parser/contract/model T39–T43;
    - eval `08`/`09` T45–T47.
-4. June B and R: smoke runs, then full runs. Camera loss on (PLAN §4.3); confirm with a camera-off B smoke comparison. Then evaluate (PLAN §5).
+4. June B and R (core, lidar-only via `train-lidar-only`): smoke runs, then full runs, then evaluate (PLAN §5). Extensions (B+cam, R+cam, R+depth) only with approval.
