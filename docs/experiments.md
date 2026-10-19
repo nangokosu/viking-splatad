@@ -23,7 +23,7 @@ Chosen 2026-10-19 with `scripts/02_scene_quicklook.py`; the contact sheets and t
 
 | id | session | method | radar seeds | radar loss | purpose |
 |---|---|---|---|---|---|
-| may_smoke | may_short_grass (chunk 1, on disk) | `splatad` | – | – | Slurm/Docker smoke run only. |
+| may_smoke | `data/intermediate/may_chunk1_smoke` (May chunks 0+1, already extracted) | `splatad` | – | – | Slurm/Docker smoke run only. |
 | may_A | may_short_grass (Scene A chunks) | `splatad` | – | – | SplatAD out of the box on forest. Held-out PSNR/SSIM/LPIPS, lidar metrics, rendered point cloud. |
 | june_B | june_tall_grass (Scene A chunks) | `splatad` | – | – | Model 1: lidar + camera under high vegetation. |
 | june_R | june_tall_grass (same chunks, split, seed and steps) | `splatad-radar` | yes | opacity loss (depth loss optional, later) | Model 2: radar init + radar opacity loss. |

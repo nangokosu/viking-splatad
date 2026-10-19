@@ -24,7 +24,7 @@ Plan: `docs/PLAN.md`. SplatAD internals: `docs/research/splatad_extension_points
 6. Ground-truth cuboids stay separate from SplatAD inputs (`data/gt/`) and are used only for evaluation (occupancy, trunk mask). They never become seeds, seed filters or loss targets.
 7. SplatAD training/rendering needs CUDA, so it runs only on the CS Lab Slurm cluster (see "GPU training on Slurm" below). Everything else (tests, conversion, non-CUDA GPU work) runs on the Mac, which may use its own GPU (MPS).
 8. Network fetches use an anonymous identifier (e.g. `viking-splatad/0.1`); no personal info in headers, URLs or bodies.
-9. Run Python with the project venv: `uv run pytest`.
+9. Run Python with the project venv: `uv run pytest`. Set the venv up with `uv sync --extra dev`, because pytest is in the `dev` extra. Every import must be declared in `pyproject.toml`: a plain `uv sync` removes anything installed by hand.
 10. **Reproducibility (core goal):** every SplatAD run uses the image from `docker/Dockerfile.splatad` (run with Apptainer on Slurm, see `docker/README.md`). New dependencies go into the Dockerfile and `docker/constraints.txt`, never installed by hand on the cluster. Every upstream is pinned: base image by digest, git by full SHA, pip by constraints.
 
 ## GPU training on Slurm (every run)

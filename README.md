@@ -41,6 +41,7 @@ contract_report.md), `data/gt/<session>/`, `reports/<session>/`.
 
 ## Tests
 ```bash
+uv sync --extra dev                   # once: project deps + pytest
 uv run pytest -q                      # CPU suite (synthetic, known-answer)
 uv run pytest -m real_data -q         # needs the real chunk(s) on disk
 uv run python scripts/affected_tests.py --run    # only tests affected by current changes
