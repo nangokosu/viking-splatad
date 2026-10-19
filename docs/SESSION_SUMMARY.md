@@ -14,7 +14,7 @@
 - **Datasets:** both Scene A datasets are extracted and the SplatAD contract PASSES for both.
   - `data/intermediate/may_short_grass`: 1,666 camera frames / 1,676 lidar scans.
   - `data/intermediate/june_tall_grass`: 1,394 / 1,401.
-  - The old May chunk 0+1 dataset is now `data/intermediate/may_chunk1_smoke`.
+  - The old May chunk 0+1 dataset is now `data/intermediate/may_chunks0_1_smoke`.
 - **Env** (`4b44427`): `py7zr` and `requests` declared in pyproject. The venv was rebuilt with `uv sync --extra dev`, and plain `uv run pytest` works (196 passed).
 
 ## State / open issues
@@ -25,7 +25,7 @@
 - **Network:** `-m real_data` includes a live Zenodo test (anonymous). Use `-k "not zenodo"` to avoid the network.
 
 ## Next steps
-1. Build the image (`docker/Dockerfile.splatad`) and run the Slurm smoke test on `may_chunk1_smoke` (CLAUDE.md "GPU training on Slurm").
+1. Build the image (`docker/Dockerfile.splatad`) and run the Slurm smoke test on `may_chunks0_1_smoke` (CLAUDE.md "GPU training on Slurm").
 2. Run SplatAD on May Scene A, with held-out PSNR/SSIM/LPIPS, lidar metrics and the rendered point cloud (PLAN §3).
 3. Build in parallel with subagents:
    - radar seeds T34–T36 + `07`;
