@@ -9,7 +9,7 @@
 > 1. **Initialization.** Extra seed Gaussians are placed where radar detects trunks that the lidar misses.
 > 2. **Geometric regularizer.** A loss term asks the scene to contain opaque geometry at those radar-detected locations. This compensates for lidar returns that tall grass blocks.
 >
-> The outputs we judge are SplatAD's **rendered lidar (→ point cloud)** and **rendered camera images**.
+> The outputs we judge are SplatAD's **rendered lidar (→ point cloud) as corrected by radar** and **rendered camera images**.
 
 ## Context
 The team proposal (`docs/proposal/Final_Forest_Reconstruction_Proposal.pdf`, transcription in `docs/proposal/proposal.md`) asks whether adding 4D radar to LiDAR+camera 3DGS improves trunk reconstruction under foliage occlusion. Until now the repo only targeted May rendering.
