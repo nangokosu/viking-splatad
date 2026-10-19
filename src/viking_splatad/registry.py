@@ -19,6 +19,8 @@ PLANNED_TRANSFORM_IDS = frozenset(
         "T11", "T12", "T13", "T14", "T15", "T16", "T17", "T18", "T19",
         "T20", "T21", "T22", "T23", "T24", "T25", "T26", "T27", "T28",
         "T29", "T30", "T31", "T32", "T33",
+        # Sweep period covering every extracted sweep (fix for the June 20-22 contract failure).
+        "T49",
     }
 )
 

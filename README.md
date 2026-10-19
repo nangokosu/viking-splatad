@@ -5,7 +5,7 @@ May (short grass) and June (tall grass) are separate sessions with separate conf
 
 Research question and proposal: `docs/proposal/`.
 - **Execution plan:** `docs/PLAN.md`.
-  - Scene A is a region with trunks, low grass in May and high grass in June: 2 bag chunks per run, no May↔June alignment.
+  - Scene A is a region with trunks, low grass in May and high grass in June: 3 consecutive bag chunks per run (May 7–9, June 20–22), no May↔June alignment.
   - May gets a stock SplatAD run with held-out metrics.
   - June compares SplatAD (B) against SplatAD + radar seed Gaussians + a radar opacity loss (R).
   - Radar is never rendered. Runs are judged on the rendered lidar point cloud against the June trunk, bush and rock cuboids.

@@ -78,6 +78,7 @@ from viking_splatad.pipeline.derived import (
     DerivedParameters,
     LidarScanSample,
     calibration_tolerance,
+    covering_sweep_period,
     derive_lidar_parameters,
     load_derived,
     save_derived,
@@ -87,6 +88,11 @@ LOGGER = logging.getLogger(__name__)
 
 # File names / directories inside the dataset output directory.
 STATE_FILE_NAME = "extract_state.json"
+# State key: largest |t| (seconds) over every lidar sweep written so far (T49 input). Kept in the
+# state so incremental runs bound the sweeps of earlier runs without re-reading them.
+LONGEST_POINT_TIME_STATE_KEY = "longest_point_time_seconds"
+# Column of the per-point time t in the written [x, y, z, intensity, t, channel] scan array.
+SCAN_TIME_COLUMN = 4
 ODOMETRY_CACHE_DIRECTORY = "cache"
 MANIFEST_FILE_NAME = "manifest.json"
 POSES_FILE_NAME = "poses.npz"
@@ -654,6 +660,30 @@ def load_accumulator(output_dir: Path, name: str, kind: str) -> SensorAccumulato
     return accumulator
 
 
+def longest_point_time_in_frames(output_dir: Path, name: str, frame_count: int) -> float:
+    """Largest |t| over the lidar frame files already on disk (state files from before T49).
+
+    Reads every recorded sweep once: O(total points), only when the state lacks the value.
+
+    Args:
+        output_dir: Dataset directory.
+        name: Lidar sensor name.
+        frame_count: Number of recorded frames (files with a higher index are ignored).
+
+    Returns:
+        max |t| in seconds, or 0.0 when no frame exists.
+    """
+    longest = 0.0
+    for path in (output_dir / "lidar" / name).glob("*.npy"):
+        match = FRAME_FILE_PATTERN.match(path.name)
+        # Only recorded frames count; orphans of an interrupted run are deleted by load_accumulator.
+        if match and int(match.group(1)) < frame_count:
+            scan = np.load(path)
+            if scan.shape[0]:
+                longest = max(longest, float(np.abs(scan[:, SCAN_TIME_COLUMN]).max()))
+    return longest
+
+
 def remove_orphan_radar_files(output_dir: Path, valid_count: int) -> None:
     """Delete radar sidecar files whose index is >= the recorded count (interrupted run).
 
@@ -711,6 +741,14 @@ class DatasetExtractor:
         self.T_base_lidar = extrinsics[f"{frames['base']}->{frames['lidar']}"]
         self.camera_accumulator = load_accumulator(self.output_dir, self.camera_name, "camera")
         self.lidar_accumulator = load_accumulator(self.output_dir, self.lidar_name, "lidar")
+        # Longest |t| over all sweeps written so far (T49 input): from the state, or recomputed
+        # from the recorded frames for datasets extracted before the state kept it.
+        if LONGEST_POINT_TIME_STATE_KEY in state:
+            self.longest_point_time_seconds = float(state[LONGEST_POINT_TIME_STATE_KEY])
+        else:
+            self.longest_point_time_seconds = longest_point_time_in_frames(
+                self.output_dir, self.lidar_name, len(self.lidar_accumulator.times)
+            )
         remove_orphan_radar_files(self.output_dir, state["radar_frame_count"])
         self.radar_last_stamp_ns = self._last_radar_stamp_ns()
         self.source_intrinsics = SourceCameraIntrinsics(
@@ -847,6 +885,10 @@ class DatasetExtractor:
             return
         frame_index = self.lidar_accumulator.add(seconds, T_world_lidar, total_ns)
         write_frame_file(self.output_dir, "lidar", self.lidar_name, frame_index, total_ns, scan_array)
+        # Track the longest |t| actually written; the manifest sweep period must cover it (T49).
+        self.longest_point_time_seconds = max(
+            self.longest_point_time_seconds, float(np.abs(scan_array[:, SCAN_TIME_COLUMN]).max())
+        )
         self.frames_written["lidar"] += 1
 
     def handle_radar(self, message: Any) -> None:
@@ -982,7 +1024,8 @@ def write_metadata(
             azimuth_tile_width=derived.azimuth_tile_width,
             min_lidar_dist=list(derived.min_lidar_dist),
             intensity_scale=derived.intensity_scale,
-            sweep_period=derived.sweep_period_seconds,
+            # T49: the derived (first-chunk sample) period, raised to the longest |t| written.
+            sweep_period=covering_sweep_period(derived.sweep_period_seconds, extractor.longest_point_time_seconds),
         ),
         window=WindowInfo(
             start_time=float(all_times.min()) if all_times.size else 0.0,
@@ -1032,6 +1075,7 @@ def write_metadata(
     }
     manifest_path.write_text(json.dumps(manifest, indent=2))
     extractor.state["extracted_chunks"] = extracted_chunks
+    extractor.state[LONGEST_POINT_TIME_STATE_KEY] = extractor.longest_point_time_seconds
     (output_dir / STATE_FILE_NAME).write_text(json.dumps(extractor.state, indent=2))
 
 

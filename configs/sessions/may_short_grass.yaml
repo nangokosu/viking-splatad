@@ -18,9 +18,10 @@ session:
 # newly downloaded chunk is picked up by adding its file name (or leaving the list null = all
 # *.mcap files found in bag_dir, sorted by name index).
 window:
-  # Scene A (PLAN.md §1): trunks, low grass here, high grass in June chunks 19+20 along the same
-  # gravel path. Chosen by guess-and-check with scripts/02_scene_quicklook.py (reports/scene_a/).
-  chunk_files: [short_grass__ros2_7.mcap, short_grass__ros2_8.mcap]
+  # Scene A (PLAN.md §1): trunks, low grass here; the same gravel path and birch/pine stand as
+  # June chunks 20-22 (high grass). Chosen by guess-and-check with scripts/02_scene_quicklook.py
+  # (reports/scene_a/). Chunk 9 holds ~25 s standing still (about +27 s to +53 s).
+  chunk_files: [short_grass__ros2_7.mcap, short_grass__ros2_8.mcap, short_grass__ros2_9.mcap]
   start_offset_s: null
   end_offset_s: null
 

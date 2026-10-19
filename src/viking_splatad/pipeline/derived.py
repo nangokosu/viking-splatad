@@ -21,6 +21,7 @@ from viking_splatad.contract.lidar_model import (
 )
 from viking_splatad.extract.lidar import normalise_intensity
 from viking_splatad.extract.timebase import NANOSECONDS_PER_SECOND
+from viking_splatad.registry import transform
 
 # File name of the cache inside the dataset output directory.
 DERIVED_FILE_NAME = "derived.json"
@@ -143,6 +144,26 @@ def calibration_tolerance() -> Tuple[float, float]:
     return translation_tolerance, rotation_tolerance
 
 
+@transform("T49", "Sweep period that bounds the per-point time of every extracted sweep")
+def covering_sweep_period(derived_period_seconds: float, longest_point_time_seconds: float) -> float:
+    """Sweep period stored in the manifest: the derived period, raised to any longer point time.
+
+    ``derived_period_seconds`` comes from a small sample of the first chunk, but real sweep
+    lengths jitter (Ouster: ~0.1 ms), so a later sweep can end after it. SplatAD requires
+    |t| <= sweep period for every point, hence the bound is max(derived, longest observed |t|)
+    over ALL extracted sweeps. With reference = sweep start, no extracted value depends on
+    this bound, so raising it changes only the manifest/contract value.
+
+    Args:
+        derived_period_seconds: ``sweep_period_seconds`` from ``derived.json``.
+        longest_point_time_seconds: Largest |t| over every sweep written to the dataset.
+
+    Returns:
+        max(derived_period_seconds, longest_point_time_seconds).
+    """
+    return max(float(derived_period_seconds), float(longest_point_time_seconds))
+
+
 def derive_lidar_parameters(
     samples: Sequence[LidarScanSample],
     intensity_percentile: float,
@@ -191,7 +212,8 @@ def derive_lidar_parameters(
     columns_per_ring = float(np.median([sample.column_count for sample in samples]))
     azimuth_resolution_deg, azimuth_tile_width = derive_azimuth_tiling(columns_per_ring)
     # Step 6: sweep period = median spacing of sweep stamps (robust to a dropped sweep), but
-    # never shorter than the longest per-point time seen, so |t| <= period always holds.
+    # never shorter than the longest per-point time in this sample. Later sweeps can be longer
+    # (sweep-length jitter), so the manifest raises it to cover every written sweep (T49).
     longest_point_time = max(float(sample.point_time_seconds.max()) for sample in samples)
     stamp_spacings_ns = np.diff(np.array([sample.stamp_ns for sample in samples], dtype=np.int64))
     stamp_spacings_ns = stamp_spacings_ns[stamp_spacings_ns > 0]

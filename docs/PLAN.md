@@ -10,7 +10,7 @@
 - **Bag chunks:** May has 49 chunks over 4068 s, so about 83 s each. `metadata.yaml` lists each chunk's `starting_time` and `duration`.
 - **Frames per chunk:**
   - `/icp_odom` runs at 10 Hz, so a chunk holds about 830 poses. They are about 7 cm apart at the May chunk-0 speed (73 m in 99.8 s).
-  - Camera and lidar also run at 10 Hz, so 2 chunks give about 1,600–1,700 frames per sensor.
+  - Camera and lidar also run at 10 Hz, so 3 chunks give about 2,100–2,500 frames per sensor.
 - **Labels** (`short_and_tall_grass_labels.json`):
   - There is one sample per run: May, with 467 cuboids, and June, with 549.
   - The classes are Tree_trunk(1), Tree_canopy(2), Rock(3), Bush_or_small_tree(4), Car, Building, Lamp/sign and Ignore. There is **no grass class**.
@@ -19,7 +19,7 @@
 - **Already on disk:** May chunks 0 (campus road) and 1 (forest from about +45 s).
 
 ## 1. Choose Scene A: guess and check
-**Criteria:** a region with tree trunks, where the grass is **low in May** and **high in June**. We use 2 consecutive chunks per run.
+**Criteria:** a region with tree trunks, where the grass is **low in May** and **high in June**. We use 3 consecutive chunks per run (chunks must be consecutive).
 
 1. **June:** guess a chunk in the forest part of the run. Start at about chunk 18; 18–25 is the expected range.
    - Fetch it with `00_fetch_chunk.py --chunk N` and extract it.
@@ -28,7 +28,7 @@
 2. **May:** guess the chunk that covers the same place. Start with the same index.
    - Fetch it and look at its contact sheet: we need low grass and trunks.
    - Same place = the May and June `/icp_odom` xy tracks overlap, which can be checked because the two label maps share coordinates. The overlap is used only to choose bags, not to align data.
-3. **Second chunk:** add the neighbour chunk, before or after, that stays in the region, in each run.
+3. **More chunks:** extend to neighbouring chunks, before or after, that stay in the region in each run. Prefer an out-and-back (a backtrack pass), because the return pass can serve as a spatial hold-out (§5).
 4. Put the chosen chunks in `configs/sessions/*.yaml` (`window.chunk_files`; start/end offsets if needed). Record the choice and the contact sheets in `docs/experiments.md`.
 5. **June check:** June `/icp_odom` must lie on the June label map, i.e. the label map frame equals the `/icp_odom` frame.
    - This check is needed for the June evaluation.
@@ -138,6 +138,14 @@ Two extra runs: the same as core B and R with camera training on (`train-lidar-o
 - **Caveat 3, what the extension answers:** does adding the RGB loss improve or degrade the lidar geometry of B and R? Compare the §5 lidar metrics of core vs +cam for each model.
 
 ## 5. Evaluation: Model 1 vs Model 2 (June only, held-out June poses)
+**Held-out poses: two candidate splits** (decide before the June runs; B and R always use the same split):
+- **Interleaved (default):** SplatAD's LINSPACE split with `train_fraction` from the session config. Eval poses sit between train poses, so this measures interpolation.
+- **Backtrack hold-out (candidate):** June 21 → 22 is an out-and-back through the dense stand. Train on chunks 20+21, evaluate on the return pass (chunk 22), which views the same trunks from a few metres to the side.
+  - It is harder (lateral novel views) but closer to the question: does the trunk geometry hold from a viewpoint the model never trained on?
+  - It needs a split override in `VikingHillDataParser`: eval = frames inside a configured time range, i.e. the backtrack chunk. That is a new transform, T48, with a known-answer test.
+  - Radar seeds come from the train split only (CLAUDE.md rule 5), so in this split they come from chunks 20+21.
+  - May has a similar return section (the chunk-8 loop and chunk 9), if May needs the same split.
+
 **Rendered lidar point cloud** (`08_render_lidar_pointcloud.py`, inside the SplatAD container). For each eval lidar pose:
 1. call `filter_lidar_pred_and_gt(output_point_cloud=True)`;
 2. go lidar → world, then apply `inv(w2m)` to reach the map frame;
@@ -174,6 +182,8 @@ Two extra runs: the same as core B and R with camera training on (`train-lidar-o
 | T45 | cuboid detection rate | points inside / outside a rotated box give the exact rate |
 | T46 | trunk precision / FP clusters | one matched and one unmatched synthetic cylinder give precision 0.5 and 1 FP |
 | T47 | BEV raster | a known point set gives exact pixel counts |
+| T49 (done) | manifest sweep period covers the per-point time of every extracted sweep | derived period kept unless a longer \|t\| is written; a synthetic chunk with stretched sweeps passes the contract after an incremental, fresh or resumed run |
+| T48 | time-range split override (backtrack hold-out, only if chosen) | frames inside the eval range go to eval and all others to train; both splits non-empty and disjoint |
 
 ## 7. File structure (new items marked +)
 ```
