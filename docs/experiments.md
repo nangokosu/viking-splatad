@@ -26,8 +26,8 @@ Chosen 2026-10-19 with `scripts/02_scene_quicklook.py`; the contact sheets and t
 | may_A | may_short_grass (Scene A chunks) | `splatad` | – | – | SplatAD out of the box on forest. Held-out PSNR/SSIM/LPIPS, lidar metrics, rendered point cloud. |
 | june_B | june_tall_grass (Scene A chunks) | `splatad`, no photometric loss | – | – | Core Model 1: lidar under high vegetation. |
 | june_R | june_tall_grass (same chunks, split, seed and steps) | `splatad-radar`, no photometric loss | yes | opacity loss | Core Model 2: radar init + radar opacity loss. |
-| june_B_cam | as june_B | `splatad` (camera on) | – | – | Extension (approval needed): photometric loss added to B. |
-| june_R_cam | as june_R | `splatad-radar` (camera on) | yes | opacity loss | Extension (approval needed): photometric loss added to R. |
+| june_B_cam | as june_B | `splatad` (photometric loss on) | – | – | Extension (approval needed): photometric loss added to B. |
+| june_R_cam | as june_R | `splatad-radar` (photometric loss on) | yes | opacity loss | Extension (approval needed): photometric loss added to R. |
 | june_R_depth | as june_R | `splatad-radar`, no photometric loss | yes | opacity + depth loss | Extension (approval needed): radar depth loss (T44). |
 
 ## Results
