@@ -1,14 +1,27 @@
 # CLAUDE.md — viking-splatad
 
-Goal: render the Viking Hill forest with SplatAD (neurad-studio). Plan: `~/.claude/plans/start-a-new-claude-cosmic-cascade.md`.
+Goal: answer the team's research question (`docs/proposal/`): *does adding 4D radar to LiDAR+camera SplatAD improve tree-trunk reconstruction when tall grass occludes the trunks?*
+
+Current scope: June only, two runs.
+- **B:** stock SplatAD.
+- **R:** SplatAD with radar seed Gaussians and a label-free radar geometric regularizer. Radar is **never rendered**.
+
+May is used only as a pipeline readiness check (a May forest render).
+
+Plan: `docs/PLAN.md`. SplatAD internals: `docs/research/splatad_extension_points.md`. Phase-1 findings and the T1–T33 table: `~/.claude/plans/start-a-new-claude-cosmic-cascade.md`.
 
 ## Rules (in addition to ~/CLAUDE.md, which still applies: heavy comments, descriptive names, no hardcoded values)
 1. Every conversion/calibration function is decorated `@transform("T<n>", "<description>")` (see `src/viking_splatad/registry.py`).
 2. Every registered transform has at least one unit test marked `@pytest.mark.covers("T<n>")`. `tests/test_traceability.py` enforces this statically.
 3. Unit tests use synthetic known-answer input; expected values are computed in the test from first principles.
 4. Converter output must satisfy the SplatAD input contract (`contract/splatad_contract.py`); never hand data to the GPU box without a passing contract report.
-5. Radar never enters the SplatAD dataset (SplatAD asserts no radars); it is a sidecar for alignment diagnostics.
-6. Ground-truth cuboids stay separate from SplatAD inputs (`data/gt/`), used only for occupancy evaluation.
+5. Radar is never a SplatAD *sensor*: `radars=()` stays empty because SplatAD asserts there are no radars. Radar is never rendered. It may enter SplatAD **only** as the `radar_seeds` metadata:
+   - built offline in the map frame (`radar_init/`, `scripts/07_build_radar_seeds.py`);
+   - transformed into the dataparser frame only by `VikingHillDataParser`, for the train split only;
+   - gated by the contract.
+
+   The seeds serve two purposes: extra Gaussians at init, and the query points of the label-free radar loss. Raw radar is otherwise only a sidecar for alignment diagnostics.
+6. Ground-truth cuboids stay separate from SplatAD inputs (`data/gt/`) and are used only for evaluation (occupancy, trunk mask). They never become seeds, seed filters or loss targets.
 7. SplatAD training/rendering needs CUDA, so it runs only on the CS Lab Slurm cluster (see "GPU training on Slurm" below). Everything else (tests, conversion, non-CUDA GPU work) runs on the Mac, which may use its own GPU (MPS).
 8. Network fetches use an anonymous identifier (e.g. `viking-splatad/0.1`); no personal info in headers, URLs or bodies.
 9. Run Python with the project venv: `uv run pytest`.

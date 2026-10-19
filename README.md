@@ -3,7 +3,12 @@
 Convert the Viking Hill radar/lidar/camera dataset (ROS2 MCAP) into inputs for SplatAD (neurad-studio) and render the forest.
 May (short grass) and June (tall grass) are separate sessions with separate configs, raw dirs, datasets and GT.
 
-Plan and findings: `~/.claude/plans/start-a-new-claude-cosmic-cascade.md`. Project rules: `CLAUDE.md`.
+Research question and proposal: `docs/proposal/`.
+- **Execution plan:** `docs/PLAN.md`. It runs June SplatAD baseline (B) against SplatAD with radar seed Gaussians and a radar geometric regularizer (R). Radar is never rendered.
+- **SplatAD internals:** `docs/research/splatad_extension_points.md`.
+- **Experiments:** `docs/experiments.md`.
+- **Phase-1 findings:** `~/.claude/plans/start-a-new-claude-cosmic-cascade.md`.
+- **Project rules:** `CLAUDE.md`.
 
 ## Per-session runbook (replace `may_short_grass` with `june_tall_grass`)
 
