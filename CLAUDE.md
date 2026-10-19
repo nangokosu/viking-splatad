@@ -39,6 +39,17 @@ Source: https://support.cs.toronto.edu/systems/slurmresource.html
 7. **Monitor:** `squeue -u $USER`, then `sacct` after the job ends. `scancel <id>` if it's stuck.
 8. **Clean up:** copy outputs off scratch before it expires.
 
+## Session summary (read at start, overwrite at end)
+- **Start of session:** the last session's summary is imported below. Treat it as the current state and verify file/flag names it mentions before relying on them.
+- **End of session** (when the user wraps up, or after the last task of the session): **overwrite** `docs/SESSION_SUMMARY.md`; never append. It contains only:
+  1. the date;
+  2. what was done, with commit SHAs;
+  3. the current state (data on disk, open issues);
+  4. the next steps, in order.
+  Keep it short, current-state only, with no history of earlier sessions (git has that). Commit it with the session's last commit.
+
+@docs/SESSION_SUMMARY.md
+
 ## Verification workflow (independent test agent)
 - Transformation/calibration tests are run by the project agent `transform-test-runner` (`.claude/agents/`), which has its own context and is READ-ONLY (no Edit/Write; a PreToolUse hook, `.claude/hooks/readonly_bash_guard.py`, blocks any shell command that could write).
 - After modifying anything under `src/`, `tests/`, `scripts/` or `configs/`, the main agent calls `transform-test-runner` with what changed (files and/or transform ids). The main agent owns all fixes; the test agent only reports.
