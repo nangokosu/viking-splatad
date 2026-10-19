@@ -3,8 +3,8 @@
 Goal: answer the team's research question (`docs/proposal/`): *does adding 4D radar to LiDAR+camera SplatAD improve tree-trunk reconstruction when tall grass occludes the trunks?*
 
 Current scope: **Scene A**, a region with tree trunks, low grass in May and high grass in June. It covers 2 consecutive bag chunks per run, chosen by guess and check. June gets two runs:
-- **B:** stock SplatAD, trained on lidar only.
-- **R:** SplatAD trained on lidar only, plus radar seed Gaussians and a label-free radar opacity loss near the seeds. Radar is **never rendered**.
+- **B:** stock SplatAD with no photometric loss. The camera still colours the initial Gaussians.
+- **R:** the same as B, plus radar seed Gaussians and a label-free radar opacity loss near the seeds. Radar is **never rendered**.
 
 Extensions, each run only with the user's approval: the photometric loss (B+cam, R+cam) and the radar depth loss.
 

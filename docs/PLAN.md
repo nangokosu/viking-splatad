@@ -60,7 +60,7 @@
   - **T36 seed Gaussians:**
     - mean = the voxel centroid;
     - covariance = R_ray·diag(σ_r², (rΔaz)², (rΔel)²)·R_rayᵀ, from the radar resolution;
-    - colour painted from the nearest-in-time train camera only if that view is unobstructed (no closer lidar return in the seed's pixel footprint, §4.3); otherwise grey. Colour matters only for the photometric extension; core runs never train on colour.
+    - colour painted from the nearest-in-time train camera only if that view is unobstructed (no closer lidar return in the seed's pixel footprint, §4.3); otherwise grey. The colour initialises the radar Gaussians in every run, like SplatAD's `paint_points` for the lidar seeds. Only the photometric extension then trains on colour.
 - **In the parser, after `super()`** (all pure numpy in `viking_conversions.py`):
   1. **Load and verify** the files: tags, sha256 and session.
   2. **T39 frame:** with `w2m = dataparser_transform`, set μ' = Rμ + t, origins' = R·origins + t and Σ' = RΣRᵀ. Assert scale == 1.
@@ -84,7 +84,10 @@
 - May is not compared with June numerically. It shows that SplatAD renders this kind of forest acceptably under short grass.
 
 ## 4. June models (same chunks, split, seed and step count)
-**Core June runs train on lidar only** (no photometric loss). They use SplatAD's built-in `--pipeline.datamanager.train-lidar-only True` (`full_images_lidar_datamanager.py:83, 446`): no training step draws a camera image, while the cameras stay loaded. The judged output is lidar geometry, so the core comparison is lidar + radar. The photometric loss is an extension (§4.3).
+**Core June runs have no photometric loss.** They use SplatAD's built-in `--pipeline.datamanager.train-lidar-only True` (`full_images_lidar_datamanager.py:83, 446`): no training step draws a camera image.
+- **The camera is still used to initialise the Gaussians.** SplatAD's `paint_points` colours the lidar seeds, and T36 colours the radar seeds.
+- The judged output is lidar geometry, so the core comparison is lidar + radar losses.
+- The photometric loss is an extension (§4.3).
 - **Model 1 = B:** stock `splatad`, lidar-only. The lidar is partly blocked by high vegetation, so we expect missing or blurred trunk bases.
 - **Model 2 = R:** `splatad-radar` = `SplatADRadarModel(SplatADModel)`, lidar-only plus radar.
   - It is registered through `NERFSTUDIO_METHOD_CONFIGS`, so neurad needs no patch.
