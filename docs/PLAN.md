@@ -60,7 +60,7 @@
   - **T36 seed Gaussians:**
     - mean = the voxel centroid;
     - covariance = R_ray·diag(σ_r², (rΔaz)², (rΔel)²)·R_rayᵀ, from the radar resolution;
-    - colour painted from the nearest-in-time train camera, or grey if no camera sees it.
+    - colour painted from the nearest-in-time train camera only if that view is unobstructed (no closer lidar return in the seed's pixel footprint, §4.3); otherwise grey.
 - **In the parser, after `super()`** (all pure numpy in `viking_conversions.py`):
   1. **Load and verify** the files: tags, sha256 and session.
   2. **T39 frame:** with `w2m = dataparser_transform`, set μ' = Rμ + t, origins' = R·origins + t and Σ' = RΣRᵀ. Assert scale == 1.
@@ -123,12 +123,14 @@ No second rasteriser pass: it would overwrite `self.info` and corrupt the MCMC d
 - **Risk:** real June grass stands in front of the trunks. A term that clears everything in front of the seed would delete grass that the lidar saw correctly. So it is applied one-sided only (the trunk is not missing).
 - An R + depth run is a third June run and needs approval.
 
-### 4.3 Photometric loss: one switch, the same for B and R
-- Occluded trunks have no camera colour to learn from, so the June RGB loss may mostly fit grass.
-- `camera_loss: on|off` takes the same value for B and R:
-  - **default on**, which is stock SplatAD;
-  - turned off for both if the June B smoke run shows the camera loss blurs geometry.
-- When off, no image metrics are reported for June.
+### 4.3 Photometric loss: on for June, with caveats (the same for B and R)
+- **Why it stays on:** the June contact sheets show that the low, upward-looking camera sees over the grass. Upper trunks, canopy and far trunks are clearly visible; the grass hides only the trunk bases and the near field. So the RGB loss supervises real trunk geometry and colour above the grass.
+- **Caveat 1, below the grass the camera sees grass.** This is consistent with the scene: grass Gaussians in front occlude a radar-kept trunk base in the render, so the RGB loss puts almost no gradient on it and does not fight the radar opacity loss.
+  - The risk is seed colour. T36 paints a seed only if the camera's view of it is unobstructed: no lidar return from the same camera frame projects within the seed's pixel footprint at a smaller depth. Otherwise the seed is grey, so trunk-base seeds don't start out grass-coloured.
+- **Caveat 2, image metrics cannot show the radar gain where it matters.** Below the grass the GT pixels are grass, so PSNR there measures grass.
+  - June image metrics are a "radar does not hurt" check.
+  - They are reported for the full frame and inside the **trunk-above-grass mask**: June trunk cuboids, clipped above the grass height measured from the lidar (§5), projected into eval cameras.
+- **Caveat 3, fallback:** `camera_loss: on|off` stays a config switch with the same value for B and R. It is turned off for both only if the June B smoke run shows the RGB loss degrading the lidar geometry (lidar depth/Chamfer clearly worse than a camera-off smoke run).
 
 ## 5. Evaluation: Model 1 vs Model 2 (June only, held-out June poses)
 **Rendered lidar point cloud** (`08_render_lidar_pointcloud.py`, inside the SplatAD container). For each eval lidar pose:
@@ -145,7 +147,7 @@ No second rasteriser pass: it would overwrite `self.info` and corrupt the MCMC d
 | **Object detection rate** per class (T45) | fraction of kept cuboids with ≥ n_min rendered points inside. n_min is derived from the GT June lidar point density on the same cuboids at the same poses | R > B |
 | **Trunk precision / false-positive trunks** (T46) | (a) fraction of rendered points in the trunk height band that fall inside a GT object cuboid; (b) the number of trunk-like vertical clusters matching no cuboid | R ≥ B (radar must not invent trunks) |
 | Lidar depth / Chamfer / ray-drop | SplatAD built-in, on eval lidars | report |
-| Camera PSNR / SSIM / LPIPS | only if `camera_loss: on` | report |
+| Camera PSNR / SSIM / LPIPS | full frame and inside the trunk-above-grass mask (§4.3) | R ≈ B (radar must not hurt) |
 
 **Figures (`09_compare_runs.py`):**
 - **BEV** (T47): rendered points B | R | GT June lidar, with cuboid outlines;
@@ -157,7 +159,7 @@ No second rasteriser pass: it would overwrite `self.info` and corrupt the MCMC d
 |---|---|---|
 | T34 | radar → map accumulation | a known pose + extrinsic give the analytic map point |
 | T35 | trunk-candidate selection | the Doppler filter keeps a static target and drops a mover; height band and lidar-sparse filters on synthetic points |
-| T36 | seed covariance | eigenvectors lie along r̂, with eigenvalues σ_r², (rΔaz)², (rΔel)² |
+| T36 | seed covariance + occlusion-aware colour | eigenvectors lie along r̂, with eigenvalues σ_r², (rΔaz)², (rΔel)²; a seed behind a synthetic closer lidar point gets grey, an unobstructed one gets its pixel colour |
 | T39 | seeds → dataparser frame | w2m applied to Σ gives RΣRᵀ |
 | T40 | time / scene-box crop | exact kept and dropped counts |
 | T41 | radar Gaussian group | count = M; scales from Σ, not kNN; without seeds = stock SplatAD |
@@ -190,7 +192,7 @@ scripts/+07_build_radar_seeds.py +08_render_lidar_pointcloud.py +09_compare_runs
    - (a) radar seeds T34–T36 + `07`;
    - (b) parser/contract/model T39–T43;
    - (c) eval `08`/`09` T45–T47.
-4. **June B and R** on Slurm: a smoke run each, then the full step count. Decide the camera-loss switch after the B smoke run.
+4. **June B and R** on Slurm: a smoke run each, then the full step count. Camera loss stays on; the B smoke run is compared with a camera-off smoke run to confirm it does not degrade lidar geometry (§4.3).
 5. **Evaluate** (§5) and write `docs/experiments.md`. Optional: R + depth loss (T44), with approval.
 
 ## Verification

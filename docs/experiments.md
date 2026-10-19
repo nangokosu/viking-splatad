@@ -34,5 +34,5 @@ June metrics are computed at held-out June poses, against June cuboids (Tree_tru
 - **Object detection rate per class:** does the rendered lidar put points on each in-range cuboid?
 - **Trunk precision and false-positive trunk clusters.**
 - **Built-in lidar metrics:** depth, Chamfer and ray-drop.
-- **Camera metrics:** only if `camera_loss: on` for both runs.
+- **Camera metrics:** PSNR/SSIM/LPIPS, full frame and inside the trunk-above-grass mask; a "radar does not hurt" check (camera loss on for both runs, PLAN §4.3).
 - **Figures:** BEV and occupancy figures B | R | GT lidar.
