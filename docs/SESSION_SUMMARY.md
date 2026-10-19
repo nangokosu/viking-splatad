@@ -10,12 +10,13 @@
 - **Scene A chosen** (`63afb20`) by guess-and-check with the new `scripts/02_scene_quicklook.py`, which makes a contact sheet plus a track over the cuboids:
   - **May chunks 7+8** and **June chunks 19+20**, on the same gravel path and birch stand;
   - pinned in `configs/sessions/*.yaml` (`window.chunk_files`);
-  - evidence in `docs/experiments.md` and `reports/scene_a/`.
+  - evidence in `docs/experiments.md` and `reports/scene_a/`, which holds the chosen chunks plus the rejected guesses June 18 and May 19/20 (`72f6594`).
 - **Datasets:** both Scene A datasets are extracted and the SplatAD contract PASSES for both.
   - `data/intermediate/may_short_grass`: 1,666 camera frames / 1,676 lidar scans.
   - `data/intermediate/june_tall_grass`: 1,394 / 1,401.
-  - The old May chunk 0+1 dataset is now `data/intermediate/may_chunks0_1_smoke`.
+  - The old May chunk 0+1 dataset is now `data/intermediate/may_chunks0_1_smoke`, kept for the Slurm smoke run (`f26545b`).
 - **Env** (`4b44427`): `py7zr` and `requests` declared in pyproject. The venv was rebuilt with `uv sync --extra dev`, and plain `uv run pytest` works (196 passed).
+- **Session summary rule** (`18baeb3`): CLAUDE.md imports this file. It is overwritten at the end of every session.
 
 ## State / open issues
 - **Raw bags on disk:** May 0, 1, 7, 8 and June 19, 20. The rejected chunks were deleted.
@@ -23,6 +24,7 @@
 - **No SplatAD run yet.** The Docker/Apptainer image has not been built or run on Slurm.
 - **Real-data test:** `tests/integration/test_align_report.py` hard-codes `data/intermediate/may_short_grass`, so it now runs on Scene A.
 - **Network:** `-m real_data` includes a live Zenodo test (anonymous). Use `-k "not zenodo"` to avoid the network.
+- **Untracked:** `.DS_Store` (not in `.gitignore`).
 
 ## Next steps
 1. Build the image (`docker/Dockerfile.splatad`) and run the Slurm smoke test on `may_chunks0_1_smoke` (CLAUDE.md "GPU training on Slurm").
