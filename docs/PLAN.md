@@ -1,274 +1,203 @@
-<!-- In-repo execution plan (approved 2026-10-18). Supersedes ~/.claude/plans/start-a-new-claude-cosmic-cascade.md,
-     which keeps the Phase-1 findings, the contract table and T1–T33. -->
+# Plan: June Scene A, SplatAD (B) vs SplatAD + radar (R)
 
-# June: SplatAD baseline vs SplatAD + radar init + radar loss (proposal §3)
+> **Ground rules**
+> - **No May ↔ June mapping.** No ICP and no cross-run registration. Poses and labels are never transferred between runs. Each run is processed and evaluated in its own frame.
+> - **3DGS renders new views of the same scene, not new scenes.** Training and evaluation use the same scene; evaluation uses held-out poses.
+> - **Radar is never rendered.** It enters training only as (1) seed Gaussians and (2) loss terms. The judged output is SplatAD's **rendered lidar point cloud**: `render_lidar` turns the scene's Gaussians into a lidar scan.
+> - **Training is self-supervised.** The radar losses use no labels. Cuboids are used only for evaluation (CLAUDE.md rule 6).
 
-> **Radar's role, stated plainly.** We are **not** rendering radar. We do not add a radar sensor, a radar renderer, radar images, or radar evaluation metrics.
->
-> Radar is used in exactly two ways, both in service of the **lidar and camera** reconstruction:
-> 1. **Initialization.** Extra seed Gaussians are placed where radar detects trunks that the lidar misses.
-> 2. **Geometric regularizer.** A loss term asks the scene to contain opaque geometry at those radar-detected locations. This compensates for lidar returns that tall grass blocks.
->
-> The outputs we judge are SplatAD's **rendered lidar (→ point cloud) as corrected by radar** and **rendered camera images**.
+## Facts the plan relies on (measured)
+- **Bag chunks:** May has 49 chunks over 4068 s, so about 83 s each. `metadata.yaml` lists each chunk's `starting_time` and `duration`.
+- **Frames per chunk:**
+  - `/icp_odom` runs at 10 Hz, so a chunk holds about 830 poses. They are about 7 cm apart at the May chunk-0 speed (73 m in 99.8 s).
+  - Camera and lidar also run at 10 Hz, so 2 chunks give about 1,600–1,700 frames per sensor.
+- **Labels** (`short_and_tall_grass_labels.json`):
+  - There is one sample per run: May, with 467 cuboids, and June, with 549.
+  - The classes are Tree_trunk(1), Tree_canopy(2), Rock(3), Bush_or_small_tree(4), Car, Building, Lamp/sign and Ignore. There is **no grass class**.
+  - The June map is "registered" to May: the same car cuboid sits at ≈(0.3, 3.3) in both.
+  - The labels come from accumulated lidar maps, so they include objects that a single traversal may not see.
+- **Already on disk:** May chunks 0 (campus road) and 1 (forest from about +45 s).
 
-## Context
-The team proposal (`docs/proposal/Final_Forest_Reconstruction_Proposal.pdf`, transcription in `docs/proposal/proposal.md`) asks whether adding 4D radar to LiDAR+camera 3DGS improves trunk reconstruction under foliage occlusion. Until now the repo only targeted May rendering.
+## 1. Choose Scene A: guess and check
+**Criteria:** a region with tree trunks, where the grass is **low in May** and **high in June**. We use 2 consecutive chunks per run.
 
-**Scope (user decisions):**
-- **May** is a readiness check only. Rendering a May forest scene is the evidence that poses, calibration and the processing scripts are correct.
-- **June (tall grass)** gets exactly **two runs**:
-  - **B** = SplatAD with lidar + camera;
-  - **R** = SplatAD + radar-guided init (§3.1) + a radar loss inside SplatAD training (§3.2).
-- **Goal:** SplatAD's rendered lidar turned into a point cloud, plus held-out camera renders.
+1. **June:** guess a chunk in the forest part of the run. Start at about chunk 18; 18–25 is the expected range.
+   - Fetch it with `00_fetch_chunk.py --chunk N` and extract it.
+   - Look at the camera contact sheet: we need high grass in front of visible trunks.
+   - If it fails, try the next guess.
+2. **May:** guess the chunk that covers the same place. Start with the same index.
+   - Fetch it and look at its contact sheet: we need low grass and trunks.
+   - Same place = the May and June `/icp_odom` xy tracks overlap, which can be checked because the two label maps share coordinates. The overlap is used only to choose bags, not to align data.
+3. **Second chunk:** add the neighbour chunk, before or after, that stays in the region, in each run.
+4. Put the chosen chunks in `configs/sessions/*.yaml` (`window.chunk_files`; start/end offsets if needed). Record the choice and the contact sheets in `docs/experiments.md`.
+5. **June check:** June `/icp_odom` must lie on the June label map, i.e. the label map frame equals the `/icp_odom` frame.
+   - This check is needed for the June evaluation.
+   - If it fails, a one-off June-only alignment is allowed, because it is not May↔June.
 
-**The radar loss is label-free, like the rest of SplatAD's training.** Every stock SplatAD loss is self-supervised against a raw sensor measurement:
-- camera RGB against the captured pixel;
-- lidar depth, intensity and ray-drop against the measured scan.
+## 2. Data parser: lidar + camera + radar seeds
+- **The parser.** Our `VikingHillDataParser(ADDataParser)` (exists, T27) gains `radar_inputs_dir: Optional[Path]`.
+  - `None` is run B, and the outputs are byte-identical to today's.
+  - Upstream neurad is not edited beyond the existing `OUSTER_OS0_32` patch.
+- **Radar is not a sensor.** `radars=()` stays empty, because SplatAD asserts there are no radars.
+  - Radar enters as `metadata["radar_seeds"]`, which `SplatADPipeline` deep-copies into `model.kwargs["metadata"]`.
+  - It is attached for the train split only.
+- **Offline seeds** (`scripts/07_build_radar_seeds.py` → `data/intermediate/june_tall_grass/radar_inputs/`):
+  - built from `/hugin_raf_1/radar_data`;
+  - in the map frame, in absolute float64 seconds;
+  - stored as `radar_seeds.npz`: means, covariances, rgb, sensor_origin, support_count, time span;
+  - with `radar_inputs.json` holding the frame/time tags, the config hash and every derived threshold;
+  - with the sha256 recorded in `manifest.json`.
+  The steps:
+  - **T34 accumulate:**
+    - T_map_radar(t) = T_map_base(t+δ_radar)·T_base_radar;
+    - the poses are interpolated with T3, and δ_radar comes from T24;
+    - T_base_radar is the June `high_grass` extrinsic (T5).
+  - **T35 select trunk candidates (GT-free; every threshold derived from data):**
+    - static: Doppler residual within k·σ, with σ the MAD of the per-scan residuals;
+    - persistent: voxel hit count ≥ a configured percentile;
+    - in the trunk height band: above the lidar ground, below the canopy onset;
+    - lidar-sparse: no train-split lidar seed within the radar's lateral resolution, so seeds land where vegetation blocks the lidar.
+  - **T36 seed Gaussians:**
+    - mean = the voxel centroid;
+    - covariance = R_ray·diag(σ_r², (rΔaz)², (rΔel)²)·R_rayᵀ, from the radar resolution;
+    - colour painted from the nearest-in-time train camera, or grey if no camera sees it.
+- **In the parser, after `super()`** (all pure numpy in `viking_conversions.py`):
+  1. **Load and verify** the files: tags, sha256 and session.
+  2. **T39 frame:** with `w2m = dataparser_transform`, set μ' = Rμ + t, origins' = R·origins + t and Σ' = RΣRᵀ. Assert scale == 1.
+  3. **T40 crop:** shift the time spans by `time_offset` and keep the sensor window. Crop to the `scene_box`, and report the dropped count.
+- **Contract additions:**
+  - sha256 and tags match;
+  - all values finite;
+  - every Σ is SPD;
+  - the seed spans lie inside the sensor window;
+  - the retained fraction is reported.
+  No Slurm run without a passing report.
 
-The radar loss follows the same pattern. The radar return is the target, meaning "something reflective is here". It keeps the proposal's form:
+## 3. May Scene A: does SplatAD work out of the box?
+- **Data:** the May Scene A chunks. May chunk 1 (forest, on disk) is the first Slurm/Docker smoke test.
+- **Run:** stock `splatad`, lidar + camera, with the LINSPACE train/eval split (`train_fraction` from the session config).
+- **Held-out metrics:**
+  - PSNR, SSIM and LPIPS on eval cameras;
+  - lidar depth, Chamfer and ray-drop on eval lidars;
+  - the rendered lidar point cloud (`08`).
+- **Pass:** the held-out renders show the forest, and the metrics beat a mean-colour / mean-depth baseline computed by the same script.
+- May is not compared with June numerically. It shows that SplatAD renders this kind of forest acceptably under short grass.
 
-- **Per-point loss:** L_i = −log p_i(y_i), with y_i = *occupied* for every radar seed.
-- **Occupancy probability:** p_i(occupied) = 1 − exp(−D(p_i)), the standard volumetric opacity of the Gaussian density D at the seed.
-- **Weight:** w_i = 1 + α·V_i.
-- **Total:** L_radar = (1/N) Σ w_i·L_i.
+## 4. June models (same chunks, split, seed and step count)
+- **Model 1 = B:** stock `splatad`, exactly as in May. The lidar and camera are partly blocked by high vegetation, so we expect missing or blurred trunks.
+- **Model 2 = R:** `splatad-radar` = `SplatADRadarModel(SplatADModel)`.
+  - It is registered through `NERFSTUDIO_METHOD_CONFIGS`, so neurad needs no patch.
+  - It uses the same trainer config as `splatad`.
 
-The radar term **compensates for occluded lidar**, and the vegetation weight concentrates it where grass blocks the lidar. Two consequences:
-- **No cuboid labels and no semantic head.** The trunk indicator [y_i = trunk] is replaced by the GT-free trunk-candidate selection applied to the seeds.
-- **V_i:** in June-only training the binary seasonal V_i = 1 everywhere, so w_i = 1 + α is a constant that only rescales λ. The **continuous line-of-sight V_i = N_v/N_k** (proposal stretch goal) is what makes the weight spatially selective. It is scheduled after the core R run works.
+### 4.1 Radar initialization (T41)
+In `create_gauss_param_dict`:
+1. Call `super()` first. The lidar, random and actor groups are built as before.
+2. Append one Gaussian per radar seed:
+   - mean = the seed mean;
+   - scales and rotation from the eigendecomposition of the seed covariance (det forced to +1);
+   - colour = the painted rgb;
+   - opacity = `logit(radar_seed_opacity)`;
+   - static id.
+No new per-Gaussian parameters are added, so the MCMC strategy and the optimizers work unchanged.
 
-The proposal's α/λ typo is resolved as α.
+### 4.2 Radar losses (label-free, computed directly on the Gaussian parameters)
+No second rasteriser pass: it would overwrite `self.info` and corrupt the MCMC densification statistics.
 
-## Research findings (neurad-studio @ `8ba9b51`; gsplat = carlinds/splatad, unpinned upstream)
-These go into `docs/research/splatad_extension_points.md` with file:line citations.
+**Opacity loss (main term).** "Gaussians near a radar seed should be opaque."
+- **T42 gate:** Gaussian k is near seed i if d_kiᵀ Σ_i⁻¹ d_ki ≤ χ²₃(q).
+  - d_ki is the vector from seed i to Gaussian k.
+  - The quantile q comes from config, and the threshold is computed with `scipy.stats.chi2.ppf`.
+  - So the radius **X is the radar's own resolution ellipsoid**, not a hand-set number.
+  - The gate is recomputed every step with a chunked kNN over static Gaussians.
+- **T43 loss:** L_opa = λ_opa · mean over gated Gaussians of −log σ(o_k). It pulls them towards opacity 1.
+- **Why the radar Gaussians stay:** MCMC relocates only low-opacity Gaussians, so opaque Gaussians at radar seeds are not recycled.
+- **Setting λ_opa:** the stock `mcmc_opacity_reg` pushes every opacity down. So λ_opa is set so that the step-0 radar term equals the step-0 `mcmc_opacity_reg` (measured and logged).
+- **Logged every 100 steps:** the fraction of seeds with ≥1 gated Gaussian.
+  - If it collapses, switch to the seed-density form, which still gives a gradient when no Gaussian is near: −log(1 − exp(−D(q_i))), with D(q) = Σ_k σ(o_k)·exp(−½dᵀ(Σ_k+Σ_i)⁻¹d) at the fixed seed means.
+- The radar losses only say "occupied here", never "empty here". Radar free space is unreliable (lateral blur, multipath), so free space stays with the lidar ray-drop and line-of-sight losses.
 
-- **Seeding path.** The AD dataparser never sets `points3D_xyz`. Instead, `SplatADPipeline` (`pipelines/splatad_pipeline.py:106-154`):
-  1. takes the train lidar scans and keeps points with norm < `valid_lidar_distance_threshold`;
-  2. converts them to world coordinates and adds the `paint_points` RGB;
-  3. passes `seed_points=(xyz, rgb, times)` to `model.setup(..., metadata=train_dataset.metadata, …)`.
-  `train_dataset.metadata` is a **deepcopy of the dataparser metadata**. Any key we add in the dataparser therefore reaches the model as `self.kwargs["metadata"]`.
-- **Model init.** `SplatADModel.populate_modules` (`models/splatad.py:302-335`):
-  1. splits the seeds into static and actor points;
-  2. appends 2×300k random far and close points to the static set;
-  3. calls `create_gauss_param_dict(dynamic, [static], flip)`.
-  Each static group gets its own joint kNN-3 scale, random quats, rgb/255, `features_rest` ~ N(0,1), `init_opacities`, and `id = n_actors`. The strategy state is initialised afterwards (:400-430), and the optimizers are built later from `get_param_groups`. **So Gaussians appended inside `create_gauss_param_dict` are picked up by the strategy and optimizers automatically.**
-- **Dataparser frame** (`ad_dataparser.py:176-244`):
-  - `_adjust_times` makes all times relative to `time_offset = min(camera ∪ lidar times)`.
-  - `_adjust_poses` left-multiplies every pose by `w2m = inv(mean-trajectory pose)` (3×4), returned as `dataparser_transform`. Scale is 1.
-  - The metadata dict is open.
-  - `assert radars is None` (:180) blocks radar *as a sensor*.
-- **Densification.** gsplat ops carry every `gauss_params` entry, but MCMC relocation recycles low-opacity Gaussians elsewhere. Radar Gaussians can therefore move or vanish. That is why the loss queries the *fixed seed locations*, not the Gaussians themselves. N changes every 100 steps between steps 500 and 15000.
-- **Losses.**
-  - The trainer sums every `get_loss_dict` entry (`engine/trainer.py:551`).
-  - The stock terms are: camera L1 + SSIM; MCMC scale and opacity regularisers; camera velocity; lidar depth L1, intensity MSE, ray-drop BCE, and line-of-sight opacity.
-  - Methods register via `NERFSTUDIO_METHOD_CONFIGS`, so no neurad patch is needed.
-  - A second rasteriser call per step would corrupt `self.info` and the strategy, so the radar loss is computed directly on the Gaussian parameters, without rasterising.
-- **Lidar → point cloud.**
-  - `ns-render --render-point-clouds` fails for SplatAD (`Unknown sensor type`).
-  - The working path is `filter_lidar_pred_and_gt(..., output_point_cloud=True)` (`splatad.py:1294-1314`). It keeps rays with ray-drop ≤ 0.5 and returns points in the lidar frame.
-  - Alternatively, `get_average_eval_image_metrics(dump_img_to_disk=True)` writes the `pred_points` npz files.
+**Depth loss (T44, optional, added only after R works with the opacity loss).** "Gaussians must agree with the radar range as well as the lidar depth."
+- For each seed, cast a ray from `sensor_origin` to the seed.
+- Compute the expected termination depth from the static Gaussians near the ray, in closed form (the 1-D integral of a 3-D Gaussian along a ray).
+- Penalise |E[depth] − radar range| / σ_r.
+- **Risk:** real June grass stands in front of the trunks. A term that clears everything in front of the seed would delete grass that the lidar saw correctly. So it is applied one-sided only (the trunk is not missing).
+- An R + depth run is a third June run and needs approval.
 
-## Dataparser extension for radar (detailed)
+### 4.3 Photometric loss: one switch, the same for B and R
+- Occluded trunks have no camera colour to learn from, so the June RGB loss may mostly fit grass.
+- `camera_loss: on|off` takes the same value for B and R:
+  - **default on**, which is stock SplatAD;
+  - turned off for both if the June B smoke run shows the camera loss blurs geometry.
+- When off, no image metrics are reported for June.
 
-### Which dataparser: **yes, we inherit SplatAD's dataparser**
-SplatAD's dataparser is `ADDataParser`, a generic base class with no Viking support. Our parser is `class VikingHillDataParser(ADDataParser)`:
-- this class already exists in our repo;
-- radar support is added to it;
-- `ADDataParser` itself is not edited; all of its logic is reused through `super()`.
+## 5. Evaluation: Model 1 vs Model 2 (June only, held-out June poses)
+**Rendered lidar point cloud** (`08_render_lidar_pointcloud.py`, inside the SplatAD container). For each eval lidar pose:
+1. call `filter_lidar_pred_and_gt(output_point_cloud=True)`;
+2. go lidar → world, then apply `inv(w2m)` to reach the map frame;
+3. accumulate over the eval poses.
 
+**Ground truth:** June cuboids of Tree_trunk, Bush_or_small_tree (young trees) and Rock. No grass and no canopy.
+- Cuboids are kept only if they lie within lidar range and FOV of at least one eval pose (T32).
+- Objects that this traversal's lidar never saw are kept on purpose. That is where radar should help.
+
+| metric | definition | expectation |
+|---|---|---|
+| **Object detection rate** per class (T45) | fraction of kept cuboids with ≥ n_min rendered points inside. n_min is derived from the GT June lidar point density on the same cuboids at the same poses | R > B |
+| **Trunk precision / false-positive trunks** (T46) | (a) fraction of rendered points in the trunk height band that fall inside a GT object cuboid; (b) the number of trunk-like vertical clusters matching no cuboid | R ≥ B (radar must not invent trunks) |
+| Lidar depth / Chamfer / ray-drop | SplatAD built-in, on eval lidars | report |
+| Camera PSNR / SSIM / LPIPS | only if `camera_loss: on` | report |
+
+**Figures (`09_compare_runs.py`):**
+- **BEV** (T47): rendered points B | R | GT June lidar, with cuboid outlines;
+- occupancy grids (`labels/occupancy.py`) against the cuboids;
+- zooms on trunks that B misses and R recovers.
+
+## 6. New transforms and tests (one known-answer test each; add tests, never edit existing ones)
+| id | what | known-answer test |
+|---|---|---|
+| T34 | radar → map accumulation | a known pose + extrinsic give the analytic map point |
+| T35 | trunk-candidate selection | the Doppler filter keeps a static target and drops a mover; height band and lidar-sparse filters on synthetic points |
+| T36 | seed covariance | eigenvectors lie along r̂, with eigenvalues σ_r², (rΔaz)², (rΔel)² |
+| T39 | seeds → dataparser frame | w2m applied to Σ gives RΣRᵀ |
+| T40 | time / scene-box crop | exact kept and dropped counts |
+| T41 | radar Gaussian group | count = M; scales from Σ, not kNN; without seeds = stock SplatAD |
+| T42 | Mahalanobis gate | a point on the q-ellipsoid is in, slightly outside is out |
+| T43 | opacity loss | hand-computed mean of −log σ(o); zero gated Gaussians gives 0 and is flagged |
+| T44 | ray expected depth (optional) | a single Gaussian on the ray gives its mean depth |
+| T45 | cuboid detection rate | points inside / outside a rotated box give the exact rate |
+| T46 | trunk precision / FP clusters | one matched and one unmatched synthetic cylinder give precision 0.5 and 1 FP |
+| T47 | BEV raster | a known point set gives exact pixel counts |
+
+## 7. File structure (new items marked +)
 ```
-neurad-studio (upstream, pinned 8ba9b51, NOT modified for radar)
-  DataParser
-   └─ ADDataParser                 nerfstudio/data/dataparsers/ad_dataparser.py   ← SplatAD's generic AD parser
-        ├─ PandaSetDataParser, py123d..., WOD...   (upstream dataset parsers, untouched)
-        └─ VikingHillDataParser    src/viking_splatad/splatad/viking_dataparser.py ← OURS, already exists (T27), `viking-data`
-                                   → EXTENDED with radar config fields + a post-processing step
-model side, same pattern:
-  SplatADModel (upstream, untouched) └─ SplatADRadarModel  src/viking_splatad/splatad/radar_model.py ← NEW subclass, method `splatad-radar`
-```
-- **What our subclass already overrides:** `_get_cameras`, `_get_lidars`, `_read_lidars`, `_add_sensor_velocities` and `_get_actor_trajectories`. Its `_generate_dataparser_outputs` registers the lidar model and then calls `super()`.
-- **What changes:**
-  - radar is added only in this file, in our repo;
-  - new config fields (§B);
-  - a step after `super()` returns (§C).
-- **What stays as it is:**
-  - the only neurad source modification remains the existing `OUSTER_OS0_32` lidar-type patch;
-  - everything else is a subclass or a plugin.
-- **Runs B and R use the same parser.**
-  - B: `radar_inputs_dir=None`, which gives byte-identical behaviour to today.
-  - R: `radar_inputs_dir` is set.
-
-**What "radar is not a sensor" means.** `ADDataParser` takes two kinds of input.
-1. **Sensors.** These are listed in config (`cameras=`, `lidars=`, `radars=`).
-   - Each one gets per-frame poses and times, a `sensor_idx`, a train/eval split, a renderer, and a loss against its own measurements.
-   - Listing radar in `radars=` hits `assert radars is None, "Radars not supported yet"` (`ad_dataparser.py:180-181`).
-   - SplatAD also has no radar renderer.
-   - So `radars=()` stays empty.
-2. **Metadata.** This is a free-form dict handed to the model at setup.
-   - Radar enters through it as **one** precomputed set, `radar_seeds`, already in SplatAD's frame and clock.
-   - Each seed is both an extra Gaussian at init and a query point of the label-free radar loss.
-   - Radar is never rendered or held out for evaluation.
-
-### A. Offline radar seeds (CPU, Mac): `scripts/07_build_radar_seeds.py` → `data/intermediate/june_tall_grass/radar_inputs/`
-Everything is computed in the **map frame**, in **absolute float64 seconds** (the same clock as `poses.npz`). The dataparser is the only place that applies `w2m` and `time_offset`, and it does so exactly once. This mirrors the rule that the OpenCV→nerfstudio flip is applied exactly once.
-
-| file | content |
-|---|---|
-| `radar_seeds.npz` | `means_map [M,3] f32`, `covariances_map [M,3,3] f32` (SPD), `rgb [M,3] u8`, `sensor_origin_map [M,3] f32` (mean radar position of the supporting detections; ray start for continuous V), `obstruction_v [M] f32` (NaN = undefined / not computed), `support_count [M] i32`, `first_time_s / last_time_s [M] f64` |
-| `radar_inputs.json` | `frame: "map"`, `time_base: "absolute_s"`, config hash, git SHA, `extrinsics_variant: high_grass`, radar clock offset (T24), every derived threshold (Doppler σ, persistence percentile → count, height band, lidar-sparsity radius), M |
-
-`manifest.json` gains an optional `radar_inputs` entry with the relative path and sha256. This is covered by a **new** writer test; the existing tests stay untouched.
-
-Steps inside the script:
-1. **T34: accumulate.** For each scan, T_map_radar(t) = T_map_base(t + δ_radar) · T_base_radar.
-   - Pose interpolation is T3.
-   - δ_radar comes from T24.
-   - T_base_radar is the June `high_grass` extrinsic from T5.
-2. **T35: trunk candidates, GT-free.** Every threshold is derived from the data:
-   - **static:** |v_doppler − (−v_ego·r̂)| ≤ k·σ_doppler, where σ is the robust MAD of the per-scan residuals;
-   - **persistent:** voxel hit count ≥ a configured percentile;
-   - **trunk height band:** above the lidar ground and below the canopy onset (from the accumulated lidar height histogram);
-   - **lidar-sparse (§3.1, "where foliage blocks LiDAR"):** no train-split lidar seed within the radar's lateral resolution. These lidar seeds are rebuilt the way the pipeline does it: same LINSPACE train indices (T21), same `valid_lidar_distance_threshold`.
-3. **T36: seed Gaussians.**
-   - The mean is the voxel centroid.
-   - The covariance is R_ray · diag(σ_r², (r·Δaz)², (r·Δel)²) · R_rayᵀ. Here r is the median range of the supporting detections. Δaz/Δel/σ_r come from `hugin_radar_startup_params.txt` or the measured beam spacing; this is the 0.87 m at 40 m lateral blur.
-   - The colour is painted from the nearest-in-time train camera (T25 reprojection, undistorted K). Grey if no camera sees the seed.
-4. **(stretch) T44–T46: obstruction_v.**
-   - Build a vegetation grid G(c) from the accumulated lidar.
-   - Run an Amanatides–Woo DDA from `sensor_origin` to the seed.
-   - V = N_v/N_k, or NaN if N_k = 0. NaN gives w = 1.
-
-### B. `VikingHillDataParserConfig`: new fields
-- `radar_inputs_dir: Optional[Path] = None`. `None` means run B; the outputs are identical to today's parser.
-- `radar_time_window: Literal["sensor_window", "all"] = "sensor_window"`. A seed is kept only if its supporting detections overlap the camera/lidar time window that survives `_filter_based_on_time`.
-- `radars` stays `()`.
-
-### C. `VikingHillDataParser._generate_dataparser_outputs`: post-process after `super()`
-1. If `radar_inputs_dir is None`, return the outputs unchanged (run B). A test asserts they are identical.
-2. **Load and verify.** Check that frame == "map", time_base == "absolute_s", the sha256 matches the manifest, and the session matches.
-3. **Pose frame.** `w2m = outputs.dataparser_transform`, with R = w2m[:, :3] and t = w2m[:, 3]. Then:
-   - means' = R·means + t;
-   - origins' = R·origins + t;
-   - Σ' = R·Σ·Rᵀ.
-   Assert `dataparser_scale == 1`, so a future upstream scale fails loudly.
-4. **Time window.** Shift the seed spans by `outputs.time_offset` (in float64) and drop seeds outside the sensor window. Seeds are static, so no per-seed time goes to the model.
-5. **Scene box.** Drop seeds outside `outputs.scene_box.aabb`. Count them and report the count in the contract report.
-6. **Split.** Attach the key only when `split == "train"`, because the model reads `train_dataset.metadata` and eval outputs stay radar-free.
-7. **Attach** `outputs.metadata["radar_seeds"]` in the **dataparser frame**: {`means [M,3] f32`, `covariances [M,3,3] f32`, `rgb [M,3] u8`, `sensor_origins [M,3] f32`, `obstruction_v [M] f32`}.
-
-The numeric parts are pure numpy in `viking_conversions.py`, so they can be tested in the plain venv:
-- **T39** `radar_seeds_to_dataparser_frame(means, covs, origins, w2m)`;
-- **T40** `crop_seeds(time window, scene box)`.
-
-### D. Model: `SplatADRadarModel(SplatADModel)` in `src/viking_splatad/splatad/radar_model.py`
-- **`create_gauss_param_dict` override (T41).**
-  1. Call `super()` first, so the lidar, far and actor groups are built exactly as before.
-  2. If `metadata["radar_seeds"]` exists, concatenate a radar group onto every `gauss_params` entry:
-     - `means`;
-     - `scales = log(√eig(Σ))`;
-     - `quats` from the eigenvectors (det forced to +1, wxyz);
-     - `features_dc = rgb/255`;
-     - `features_rest ~ N(0,1)`;
-     - `opacities = logit(config.radar_seed_opacity)`;
-     - `id = n_actors` (static).
-  No new per-Gaussian parameters are added, so the strategy and optimizers are unchanged.
-- **`get_loss_dict` override: `radar_loss` (T42, T43).** It follows the existing pattern of the MCMC regularisers, computed directly on the Gaussian parameters with no rasterisation.
-  1. Query points q_i are the **fixed seed means from metadata**. A per-step random subset is used.
-  2. The density is D(q_i) = Σ_k σ(o_k)·exp(−½·dᵀ(Σ_k + Σ_seed,i)⁻¹·d), with d = q_i − μ_k, over the K nearest static Gaussians (chunked `torch.cdist`). Adding Σ_seed means the radar blur sets the tolerance, so the loss does not demand sharper geometry than the radar resolves.
-  3. p_i = 1 − exp(−D(q_i)).
-  4. L = (1/N) Σ w_i · (−log(p_i + ε)), with w_i = 1 + α·V_i, where V_i = 1 (binary June) or `obstruction_v` (stretch, NaN → 0).
-  5. `radar_loss = λ_radar · L`. Gradients reach the means, scales, quats and opacities of nearby Gaussians.
-  6. **Scope of the loss:**
-     - It is defined per radar seed, not per Gaussian. Each seed asks "is there enough opacity where radar saw a reflector?"
-     - Seeds come from the accumulated, filtered June scans, not from single raw scans.
-     - Only Gaussians among the K nearest to a seed, within the radar blur, receive a gradient. All others are trained by the stock camera and lidar losses only.
-     - The loss only says "occupied here". It never says "empty here", because radar free space is unreliable (lateral blur, multipath). Free space stays with the lidar ray-drop and line-of-sight losses.
-  7. λ_radar is set so the step-0 radar term equals the step-0 lidar depth term (measured and logged). α comes from config; it only matters with the continuous V.
-- **`radar_method.py`.** A `MethodSpecification` named `splatad-radar`: a copy of neurad's `splatad` TrainerConfig with this model and the Viking dataparser. No new optimizer entries are needed.
-  - B uses the stock `splatad` with `radar_inputs_dir=None`.
-  - R uses `splatad-radar`.
-- **Tests (neurad CPU venv, like T27/T28):**
-  - the radar group count equals M, and its scales come from Σ, not kNN;
-  - with no `radar_seeds`, the model equals stock SplatAD;
-  - `radar_loss` is in the loss dict;
-  - L → 0 when opaque Gaussians sit on every seed;
-  - a single Gaussian gives the analytic D.
-
-### E. Contract (`contract/splatad_contract.py`, new checks)
-- `radar_seeds.npz` sha256 matches the manifest, and the frame and time-base tags are correct.
-- All values are finite.
-- Every Σ is SPD.
-- `obstruction_v ∈ [0,1]` or NaN.
-- Seed spans lie within the sensor window.
-- The post-crop retention fraction is reported.
-
-Rule 4 applies: no Slurm run without a passing report.
-
-## Evaluation (B vs R; same split, same seed, MCMC strategy)
-- **Held-out June camera poses:** PSNR, SSIM and LPIPS (proposal §4). Reported for the full frame and inside a trunk mask (June trunk cuboids projected into the eval cameras).
-- **Lidar:** the built-in depth, Chamfer and ray-drop metrics.
-- **`08_render_lidar_pointcloud.py`** (inside the SplatAD container):
-  1. for each eval lidar, call `filter_lidar_pred_and_gt(output_point_cloud=True)`;
-  2. apply `lidar_to_world`, then `inv(w2m)`, to get the map frame;
-  3. accumulate, then build an occupancy grid with `labels/occupancy.py`;
-  4. render side-by-side visualisations with the trunk cuboids overlaid;
-  5. also produce qualitative trunk renders.
-- Cuboids are used **only for evaluation** (rule 6 unchanged). Training never sees them, so cuboid-based trunk numbers are clean.
-
-## File structure (new items marked +)
-```
-docs/+proposal/{Final_Forest_Reconstruction_Proposal.pdf, proposal.md}   # byte copy (md5 f4409efc…) + transcription w/ equations
-    +research/splatad_extension_points.md   +PLAN.md   +experiments.md
-configs/sessions/june_tall_grass.yaml (forest window)  +radar/june.yaml  +experiments/{may_check,june_B,june_R}.yaml
+configs/sessions/{may_short_grass,june_tall_grass}.yaml (Scene A chunks)  +configs/radar/june.yaml
++configs/experiments/{may_smoke,may_A,june_B,june_R}.yaml
 src/viking_splatad/
-  +radar_init/accumulate.py select.py seeds.py           # T34–T36
-  +radar_loss/occupancy_ce.py                            # D(q), p, weighted CE — pure torch, CPU-testable (T42, T43)
-  +radar_loss/obstruction.py vegetation_grid.py ray_traversal.py   # stretch: V_i (T44–T46)
-  splatad/viking_conversions.py (+T39, T40)  splatad/viking_dataparser.py (§B–C)
-  +splatad/radar_model.py (T41 + loss wiring)  +splatad/radar_method.py
-  dataset/schema.py (optional radar_inputs entry)  contract/splatad_contract.py (§E)
-  +eval/rendered_pointcloud.py trunk_mask.py
+  +radar_init/accumulate.py select.py seeds.py      # T34–T36
+  +radar_loss/opacity.py                            # T42, T43 (pure torch, CPU-testable); +depth.py (T44, optional)
+  splatad/viking_conversions.py (+T39, T40)  splatad/viking_dataparser.py (radar_inputs_dir)
+  +splatad/radar_model.py (T41 + losses)  +splatad/radar_method.py
+  dataset/schema.py (optional radar_inputs entry)  contract/splatad_contract.py (radar checks)
+  +eval/rendered_pointcloud.py detection.py bev.py  # T45–T47
 scripts/+07_build_radar_seeds.py +08_render_lidar_pointcloud.py +09_compare_runs.py +slurm/{splatad_run.sbatch,submit_run.py}
 ```
-Every new T-id gets one known-answer test, kept minimal:
-- a known pose and extrinsic give the analytic radar point;
-- the Doppler filter keeps a static target and drops a mover;
-- covariance eigenvectors lie along r̂, with eigenvalues σ_r² and (rΔθ)²;
-- w2m applied to Σ gives RΣRᵀ;
-- the crop counts are correct;
-- a single isotropic Gaussian at distance d gives D = σ(o)·exp(−d²/2(s²+σ²));
-- a CE with α=0 and V=1 equals the hand-computed −log(1−e^{−D});
-- the DDA along an axis visits ⌈L/voxel⌉ cells (stretch);
-- depth×dir reproduces a synthetic range image;
-- the trunk-mask silhouette of a box is correct.
 
-## Rule changes (CLAUDE.md, README)
-- Goal → the research question. Plan pointer → `docs/PLAN.md`.
-- **Rule 5:** radar is never a SplatAD *sensor*. It enters only as `radar_seeds` metadata, which is:
-  - built offline in the map frame;
-  - transformed into the dataparser frame only by `VikingHillDataParser`;
-  - train split only;
-  - gated by the contract;
-  - used for init and the label-free radar loss.
-- **Rule 6** is unchanged: cuboids are evaluation-only.
-- gsplat (carlinds/splatad) is unpinned in neurad's pyproject; `docker/Dockerfile.splatad` already pins it (`SPLATAD_COMMIT=6e31ad7…`), which is the commit the research read.
-
-## Execution order
-1. Copy the PDF and write `proposal.md`, the research note, `docs/PLAN.md` and the CLAUDE.md/README edits.
-2. **May readiness:** run a Slurm smoke test, then a full SplatAD run on the May forest window. Render held-out RGB and lidar. Pass = the forest is visible.
-3. **June data:** fetch the forest chunks, extract them, and pass the contract. Verify that the label map frame matches `/icp_odom`; this is needed for the trunk-mask evaluation only.
-4. Build with parallel subagents, each told to add tests and never edit existing ones:
-   - (a) `radar_init` + `07`;
-   - (b) `radar_loss`;
-   - (c) dataparser §B–C, contract §E, and `radar_model`/`radar_method`;
-   - (d) evaluation, `08` and `09`.
-   After each, run `transform-test-runner`.
-5. On Slurm: run June B and June R, each as a smoke run and then 30001 steps. Then run `08` and `09`, and write the results to `docs/experiments.md`. Stretch: R with the continuous V.
+## 8. Execution order
+1. **Choose Scene A** (§1): guess and fetch the chunks, check the contact sheets, set the session configs, then extract them and pass the contract.
+   - In parallel: the May chunk 1 Slurm smoke test (Docker image, `ns-train splatad viking-data`).
+2. **May Scene A** run with held-out metrics (§3).
+3. **Build with parallel subagents**, each told to add tests and never edit existing ones; `transform-test-runner` runs after each:
+   - (a) radar seeds T34–T36 + `07`;
+   - (b) parser/contract/model T39–T43;
+   - (c) eval `08`/`09` T45–T47.
+4. **June B and R** on Slurm: a smoke run each, then the full step count. Decide the camera-loss switch after the B smoke run.
+5. **Evaluate** (§5) and write `docs/experiments.md`. Optional: R + depth loss (T44), with approval.
 
 ## Verification
-- The md5 of the copied PDF matches the original.
-- `uv run pytest` is green, including traceability. `affected_tests.py` shows no modified existing tests.
-- `06_validate_contract.py` passes for May and June, including the radar checks.
-- The May render shows the forest.
-- With `radar_inputs_dir=None`, the dataparser produces outputs identical to the stock parser.
-- In R's logs, the radar group count equals M after cropping, and `radar_loss` decreases.
-- The `08` point cloud for B overlays the June GT lidar, and its Chamfer matches the built-in metric.
+- `uv run pytest` green, including traceability. `affected_tests.py` shows no modified existing tests.
+- `06_validate_contract.py` passes for May and June Scene A, including the radar checks.
+- The chosen chunks' contact sheets show low grass + trunks (May) and high grass + trunks (June). The June `/icp_odom` lies on the June label map.
+- May: held-out metrics beat the baselines, and the renders show the forest.
+- With `radar_inputs_dir=None`, the parser gives outputs identical to the stock path.
+- R logs: the radar group count equals M, the opacity loss decreases, and the gated-seed fraction stays high.
+- B's rendered point cloud overlays the June GT lidar, and its Chamfer matches the built-in metric.

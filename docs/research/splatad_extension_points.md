@@ -6,7 +6,7 @@
 
 Paths are relative to the neurad-studio root. The research was read-only, and nothing here has been run under CUDA yet.
 
-**Purpose.** Radar is **not rendered**. It enters SplatAD only as (1) extra seed Gaussians and (2) a label-free geometric regularizer that compensates for lidar returns blocked by tall grass. This note records where SplatAD lets us do that without modifying upstream code.
+**Purpose.** Radar is **not rendered**. It enters SplatAD only as (1) extra seed Gaussians and (2) label-free radar losses: an opacity loss near the seeds, and optionally a depth loss. These compensate for lidar returns blocked by tall grass. This note records where SplatAD lets us do that without modifying upstream code.
 
 ## 1. How SplatAD initialises Gaussians
 
@@ -101,8 +101,9 @@ After this:
 - `VikingHillDataParser(ADDataParser)` (ours, existing) gains `radar_inputs_dir`. After `super()`, it maps the offline map-frame seeds through `dataparser_transform` (μ' = Rμ + t, Σ' = RΣRᵀ) and the time window. It then attaches `metadata["radar_seeds"]` for the train split only. `radars=()` stays empty.
 - `SplatADRadarModel(SplatADModel)` makes two additions:
   - In `create_gauss_param_dict`, it appends a radar group whose scales and rotations come from the radar covariance, not from kNN.
-  - In `get_loss_dict`, it adds `radar_loss`:
-    - D(q) = Σ_k σ(o_k)·exp(−½dᵀ(Σ_k + Σ_seed)⁻¹d) over the K nearest static Gaussians at the fixed seed means q;
-    - p = 1 − exp(−D);
-    - L = (1/N) Σ w_i·(−log p_i), with w_i = 1 + α·V_i.
-  It only says "occupied here", never "empty", because radar free space is unreliable. Free space stays with the lidar ray-drop and line-of-sight losses.
+  - In `get_loss_dict`, it adds a radar **opacity loss**:
+    - static Gaussians inside a seed's resolution ellipsoid, dᵀΣ_seed⁻¹d ≤ χ²₃(q), get the loss mean(−log σ(o));
+    - this keeps them opaque, so MCMC does not relocate them.
+  - Fallback if seeds lose their Gaussians: the seed-density form, D(q) = Σ_k σ(o_k)·exp(−½dᵀ(Σ_k + Σ_seed)⁻¹d) at the fixed seed means q, with loss −log(1 − exp(−D)).
+  - Optional: a one-sided radar depth term, computed in closed form along the seed rays with no rasterisation.
+  - The radar losses only say "occupied here", never "empty", because radar free space is unreliable. Free space stays with the lidar ray-drop and line-of-sight losses.

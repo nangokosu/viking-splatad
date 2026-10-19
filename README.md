@@ -4,7 +4,11 @@ Convert the Viking Hill radar/lidar/camera dataset (ROS2 MCAP) into inputs for S
 May (short grass) and June (tall grass) are separate sessions with separate configs, raw dirs, datasets and GT.
 
 Research question and proposal: `docs/proposal/`.
-- **Execution plan:** `docs/PLAN.md`. It runs June SplatAD baseline (B) against SplatAD with radar seed Gaussians and a radar geometric regularizer (R). Radar is never rendered.
+- **Execution plan:** `docs/PLAN.md`.
+  - Scene A is a region with trunks, low grass in May and high grass in June: 2 bag chunks per run, no May↔June alignment.
+  - May gets a stock SplatAD run with held-out metrics.
+  - June compares SplatAD (B) against SplatAD + radar seed Gaussians + a radar opacity loss (R).
+  - Radar is never rendered. Runs are judged on the rendered lidar point cloud against the June trunk, bush and rock cuboids.
 - **SplatAD internals:** `docs/research/splatad_extension_points.md`.
 - **Experiments:** `docs/experiments.md`.
 - **Phase-1 findings:** `~/.claude/plans/start-a-new-claude-cosmic-cascade.md`.

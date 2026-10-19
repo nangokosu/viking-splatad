@@ -59,7 +59,11 @@ For each radar measurement i, let r_i be the ray from the sensor to the 3D point
 
 V_i lies in [0, 1]. A ray with no known cells has no defined score and must be handled separately.
 
-**[note: project adaptation]** In this project the radar loss runs **inside SplatAD training** as a label-free geometric regularizer. Every radar seed has y_i = occupied, p_i = 1 − exp(−D(q_i)) from the Gaussian density at the seed, and w_i = 1 + α·V_i. Radar is never rendered. See `docs/PLAN.md`.
+**[note: project adaptation]** In this project the radar loss runs **inside SplatAD training** and is label-free:
+- an opacity loss, −log σ(o), on Gaussians inside each radar seed's resolution ellipsoid;
+- optionally, a one-sided radar depth term.
+
+Radar is never rendered. See `docs/PLAN.md`.
 
 ## 4. Evaluation
 - **May baseline.** Train on May data, when vegetation is sparse. Render held-out camera poses and compare with the ground-truth images using PSNR [7] and SSIM [8].

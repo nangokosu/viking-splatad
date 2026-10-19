@@ -2,11 +2,11 @@
 
 Goal: answer the team's research question (`docs/proposal/`): *does adding 4D radar to LiDAR+camera SplatAD improve tree-trunk reconstruction when tall grass occludes the trunks?*
 
-Current scope: June only, two runs.
+Current scope: **Scene A**, a region with tree trunks, low grass in May and high grass in June. It covers 2 consecutive bag chunks per run, chosen by guess and check. June gets two runs:
 - **B:** stock SplatAD.
-- **R:** SplatAD with radar seed Gaussians and a label-free radar geometric regularizer. Radar is **never rendered**.
+- **R:** SplatAD with radar seed Gaussians and label-free radar losses (an opacity loss near the seeds; a depth loss is optional). Radar is **never rendered**.
 
-May is used only as a pipeline readiness check (a May forest render).
+May Scene A is trained with stock SplatAD and checked on held-out metrics. **No May ↔ June mapping:** no ICP and no cross-run alignment.
 
 Plan: `docs/PLAN.md`. SplatAD internals: `docs/research/splatad_extension_points.md`. Phase-1 findings and the T1–T33 table: `~/.claude/plans/start-a-new-claude-cosmic-cascade.md`.
 
@@ -20,7 +20,7 @@ Plan: `docs/PLAN.md`. SplatAD internals: `docs/research/splatad_extension_points
    - transformed into the dataparser frame only by `VikingHillDataParser`, for the train split only;
    - gated by the contract.
 
-   The seeds serve two purposes: extra Gaussians at init, and the query points of the label-free radar loss. Raw radar is otherwise only a sidecar for alignment diagnostics.
+   The seeds serve two purposes: extra Gaussians at init, and the anchors of the label-free radar losses (the opacity gate, and the optional depth rays). Raw radar is otherwise only a sidecar for alignment diagnostics.
 6. Ground-truth cuboids stay separate from SplatAD inputs (`data/gt/`) and are used only for evaluation (occupancy, trunk mask). They never become seeds, seed filters or loss targets.
 7. SplatAD training/rendering needs CUDA, so it runs only on the CS Lab Slurm cluster (see "GPU training on Slurm" below). Everything else (tests, conversion, non-CUDA GPU work) runs on the Mac, which may use its own GPU (MPS).
 8. Network fetches use an anonymous identifier (e.g. `viking-splatad/0.1`); no personal info in headers, URLs or bodies.
