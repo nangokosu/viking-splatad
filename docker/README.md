@@ -48,9 +48,9 @@ apptainer exec --nv --bind <data_dir>:/data viking-splatad-cu118.sif ns-train sp
 |---|---|---|---|---|
 | `viking-splatad:cu118` | `aab3781dea3e` | `a14bb2a` | `86` | sm_86 cubin only, no PTX: runs on the RTX A6000/A4500/A4000/A2000 nodes, **not** the RTX 4090 (sm_89) nodes. `constraints.txt` was frozen from this image afterwards. |
 
-Layer order matters for rebuild cost. `docker/constraints.txt` and `src/` are copied **before** the neurad-studio
-and splatad CUDA builds, so changing either one recompiles everything (hours under emulation). `tests/`,
-`configs/` and `scripts/` are copied after, so changing them is cheap.
+Layer order matters for rebuild cost. `docker/constraints.txt` and the Ouster patcher files are copied **before**
+the neurad-studio and splatad CUDA builds, so changing either one recompiles everything (hours under emulation).
+`pyproject.toml`, `src/`, `tests/`, `configs/` and `scripts/` are copied after, so changing them is cheap.
 
 ## The CS Lab cluster runs a native build of this recipe, not the image
 
@@ -65,3 +65,16 @@ Apptainer section above applies only to clusters that provide Apptainer.
 `constraints.txt` does not pin `pytest` globally: neurad-studio's `[dev]` extra pins `pytest==7.1.2` for its own
 install step, while this repo's `[dev]` extra upgrades it. Only the final install step applies the
 `final-step-pin` comment line.
+
+### Cluster locks (`docker/cluster-locks/`)
+
+Each native build exports what it actually installed. The copy in this repo comes from build job 222558
+(env `splatad-a1e9255584ab`, gpunode2, 2026-10-25):
+- `viking-pip-freeze.txt`: pip packages. It differs from `constraints.txt` only by the `pytest` final-step pin,
+  and by `packaging`, which conda installed, so pip lists it as a `file://` path.
+- `viking-conda-explicit.txt`: exact conda URLs and hashes, including the toolchain versions that
+  `cluster_env.yaml` leaves unpinned (cmake, ninja, git, make, ffmpeg).
+
+These files are records, not inputs: they are not in `environment_recipe_files`, so updating them does not change
+the env hash. Known gap: the viser web client fails to build on the nodes (yarn download timeout). It is only
+needed by the interactive viewer; runs use `--vis tensorboard`.
