@@ -77,6 +77,11 @@ source "$ENV_PREFIX/viking-activate.sh"
 # nvcc must use the env's g++ 11.4, never the host's gcc 15 (nvcc 11.8 rejects gcc > 11).
 export NVCC_PREPEND_FLAGS="-ccbin $ENV_PREFIX/bin/g++"
 export CC="$ENV_PREFIX/bin/gcc" CXX="$ENV_PREFIX/bin/g++"
+# tiny-cuda-nn links with -lcuda. conda's linker does not search the host's lib dirs, so link
+# against the toolkit's stub libcuda.so (as the Docker devel image does via cuda/lib64/stubs).
+# LIBRARY_PATH is link-time only and stays out of viking-activate.sh: at run time the real
+# driver (host libcuda.so.1, the stub's SONAME) is loaded. Build 222552 failed without this.
+export LIBRARY_PATH="$ENV_PREFIX/lib/stubs${LIBRARY_PATH:+:$LIBRARY_PATH}"
 
 # ---- 4. pip settings, identical to the Dockerfile's ENV block ----------------------------------
 export PIP_CONSTRAINT="$CONSTRAINTS_FILE"
