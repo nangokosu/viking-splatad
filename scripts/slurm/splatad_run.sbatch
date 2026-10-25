@@ -8,8 +8,13 @@
 # -c, --mem, -t, --output, --job-name) on the sbatch command line, derived from sinfo and
 # configs/slurm.yaml. That is why this file has no #SBATCH resource lines.
 #
-# Required environment (exported by submit_run.py via --export=ALL,...):
-#   RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX
+# Storage: fast writes to NFS home kill the job (scratch_lib.sh), so training and rendering
+# write to <scratch>/viking-splatad-$USER/runs/<run_id> next to the environment, the dataset is
+# read from home, and the results are copied back to home rate-limited when the job exits
+# (also on failure). job_info.txt and the Slurm log are small and written to home directly.
+#
+# Required environment (set by submit_run.py as `env K=V sbatch ...`):
+#   RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX ENV_EXPIRES_EPOCH COPY_BACK_BWLIMIT_KIB
 #   MAX_NUM_ITERATIONS STEPS_PER_SAVE RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR
 #   DATASET_START_FRACTION DATASET_END_FRACTION  (time window; 0 and 1 = whole recording)
 #
@@ -21,7 +26,7 @@ set -euo pipefail
 
 # ---- check the required variables (set -u alone would give a less clear message) ----------
 for required_variable in RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX \
-    MAX_NUM_ITERATIONS STEPS_PER_SAVE RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
+    ENV_EXPIRES_EPOCH COPY_BACK_BWLIMIT_KIB MAX_NUM_ITERATIONS STEPS_PER_SAVE RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
     DATASET_START_FRACTION DATASET_END_FRACTION; do
   if [ -z "${!required_variable:-}" ]; then
     echo "ERROR: $required_variable is not set (submit with scripts/slurm/submit_run.py)" >&2
@@ -33,18 +38,41 @@ if [ ! -f "$ENV_PREFIX/.build-complete" ]; then
   exit 1
 fi
 
-# ---- (a) run directory and job_info.txt ---------------------------------------------------
-RUN_DIR="$STAGE_ROOT/runs/$RUN_ID"
-JOB_INFO="$RUN_DIR/job_info.txt"
-mkdir -p "$RUN_DIR"
+# shellcheck disable=SC1091
+source "$CODE_DIR/scripts/slurm/scratch_lib.sh"
+# The environment's scratch dir must outlive this job.
+require_scratch_outlives_job "$ENV_EXPIRES_EPOCH"
+
+# ---- (a) run directories and job_info.txt ---------------------------------------------------
+# HOME_RUN_DIR: small files + the copied-back results.  RUN_DIR: heavy outputs on scratch,
+# next to the env (<scratch>/viking-splatad-$USER/envs/<name> -> .../runs/<run_id>).
+HOME_RUN_DIR="$STAGE_ROOT/runs/$RUN_ID"
+RUN_DIR="$(dirname "$(dirname "$ENV_PREFIX")")/runs/$RUN_ID"
+JOB_INFO="$HOME_RUN_DIR/job_info.txt"
+mkdir -p "$HOME_RUN_DIR" "$RUN_DIR"
+# On any exit: copy renders, configs and logs back, plus only the latest checkpoint.
+copy_results_home() {
+  copy_back_slowly "$RUN_DIR" "$HOME_RUN_DIR" "$COPY_BACK_BWLIMIT_KIB" \
+    --exclude '.cache/' --exclude 'nerfstudio_models/' || echo "WARNING: copy-back failed" >&2
+  local latest_checkpoint
+  latest_checkpoint="$(find "$RUN_DIR" -path '*/nerfstudio_models/step-*.ckpt' 2>/dev/null | sort | tail -1)"
+  if [ -n "$latest_checkpoint" ]; then
+    local relative_path="${latest_checkpoint#"$RUN_DIR"/}"
+    mkdir -p "$HOME_RUN_DIR/$(dirname "$relative_path")"
+    rsync -a --bwlimit="$COPY_BACK_BWLIMIT_KIB" "$latest_checkpoint" "$HOME_RUN_DIR/$relative_path"
+  fi
+  echo "copied_back_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$JOB_INFO"
+}
+trap copy_results_home EXIT
 {
   echo "hostname: $(hostname)"
   echo "start_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "slurm_job_id: ${SLURM_JOB_ID:-none}"
   echo "slurm_cpus_per_task: ${SLURM_CPUS_PER_TASK:-unset}"
   echo "slurm_mem_per_node_mb: ${SLURM_MEM_PER_NODE:-unset}"
+  echo "scratch_run_dir: $RUN_DIR"
   for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX \
-      MAX_NUM_ITERATIONS STEPS_PER_SAVE RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
+      ENV_EXPIRES_EPOCH COPY_BACK_BWLIMIT_KIB MAX_NUM_ITERATIONS STEPS_PER_SAVE RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
       DATASET_START_FRACTION DATASET_END_FRACTION; do
     echo "$exported_variable: ${!exported_variable:-}"
   done
@@ -61,7 +89,7 @@ source "$ENV_PREFIX/viking-activate.sh"
 # This run's committed src/ goes first on sys.path, ahead of the env's editable install
 # (PYTHONPATH entries precede site-packages .pth paths), so the code is exactly GIT_SHA's.
 export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
-# Caches inside the run dir, so nothing depends on (or writes to) $HOME.
+# Caches inside the scratch run dir, so nothing depends on (or writes to) $HOME.
 mkdir -p "$RUN_DIR/.cache/torch"
 export TORCH_HOME="$RUN_DIR/.cache/torch" XDG_CACHE_HOME="$RUN_DIR/.cache"
 

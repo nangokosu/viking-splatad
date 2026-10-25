@@ -27,6 +27,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -48,8 +49,10 @@ STAGED_REPO_PATHS = ("pyproject.toml", "src", "tests", "configs", "scripts",
 # Hex digits of the recipe hash used in environment names: 12 hex = 48 bits, so two different
 # recipes collide with probability ~2**-48, negligible for the handful of envs ever built.
 RECIPE_HASH_LENGTH = 12
-# Marker file build_env.sbatch writes last; its presence means the environment is usable.
-ENV_COMPLETE_MARKER = ".build-complete"
+# build_env.sbatch writes <stage_root>/envs/<env name>.marker in home as its last step; it names
+# the env's scratch path and the scratch expiry (the env itself lives on scratch, because fast
+# writes to home kill compute jobs).
+ENV_MARKER_SUFFIX = ".marker"
 # Local ledger of submitted jobs (runs/ is git-ignored).
 SUBMITTED_LEDGER_PATH = PROJECT_ROOT / "runs" / "submitted.tsv"
 # Environment variable that, when set, supplies the cluster username for user@host.
@@ -111,6 +114,7 @@ def load_slurm_config(config_path: Path = DEFAULT_SLURM_CONFIG_PATH) -> Dict[str
     # Step 2: check the keys every subcommand relies on (stage_root may be null until probed).
     for required_key in ("ssh_host", "partition", "gres", "mem_fraction", "stage_root",
                          "micromamba_version", "micromamba_sha256", "environment_recipe_files",
+                         "copy_back_bwlimit_kib",
                          "env_build", "profiles"):
         if required_key not in config:
             raise ValueError(f"{config_path}: missing required key {required_key!r}")
@@ -203,20 +207,57 @@ def read_committed_file(git_sha: str, relative_path: str) -> bytes:
     return completed.stdout
 
 
-def environment_prefix(absolute_stage_root: str, config: Dict[str, Any], git_sha: str) -> str:
-    """Absolute path of the environment that the recipe at ``git_sha`` defines.
+def environment_name(config: Dict[str, Any], git_sha: str) -> str:
+    """Name of the environment that the recipe at ``git_sha`` defines.
 
     Args:
-        absolute_stage_root: Resolved stage root on the cluster.
         config: Parsed Slurm config (``environment_recipe_files``).
         git_sha: Commit whose recipe files are hashed.
 
     Returns:
-        ``<stage_root>/envs/splatad-<recipe hash>``.
+        ``splatad-<recipe hash>``.
     """
     recipe_contents = {relative_path: read_committed_file(git_sha, relative_path)
                        for relative_path in config["environment_recipe_files"]}
-    return f"{absolute_stage_root}/envs/splatad-{compute_recipe_hash(recipe_contents)}"
+    return f"splatad-{compute_recipe_hash(recipe_contents)}"
+
+
+def parse_environment_marker(marker_text: str) -> Dict[str, str]:
+    """Parse the ``key=value`` lines build_env.sbatch writes.
+
+    Args:
+        marker_text: Marker file contents.
+
+    Returns:
+        Mapping key -> value.
+
+    Raises:
+        ValueError: If ``env_prefix`` or ``expires_epoch`` is missing, or the expiry is not an
+            integer (a marker is only written after a complete build, so this means corruption).
+    """
+    marker = {}
+    for line_text in marker_text.splitlines():
+        key_text, separator, value_text = line_text.partition("=")
+        if separator:
+            marker[key_text.strip()] = value_text.strip()
+    if "env_prefix" not in marker or "expires_epoch" not in marker:
+        raise ValueError(f"environment marker lacks env_prefix/expires_epoch: {marker_text!r}")
+    int(marker["expires_epoch"])
+    return marker
+
+
+def environment_outlives(marker: Dict[str, str], now_epoch: float, time_limit_seconds: int) -> bool:
+    """True when the env's scratch dir expires after a job started now would hit its time limit.
+
+    Args:
+        marker: Parsed environment marker.
+        now_epoch: Current UNIX time [s].
+        time_limit_seconds: The job's Slurm time limit [s].
+
+    Returns:
+        expires_epoch > now + time_limit (the job must finish before scratch expires).
+    """
+    return int(marker["expires_epoch"]) > now_epoch + time_limit_seconds
 
 
 def resolve_ssh_target(ssh_host: str) -> str:
@@ -426,7 +467,8 @@ def profile_window_fractions(profile_settings: Dict[str, Any], session: str) -> 
 
 
 def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id: str,
-                          git_sha: str, absolute_stage_root: str, env_prefix: str) -> Dict[str, str]:
+                          git_sha: str, absolute_stage_root: str, env_marker: Dict[str, str],
+                          copy_back_bwlimit_kib: int) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
 
     Args:
@@ -435,7 +477,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         run_id: Run id.
         git_sha: Full commit SHA.
         absolute_stage_root: Resolved stage root on the cluster.
-        env_prefix: Environment directory the run activates.
+        env_marker: Parsed marker of the environment the run activates (scratch path, expiry).
+        copy_back_bwlimit_kib: rsync --bwlimit [KiB/s] for copying results back to home.
 
     Returns:
         Mapping variable name -> string value.
@@ -447,7 +490,9 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         "STAGE_ROOT": absolute_stage_root,
         "GIT_SHA": git_sha,
         "CODE_DIR": f"{absolute_stage_root}/code/{git_sha}",
-        "ENV_PREFIX": env_prefix,
+        "ENV_PREFIX": env_marker["env_prefix"],
+        "ENV_EXPIRES_EPOCH": env_marker["expires_epoch"],
+        "COPY_BACK_BWLIMIT_KIB": str(copy_back_bwlimit_kib),
         "MAX_NUM_ITERATIONS": str(profile_settings["max_num_iterations"]),
         "STEPS_PER_SAVE": str(profile_settings["steps_per_save"]),
         "RENDER_POSE_SOURCE": str(profile_settings["render_pose_source"]),
@@ -679,18 +724,23 @@ def stage_session(config: Dict[str, Any], session: str) -> str:
     return git_sha
 
 
-def remote_environment_complete(ssh_target: str, env_prefix: str) -> bool:
-    """True when build_env.sbatch finished for this environment (its marker file exists).
+def read_environment_marker(ssh_target: str, absolute_stage_root: str,
+                            env_name: str) -> Optional[Dict[str, str]]:
+    """Read and parse the home marker of an environment, or None if it was never completed.
 
     Args:
         ssh_target: ``host`` or ``user@host``.
-        env_prefix: Absolute environment directory.
+        absolute_stage_root: Resolved stage root in home.
+        env_name: ``splatad-<recipe hash>``.
 
     Returns:
-        Whether ``<env_prefix>/.build-complete`` exists (``test -f`` exits 0).
+        The parsed marker, or None when the marker file does not exist.
     """
-    marker_path = f"{env_prefix}/{ENV_COMPLETE_MARKER}"
-    return run_command(ssh_command(ssh_target, ["test", "-f", marker_path])).returncode == 0
+    marker_path = f"{absolute_stage_root}/envs/{env_name}{ENV_MARKER_SUFFIX}"
+    completed = run_command(ssh_command(ssh_target, ["cat", marker_path]))
+    if completed.returncode != 0:
+        return None
+    return parse_environment_marker(completed.stdout)
 
 
 def query_node_resources(config: Dict[str, Any], ssh_target: str) -> Tuple[int, int]:
@@ -744,9 +794,13 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
     ssh_target = resolve_ssh_target(config["ssh_host"])
     absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
     git_sha = get_head_sha()
-    env_prefix = environment_prefix(absolute_stage_root, config, git_sha)
-    if remote_environment_complete(ssh_target, env_prefix):
-        print(f"environment already built: {env_prefix}")
+    env_name = environment_name(config, git_sha)
+    # Reuse a built env only if it outlives the longest job any profile may submit.
+    longest_time_limit_seconds = max(parse_slurm_time_limit_seconds(str(profile["time_limit"]))
+                                     for profile in config["profiles"].values())
+    env_marker = read_environment_marker(ssh_target, absolute_stage_root, env_name)
+    if env_marker and environment_outlives(env_marker, time.time(), longest_time_limit_seconds):
+        print(f"environment already built: {env_marker['env_prefix']}")
         return None
     # Step 2: stage the code the build installs and tests.
     remote_code_dir = stage_code(ssh_target, absolute_stage_root, git_sha)
@@ -757,18 +811,18 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
         time_limit=str(config["env_build"]["time_limit"]), job_name="splatad-build-env",
-        output_path=f"{log_dir}/{Path(env_prefix).name}-%j.out",
+        output_path=f"{log_dir}/{env_name}-%j.out",
         job_environment={
             "STAGE_ROOT": absolute_stage_root,
             "CODE_DIR": remote_code_dir,
-            "ENV_PREFIX": env_prefix,
+            "ENV_NAME": env_name,
             "MICROMAMBA_VERSION": str(config["micromamba_version"]),
             "MICROMAMBA_SHA256": str(config["micromamba_sha256"]),
         },
         script_path=f"{remote_code_dir}/{BUILD_SCRIPT_RELATIVE_PATH}")
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
-    print(f"submitted environment build job {job_id} -> {env_prefix} ({cpus} CPUs, {memory_gb}G)\n"
-          f"log: {log_dir}/{Path(env_prefix).name}-{job_id}.out")
+    print(f"submitted environment build job {job_id} -> {env_name} on scratch ({cpus} CPUs, {memory_gb}G)\n"
+          f"log: {log_dir}/{env_name}-{job_id}.out")
     return job_id
 
 
@@ -805,9 +859,14 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     now_utc = now_utc or datetime.datetime.now(datetime.timezone.utc)
     run_id = build_run_id(session, profile, git_sha, now_utc)
     # Step 2: the run needs the environment its committed recipe defines.
-    env_prefix = environment_prefix(absolute_stage_root, config, git_sha)
-    if not remote_environment_complete(ssh_target, env_prefix):
-        raise RuntimeError(f"environment {env_prefix} is not built; run `build-env` first")
+    env_name = environment_name(config, git_sha)
+    env_marker = read_environment_marker(ssh_target, absolute_stage_root, env_name)
+    if env_marker is None:
+        raise RuntimeError(f"environment {env_name} is not built; run `build-env` first")
+    time_limit_seconds = parse_slurm_time_limit_seconds(str(profile_settings["time_limit"]))
+    if not environment_outlives(env_marker, now_utc.timestamp(), time_limit_seconds):
+        raise RuntimeError(f"environment {env_name} lives on scratch that expires before this job "
+                           f"could finish; run `build-env` to rebuild it on newer scratch")
     # Step 3: node sizes from sinfo, then the sbatch arguments.
     cpus, memory_gb = query_node_resources(config, ssh_target)
     remote_run_dir = f"{absolute_stage_root}/runs/{run_id}"
@@ -816,7 +875,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
         time_limit=str(profile_settings["time_limit"]), job_name=f"splatad-{session}",
         output_path=f"{remote_run_dir}/slurm-%j.out",
         job_environment=build_job_environment(profile_settings, session, run_id, git_sha,
-                                              absolute_stage_root, env_prefix),
+                                              absolute_stage_root, env_marker,
+                                              int(config["copy_back_bwlimit_kib"])),
         script_path=f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}")
     # Step 4: the --output directory must exist before sbatch, or Slurm cannot write the log.
     run_checked(ssh_command(ssh_target, ["mkdir", "-p", remote_run_dir]), "remote run dir mkdir")

@@ -11,7 +11,7 @@ import math
 import shlex
 import subprocess
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pytest
@@ -202,14 +202,14 @@ def test_compute_recipe_hash_known_value_order_independence_and_sensitivity():
             != expected_hash)
 
 
-def make_fake_cluster(full_sha: str, absolute_stage_root: str, environment_built: bool,
+def make_fake_cluster(full_sha: str, absolute_stage_root: str, environment_marker_text: Optional[str],
                       issued_commands: List[List[str]]):
-    """Build a run_command stand-in answering git, stage-root resolution, test -f, sinfo, sbatch.
+    """Build a run_command stand-in answering git, stage-root resolution, the env marker, sinfo, sbatch.
 
     Args:
         full_sha: SHA returned by ``git rev-parse HEAD``.
         absolute_stage_root: Path printed by the remote ``pwd -P``.
-        environment_built: Exit status of the remote ``test -f`` for the env marker.
+        environment_marker_text: Contents served for ``cat <...>.marker``; None = no marker (cat fails).
         issued_commands: List that records every command.
 
     Returns:
@@ -223,8 +223,10 @@ def make_fake_cluster(full_sha: str, absolute_stage_root: str, environment_built
             return subprocess.CompletedProcess(command, 0, stdout=full_sha + "\n", stderr="")
         if remote_text.startswith("sh -c"):
             return subprocess.CompletedProcess(command, 0, stdout=absolute_stage_root + "\n", stderr="")
-        if remote_text.startswith("test -f"):
-            return subprocess.CompletedProcess(command, 0 if environment_built else 1, stdout="", stderr="")
+        if remote_text.startswith("cat ") and remote_text.endswith(".marker"):
+            if environment_marker_text is None:
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="No such file")
+            return subprocess.CompletedProcess(command, 0, stdout=environment_marker_text, stderr="")
         if remote_text.startswith("sinfo"):
             return subprocess.CompletedProcess(command, 0, stdout=SYNTHETIC_SINFO_TEXT, stderr="")
         if " sbatch " in f" {remote_text} ":
@@ -239,8 +241,13 @@ def test_submit_run_issues_expected_remote_commands(monkeypatch, tmp_path):
     full_sha = "fedcba9876543210fedcba9876543210fedcba98"
     absolute_stage_root = "/h/example/viking-splatad"
     issued_commands: List[List[str]] = []
+    moment = datetime.datetime(2026, 10, 25, 1, 2, 3, tzinfo=datetime.timezone.utc)
+    # Env on scratch that expires 10 days after submission: outlives the smoke time limit.
+    scratch_env_prefix = "/scratch/scratch-space/expires-2026-Nov-04/viking-splatad-user/envs/splatad-x"
+    expires_epoch = int(moment.timestamp()) + 10 * 86400
+    marker_text = f"env_prefix={scratch_env_prefix}\nexpires_epoch={expires_epoch}\nbuilt_utc=t\n"
     monkeypatch.setattr(submit_module, "run_command",
-                        make_fake_cluster(full_sha, absolute_stage_root, True, issued_commands))
+                        make_fake_cluster(full_sha, absolute_stage_root, marker_text, issued_commands))
     # Committed recipe files replaced by fixed bytes so the expected env name is computable here.
     monkeypatch.setattr(submit_module, "read_committed_file",
                         lambda git_sha, relative_path: relative_path.encode())
@@ -250,7 +257,6 @@ def test_submit_run_issues_expected_remote_commands(monkeypatch, tmp_path):
     synthetic_span = (5.0, 205.0)
     monkeypatch.setattr(submit_module, "dataset_time_span", lambda session_dir: synthetic_span)
     config = submit_module.load_slurm_config()
-    moment = datetime.datetime(2026, 10, 25, 1, 2, 3, tzinfo=datetime.timezone.utc)
     job_id, run_id = submit_module.submit_run(config, "may_short_grass", "smoke", skip_gates=True,
                                               now_utc=moment)
     assert job_id == "4242"
@@ -269,7 +275,13 @@ def test_submit_run_issues_expected_remote_commands(monkeypatch, tmp_path):
     assert f"DATASET_END_FRACTION={expected_end_fraction!r}" in sbatch_remote_text
     expected_recipe_hash = submit_module.compute_recipe_hash(
         {relative_path: relative_path.encode() for relative_path in config["environment_recipe_files"]})
-    assert f"ENV_PREFIX={absolute_stage_root}/envs/splatad-{expected_recipe_hash}" in sbatch_remote_text
+    # The marker read is the one named by the recipe hash; the env path and expiry come from it.
+    marker_reads = [command[-1] for command in issued_commands
+                    if command[0] == "ssh" and command[-1].startswith("cat ")]
+    assert marker_reads == [f"cat {absolute_stage_root}/envs/splatad-{expected_recipe_hash}.marker"]
+    assert f"ENV_PREFIX={scratch_env_prefix}" in sbatch_remote_text
+    assert f"ENV_EXPIRES_EPOCH={expires_epoch}" in sbatch_remote_text
+    assert f"COPY_BACK_BWLIMIT_KIB={config['copy_back_bwlimit_kib']}" in sbatch_remote_text
     assert f"CODE_DIR={absolute_stage_root}/code/{full_sha}" in sbatch_remote_text
     assert sbatch_remote_text.endswith(f"{absolute_stage_root}/code/{full_sha}/scripts/slurm/splatad_run.sbatch")
     assert "get-user-env" not in sbatch_remote_text
@@ -282,7 +294,7 @@ def test_submit_run_refuses_when_environment_not_built(monkeypatch, tmp_path):
     submit_module = load_submit_module()
     issued_commands: List[List[str]] = []
     monkeypatch.setattr(submit_module, "run_command",
-                        make_fake_cluster("a" * 40, "/h/example/viking-splatad", False, issued_commands))
+                        make_fake_cluster("a" * 40, "/h/example/viking-splatad", None, issued_commands))
     monkeypatch.setattr(submit_module, "read_committed_file", lambda git_sha, relative_path: b"x")
     monkeypatch.setattr(submit_module, "SUBMITTED_LEDGER_PATH", tmp_path / "submitted.tsv")
     with pytest.raises(RuntimeError, match="build-env"):
@@ -371,3 +383,40 @@ def test_build_sbatch_command_rejects_non_identifier_variable_names():
                 partition="gpunodes", gres="gpu:rtx_a6000:1", cpus=1, memory_gb=1,
                 time_limit="0-00:10:00", job_name="job", output_path="out",
                 job_environment={bad_name: "value"}, script_path="script")
+
+
+def test_parse_environment_marker_reads_key_values_and_rejects_incomplete():
+    """key=value lines are parsed; a marker without env_prefix or expiry is an error."""
+    submit_module = load_submit_module()
+    marker = submit_module.parse_environment_marker("env_prefix=/s/env\nexpires_epoch=1700000000\nbuild_job=7\n")
+    assert marker == {"env_prefix": "/s/env", "expires_epoch": "1700000000", "build_job": "7"}
+    with pytest.raises(ValueError):
+        submit_module.parse_environment_marker("env_prefix=/s/env\n")
+    with pytest.raises(ValueError):
+        submit_module.parse_environment_marker("env_prefix=/s/env\nexpires_epoch=soon\n")
+
+
+def test_environment_outlives_is_strict_against_job_end():
+    """Usable iff expiry > now + time limit (finishing exactly at expiry is not enough)."""
+    submit_module = load_submit_module()
+    now_epoch, time_limit_seconds = 1_000_000.0, 7200
+    job_end_epoch = int(now_epoch) + time_limit_seconds
+    assert submit_module.environment_outlives({"expires_epoch": str(job_end_epoch + 1)}, now_epoch, time_limit_seconds)
+    assert not submit_module.environment_outlives({"expires_epoch": str(job_end_epoch)}, now_epoch, time_limit_seconds)
+
+
+def test_submit_run_refuses_env_on_expiring_scratch(monkeypatch, tmp_path):
+    """A built env whose scratch expires before the job could finish is refused; no sbatch."""
+    submit_module = load_submit_module()
+    issued_commands: List[List[str]] = []
+    moment = datetime.datetime(2026, 10, 25, 1, 2, 3, tzinfo=datetime.timezone.utc)
+    # Expires one second after submission: shorter than any profile's time limit.
+    marker_text = f"env_prefix=/scratch/x/envs/splatad-y\nexpires_epoch={int(moment.timestamp()) + 1}\n"
+    monkeypatch.setattr(submit_module, "run_command",
+                        make_fake_cluster("b" * 40, "/h/example/viking-splatad", marker_text, issued_commands))
+    monkeypatch.setattr(submit_module, "read_committed_file", lambda git_sha, relative_path: b"x")
+    monkeypatch.setattr(submit_module, "SUBMITTED_LEDGER_PATH", tmp_path / "submitted.tsv")
+    with pytest.raises(RuntimeError, match="expires"):
+        submit_module.submit_run(submit_module.load_slurm_config(), "may_short_grass", "smoke",
+                                 skip_gates=True, now_utc=moment)
+    assert not any(command[0] == "ssh" and " sbatch " in f" {command[-1]} " for command in issued_commands)

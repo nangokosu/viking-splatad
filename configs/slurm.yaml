@@ -20,11 +20,16 @@ gres: gpu:rtx_a6000:1
 mem_fraction: 0.9
 
 # Stage directory on the cluster, RELATIVE TO THE REMOTE HOME (resolved to an absolute path over
-# ssh at submit time, so no username or home path is stored here). Holds bin/ (micromamba),
-# envs/, code/<sha>/, data/<session>/ and runs/<run_id>/.
-# NFS home, not /scratch/scratch-space: the scratch volume was 99% full (41 GB free, shared)
-# at the 2026-10-25 probe, while home had 551 GB free and does not expire (user decision).
+# ssh at submit time, so no username or home path is stored here). Holds code/<sha>/,
+# data/<session>/ (jobs only READ these), envs/<name>.marker and runs/<run_id>/ (copied back).
+# Heavy writes go to scratch instead: compute jobs that write fast to NFS home are SIGKILLed
+# (debug jobs 222528-222535, 2026-10-25), so the environment and training outputs live on the
+# scratch dir that expires last (scripts/slurm/scratch_lib.sh; user decision).
 stage_root: viking-splatad
+
+# rsync --bwlimit [KiB/s] for jobs copying results back to home. 20000 KiB/s (~20 MB/s) is the
+# rate a 500 MB test copy to home survived (job 222536), while an unthrottled `dd` was killed.
+copy_back_bwlimit_kib: 20000
 
 # micromamba (user-space conda) used to create the environment. Pinned release and its
 # published sha256 (micromamba-linux-64.sha256 of that GitHub release, fetched 2026-10-25);
