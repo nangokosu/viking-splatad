@@ -1,42 +1,35 @@
 # Last session summary (2026-10-25)
 
 ## Done
-- **First SplatAD smoke run on Slurm: passes.**
-  - Job 222568, run `may_chunks0_1_smoke-smoke-20261025-182824-b8104e1`, commit `b8104e1`, A6000.
-  - Parking-lot window 52–67 s: 135 train + 15 test frames, 3000 iterations.
-  - Train took 536 s, rendering 72 s.
-  - Renders line up with the real frames for both train and held-out poses, with no geometry errors. PSNR is 20.05 train / 19.88 test. The surfaces are speckled because the model is undertrained.
-  - The rendered ground-truth images match the raw extracted frames (53.7 dB).
-- **Native cluster env built.**
-  - Job 222558 built `splatad-a1e9255584ab` in about 35 min, and 227 tests passed on the node.
-  - Fixes on the way:
-    - jobs held when variables were passed with `--export=...,K=V`; they now go through `env K=V sbatch` (`e09cc6a`);
-    - jobs that write fast to NFS home are SIGKILLed, so the env and run outputs now go to scratch and are copied back rate-limited (`0bb8ad1`);
-    - tiny-cuda-nn failed to link with `-lcuda`; the stub libcuda is now on the link path (`1d44127`).
-  - Lock files committed in `docker/cluster-locks/` (`81e2b1f`).
-- **Render-step fix:** `ns-render --downscale-factor` asserts with viking-data, so the sbatch now omits it when the factor is 1 (`b8104e1`).
-- **Project skills:**
-  - `.claude/skills/building-splatad-cluster-env`
-  - `.claude/skills/running-splatad-render-jobs` (submit, monitor and fetch only)
-  - Both were tested with fresh agents (`97c3bbf`, `cf0e825`).
-- **`scripts/slurm/compare_renders.py`:** per-split PSNR plus render-vs-real comparison sheets, with 5 tests (`97c3bbf`). No skill refers to it.
-- **Tests:** full suite 233 passed, 3 skipped.
+- **Lidar rendering in the train+render job** (`806db4f`):
+  - `scripts/08_render_lidar_pointcloud.py` uses SplatAD's `get_lidar_outputs` + `filter_lidar_pred_and_gt(output_point_cloud=True)` at every train/test lidar pose. `ns-render --render-point-clouds` fails on SplatAD and only plots PNGs.
+  - Train scans are rasterised with `is_eval=True`, so every input return gets a ray.
+  - Per scan it writes `renders/<split>/lidar/<idx>_<ts_ns>.npz`, named like the input sweep. Each file holds the predicted and GT points (lidar frame), the per-ray raster and `lidar_to_map`.
+  - It also writes `renders/<split>/lidar_metrics.json` with SplatAD's built-in per-scan lidar metrics.
+  - New transform T50 (`src/viking_splatad/splatad/rendered_lidar.py`): dataparser-frame lidar pose → map frame. It rejects a non-rigid w2m.
+  - `splatad_run.sbatch` has a new step (e2) and logs the `lidar_render_elapsed_s` milestone.
+- **Training seed** (`806db4f`):
+  - Profiles in `configs/slurm.yaml` require an integer `seed` (smoke: 42, nerfstudio's default). `submit_run.py` exports it as `TRAIN_SEED`, and the sbatch passes it as `--machine.seed`.
+  - Runs are still not bit-exact, because of float-atomic gradient sums in the gsplat/SplatAD backward (verified at the pinned SHA), the tcnn backward, and `cudnn.benchmark=True`.
+- **`running-splatad-render-jobs` skill:** updated for the lidar outputs, the map-frame use, monitoring the lidar step and the seed limits. A fresh agent tested it.
+- **Tests:** 255 passed, 3 skipped. The new tests are `test_rendered_lidar.py`, `test_render_lidar_script.py` and the seed/sbatch tests in `test_slurm_submit.py`. No existing test was changed.
 
 ## Current state
 - **Cluster:**
-  - Env `splatad-a1e9255584ab` on scratch dir `expires-2026-Nov-07`, so rebuild after that date (`submit_run.py build-env`).
-  - Stage root `~/viking-splatad` holds `data/may_chunks0_1_smoke`, `code/<sha>` and `runs/`.
-- **Mac:**
-  - The fetched run is in `runs/` (gitignored).
-  - Preflight overlays are in `reports/may_chunks0_1_smoke/`.
-  - The Docker image `viking-splatad:cu118` predates `c713a02`, so bind-mount `src/` for CPU checks.
+  - Env `splatad-a1e9255584ab` on scratch dir `expires-2026-Nov-07`. Rebuild after that date (`submit_run.py build-env`).
+  - Stage root `~/viking-splatad` holds `data/may_chunks0_1_smoke`, `code/<sha>` and `runs/`. Run `stage` again before the next submit, because the code changed.
+- **Mac:** the smoke run `may_chunks0_1_smoke-smoke-20261025-182824-b8104e1` (camera renders only) is in `runs/`. The preflight overlays are in `reports/may_chunks0_1_smoke/`.
 - **Open issues:**
-  - The viser web client doesn't build on the nodes (yarn timeout). Only the interactive viewer needs it.
-  - The test split is every 10th frame interleaved with training frames, so it only tests interpolation.
-  - Lidar renders were not checked.
+  - The lidar render step and the seed flag have never run on a GPU. They were checked only by unit tests and by an import check in the Docker image.
+  - Lidar render time is unknown.
+  - Rendered lidar exists only along the input scan's rays, so it has no points where the input had no return. Account for this in trunk evals.
+  - The test split is every ~10th frame, interleaved with training frames, so it tests interpolation only.
+  - The viser web client doesn't build on the nodes (yarn timeout).
+  - The Docker image `viking-splatad:cu118` predates `c713a02`, so bind-mount `src/` for CPU checks.
 
 ## Next steps
-1. Optionally, a 30k-iteration run of the same window, to confirm the speckle clears with training.
-2. Full May Scene A with stock SplatAD, then June B and R (`docs/PLAN.md`).
+1. Run the next train+render job, either the 30k-iteration smoke run or full May Scene A. Check that the lidar `.npz` files and `lidar_metrics.json` are written, and record `lidar_render_elapsed_s` in the skill.
+2. Full May Scene A with stock SplatAD, then June B and R (`docs/PLAN.md`), all with the same seed.
 3. Before evals, decide the held-out protocol (a held-out stretch of the drive vs interleaved frames).
-4. Rebuild the Mac reference image from a clean worktree, in the background.
+4. Write the eval scripts T45–T47 on the fetched lidar `.npz` files, using `lidar_to_map`.
+5. Rebuild the Mac reference image from a clean worktree, in the background.
