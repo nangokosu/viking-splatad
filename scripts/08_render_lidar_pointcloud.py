@@ -57,6 +57,13 @@ SUPPORTED_SPLITS = ("train", "test")
 HALF_PERIOD_DIVISOR = 2.0
 # poses.npz key separator, as in dataset/writer.py (POSE_KEY_SEPARATOR); key = <sensor>__times.
 POSES_TIMES_SUFFIX = "__times"
+# Keys of every per-scan npz. scripts/slurm/RUN_OUTPUTS_GLOSSARY.md documents each one (a test
+# keeps the two in sync), and render_split refuses to write a file with any other key set.
+LIDAR_NPZ_KEYS = (
+    "pred_points", "pred_points_median", "gt_points", "raster_pts",
+    "pred_depth", "pred_median_depth", "pred_intensity", "pred_ray_drop_prob",
+    "lidar_to_map", "lidar_to_world", "dataparser_transform", "absolute_time_s", "sweep_index",
+)
 
 
 def parse_pose_source(pose_source: str) -> List[str]:
@@ -236,15 +243,18 @@ def render_split(pipeline: Any, split_name: str, output_path: Path, sweep_stems:
         arrays, per_scan_metrics[sweep_stem] = render_scan(pipeline.model, scan_lidar, batch)
         # Step 3: poses (dataparser frame and map frame, T50) and identity, then save.
         lidar_to_world = scan_lidar.lidar_to_worlds[0].detach().cpu().numpy().astype(np.float64)
-        np.savez_compressed(
-            scan_directory / f"{sweep_stem}.npz",
+        scan_record = {
             **arrays,
-            lidar_to_world=lidar_to_world.astype(np.float32),
-            dataparser_transform=dataparser_transform.astype(np.float32),
-            lidar_to_map=lidar_pose_in_map_frame(lidar_to_world, dataparser_transform),
-            absolute_time_s=np.float64(absolute_time_seconds),
-            sweep_index=np.int64(sweep_index),
-        )
+            "lidar_to_world": lidar_to_world.astype(np.float32),
+            "dataparser_transform": dataparser_transform.astype(np.float32),
+            "lidar_to_map": lidar_pose_in_map_frame(lidar_to_world, dataparser_transform),
+            "absolute_time_s": np.float64(absolute_time_seconds),
+            "sweep_index": np.int64(sweep_index),
+        }
+        # The glossary copied into every run folder documents exactly LIDAR_NPZ_KEYS.
+        if set(scan_record) != set(LIDAR_NPZ_KEYS):
+            raise ValueError(f"npz keys {sorted(scan_record)} differ from LIDAR_NPZ_KEYS")
+        np.savez_compressed(scan_directory / f"{sweep_stem}.npz", **scan_record)
     # Step 4: per-scan and mean metrics for the split.
     with open(output_path / split_name / "lidar_metrics.json", "w", encoding="utf-8") as metrics_file:
         json.dump({"mean": mean_metrics(per_scan_metrics), "per_scan": per_scan_metrics}, metrics_file, indent=1)

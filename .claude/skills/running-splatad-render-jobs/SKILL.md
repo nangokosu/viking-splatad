@@ -69,7 +69,7 @@ Wait for `copied_back_utc` in `job_info.txt` (the job's copy-back to home), then
 ```bash
 uv run python scripts/slurm/submit_run.py fetch <run_id>
 ```
-Result on the Mac in `runs/<run_id>/`:
+Result on the Mac in `runs/<run_id>/`. Every file and key is described in `RUN_OUTPUTS_GLOSSARY.md` inside the run folder: the job copies it from `scripts/slurm/`, so it matches the run's code version. Update that glossary whenever the outputs change; a test checks that it documents every lidar npz key.
 - `renders/{train,test}/{rgb,gt-rgb}/*.jpg`: one per camera pose; file names are frame index + timestamp.
 - `renders/{train,test}/lidar/<idx>_<ts_ns>.npz`: one per lidar pose, named exactly like the input sweep `data/intermediate/<session>/lidar/<sensor>/<idx>_<ts_ns>.npy`.
 - `renders/{train,test}/lidar_metrics.json`: SplatAD's built-in per-scan lidar metrics, with `mean` and `per_scan` (depth_median_l2, intensity_rmse, ray_drop_accuracy, chamfer_distance, ...).
