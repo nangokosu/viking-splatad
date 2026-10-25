@@ -128,13 +128,20 @@ if [ ! -f "$TRAIN_CONFIG" ]; then
 fi
 RENDER_START_SECONDS=$(date +%s)
 echo "render_start_epoch_s: $RENDER_START_SECONDS" >> "$JOB_INFO"
+# `ns-render dataset --downscale-factor` asserts the dataparser config has a downscale_factor
+# field, which viking-data lacks (render.py:929, job 222565). Omitting the flag renders at native
+# resolution, so pass it only when the factor is not 1 (numeric compare, so "1.0" counts as 1).
+RENDER_DOWNSCALE_ARGS=()
+if awk -v factor="$RENDER_DOWNSCALE_FACTOR" 'BEGIN { exit !(factor != 1) }'; then
+  RENDER_DOWNSCALE_ARGS=(--downscale-factor "$RENDER_DOWNSCALE_FACTOR")
+fi
 ns-render dataset \
   --load-config "$TRAIN_CONFIG" \
   --output-path "$RUN_DIR/renders" \
   --pose-source "$RENDER_POSE_SOURCE" \
   --rendered-output-names rgb gt-rgb \
   --image-format jpeg \
-  --downscale-factor "$RENDER_DOWNSCALE_FACTOR"
+  ${RENDER_DOWNSCALE_ARGS[@]+"${RENDER_DOWNSCALE_ARGS[@]}"}  # empty-array-safe under set -u (bash < 4.4)
 RENDER_END_SECONDS=$(date +%s)
 
 # ---- (f) done -------------------------------------------------------------------------------
