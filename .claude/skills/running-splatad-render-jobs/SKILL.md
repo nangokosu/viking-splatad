@@ -1,6 +1,6 @@
 ---
 name: running-splatad-render-jobs
-description: Use when training SplatAD and rendering camera images on the CS Lab Slurm cluster - submitting a smoke or full run, checking whether a running job is stuck, fetching renders, or judging whether rendered vs real camera images indicate a data/calibration bug or just undertraining.
+description: Use when training SplatAD and rendering camera images on the CS Lab Slurm cluster - submitting a smoke or full run, checking whether a running job is stuck or failed, or fetching its renders back to the Mac.
 ---
 
 # Running SplatAD train+render jobs on Slurm
@@ -32,25 +32,12 @@ ssh <user>@comps0.cs.toronto.edu "srun --jobid=<job> --overlap -n1 -c1 bash -c \
 ```
 (`-n1` or it runs once per task.) Progressing = GPU busy and the `events.out.tfevents` mtime advancing / new `step-*.ckpt`. Truly stuck = GPU idle and nothing advancing for >10 min. Held `user_env_retrieval_failed_requeued_held` or a silent ~15 s death → see building-splatad-cluster-env table.
 
-## Fetch and compare
+## Fetch
+Wait for `copied_back_utc` in `job_info.txt` (the job's copy-back to home), then:
 ```bash
 uv run python scripts/slurm/submit_run.py fetch <run_id>
-uv run python scripts/slurm/compare_renders.py runs/<run_id> \
-    --raw-camera-dir data/intermediate/<session>/camera/ids_camera
 ```
-Prints per-split PSNR and writes `runs/<run_id>/compare/{test,train}_render_vs_gt.jpg` (start/mid/end; render left, real right). Look at the sheets — PSNR alone does not show alignment.
-
-## Judging renders
-
-| Observation | Meaning |
-|---|---|
-| gt-rgb vs raw frame ≪ 50 dB (baseline 53.7) | Dataparser feeds a different image → input bug |
-| Mirrored/flipped/wrong direction, wrong scale, objects offset from real frame, doubled trunks/cars | Data bug: pose convention, intrinsics, extrinsic, timing, world frame, rosbag topic (e.g. deskewed clouds) |
-| Held-out geometry wrong while train is fine | Poses inconsistent → data bug |
-| Right geometry, speckle/dots on surfaces, blur, floaters | Undertraining (3k of stock 30k iters); fixes with more iterations |
-
-**Reference:** smoke run 222568 (`b8104e1`): PSNR train 20.05 / test 19.88 dB, geometry aligned, speckled — a PASS.
-**Train ≈ test is expected here:** test = every 10th frame, interleaved ~0.1–0.9 s from train frames, and short training memorises little. A train>test gap appears with longer training. This split tests interpolation only, not novel views.
+Result on the Mac in `runs/<run_id>/`: `renders/{train,test}/{rgb,gt-rgb}/*.jpg` (one per camera pose, file names = frame index + timestamp), `train/.../config.yml`, the latest `step-*.ckpt`, `job_info.txt`, the Slurm log. A complete smoke run has 135 train + 15 test frames per output.
 
 ## Known traps
 - Never pass `ns-render --downscale-factor` with viking-data (asserts; render.py:929). The sbatch omits it when the factor is 1.
