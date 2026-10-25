@@ -6,3 +6,6 @@ __pycache__/
 third_party/
 runs/
 *.tar
+
+# macOS Finder metadata
+.DS_Store

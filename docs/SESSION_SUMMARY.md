@@ -1,47 +1,42 @@
 # Last session summary (2026-10-25)
 
 ## Done
-- **Docker image built:** `viking-splatad:cu118` (`aab3781dea3e`, sm_86 only), recorded in `docker/README.md`.
-  - Build fixes `a14bb2a`: tinycudann import check moved to the GPU; `test_camera.py` distortion cast to float32 (input dtype only).
-  - Pip lock `f1ef0b8`, fixed in `b9e2c23`: `pytest` is no longer pinned globally because neurad's `[dev]` extra pins 7.1.2. The final install step applies `final-step-pin: pytest==9.1.1`.
-  - `9659c60`: `src/` is now copied after the CUDA builds, so src changes rebuild in minutes. Only the Ouster patcher is copied early.
-- **Bug fixed (`c713a02`), found by the new CPU preflight:** the dataparser crashed on every real manifest.
-  - Cause: extraction writes `min_lidar_dist` as a `(dx, dy, dz)` ego box; the reader assumed a scalar.
-  - Fix: the reader accepts both formats.
-  - Tests: new `tests/unit/test_ego_filter_formats.py`; no existing test changed.
-- **CPU preflight:** `scripts/slurm/preflight_dataparser.py` runs in the image on the Mac.
-  - Smoke dataset: 1639 train / 182 eval frames, 2055×1541 images, undistorted.
-  - Lidar-on-image overlays line up (`reports/may_chunks0_1_smoke/preflight/`, untracked).
-- **Cluster findings** (probe jobs on gpunode2):
-  - GPU: RTX A6000, cc 8.6, 48 GB.
-  - **No container runtime**, and user namespaces are blocked, so neither Apptainer nor the image can run.
-  - Scratch is 99% full (41 GB free).
-- **No-container setup (`b9e2c23`, user-approved; CLAUDE.md rule 10 updated):**
-  - `scripts/slurm/build_env.sbatch` replays the Dockerfile in user space: micromamba 2.9.0-0, python 3.10.12, gcc 11.4.0, CUDA 11.8 (`cluster_env.yaml`). It reads its pins from the Dockerfile and `constraints.txt`.
-  - `scripts/slurm/submit_run.py` has the subcommands `gates / build-env / stage / submit / status / fetch`.
-  - The env directory is named by a hash of the recipe files.
-  - Resources come from `sinfo`: 24 CPUs, 109 GiB.
-  - `scripts/slurm/splatad_run.sbatch` runs `ns-train splatad`, then `ns-render dataset` (rgb + gt-rgb, train+test, downscale 2).
-  - Smoke profile: 7500 iterations, a checkpoint every 2500.
-- **Tests:** full suite 218 passed, 3 skipped; `transform-test-runner` reports PASS.
+- **First SplatAD smoke run on Slurm: passes.**
+  - Job 222568, run `may_chunks0_1_smoke-smoke-20261025-182824-b8104e1`, commit `b8104e1`, A6000.
+  - Parking-lot window 52–67 s: 135 train + 15 test frames, 3000 iterations.
+  - Train took 536 s, rendering 72 s.
+  - Renders line up with the real frames for both train and held-out poses, with no geometry errors. PSNR is 20.05 train / 19.88 test. The surfaces are speckled because the model is undertrained.
+  - The rendered ground-truth images match the raw extracted frames (53.7 dB).
+- **Native cluster env built.**
+  - Job 222558 built `splatad-a1e9255584ab` in about 35 min, and 227 tests passed on the node.
+  - Fixes on the way:
+    - jobs held when variables were passed with `--export=...,K=V`; they now go through `env K=V sbatch` (`e09cc6a`);
+    - jobs that write fast to NFS home are SIGKILLed, so the env and run outputs now go to scratch and are copied back rate-limited (`0bb8ad1`);
+    - tiny-cuda-nn failed to link with `-lcuda`; the stub libcuda is now on the link path (`1d44127`).
+  - Lock files committed in `docker/cluster-locks/` (`81e2b1f`).
+- **Render-step fix:** `ns-render --downscale-factor` asserts with viking-data, so the sbatch now omits it when the factor is 1 (`b8104e1`).
+- **Project skills:**
+  - `.claude/skills/building-splatad-cluster-env`
+  - `.claude/skills/running-splatad-render-jobs` (submit, monitor and fetch only)
+  - Both were tested with fresh agents (`97c3bbf`, `cf0e825`).
+- **`scripts/slurm/compare_renders.py`:** per-split PSNR plus render-vs-real comparison sheets, with 5 tests (`97c3bbf`). No skill refers to it.
+- **Tests:** full suite 233 passed, 3 skipped.
 
 ## Current state
-- **Stage root:** `~/viking-splatad` on cluster NFS home (`configs/slurm.yaml`). It holds `data/may_chunks0_1_smoke`, uploaded.
-- **Environment build:** 🔄 job **222519** is building `envs/splatad-5e2b8f64f32e`. Log: `envs/logs/splatad-5e2b8f64f32e-222519.out`.
-- **Username:** the cluster user is not in `~/.ssh/config`. Run `submit_run.py` with `VIKING_SLURM_USER=<user>`.
-- **Mac image is stale:**
-  - `viking-splatad:cu118` predates `c713a02`. For CPU checks, bind-mount `src/`.
-  - The restructured Dockerfile has not been rebuilt yet; the earlier rebuild failed on the pytest lock, now fixed.
+- **Cluster:**
+  - Env `splatad-a1e9255584ab` on scratch dir `expires-2026-Nov-07`, so rebuild after that date (`submit_run.py build-env`).
+  - Stage root `~/viking-splatad` holds `data/may_chunks0_1_smoke`, `code/<sha>` and `runs/`.
+- **Mac:**
+  - The fetched run is in `runs/` (gitignored).
+  - Preflight overlays are in `reports/may_chunks0_1_smoke/`.
+  - The Docker image `viking-splatad:cu118` predates `c713a02`, so bind-mount `src/` for CPU checks.
 - **Open issues:**
-  - `cluster_env.yaml` leaves cmake/ninja/git/make/ffmpeg unpinned. After the build, commit the exported `viking-conda-explicit.txt` as their lock.
-  - Untracked files: `.DS_Store`, `reports/may_chunks0_1_smoke/`.
+  - The viser web client doesn't build on the nodes (yarn timeout). Only the interactive viewer needs it.
+  - The test split is every 10th frame interleaved with training frames, so it only tests interpolation.
+  - Lidar renders were not checked.
 
 ## Next steps
-1. When job 222519 ends, read its log.
-   - On failure: diagnose, fix the recipe, commit, then `build-env` again.
-   - On success: copy back `viking-pip-freeze.txt` and `viking-conda-explicit.txt`, review the pip drift, and commit the locks.
-2. `VIKING_SLURM_USER=<user> uv run python scripts/slurm/submit_run.py submit --session may_chunks0_1_smoke --profile smoke`. Monitor with `status <job>`.
-3. Run `fetch <run_id>` and compare rendered `rgb` against `gt-rgb` and the raw frames: train and held-out, at the start, middle and end of the drive.
-4. If the renders stray, diagnose by symptom: pose convention, intrinsics, extrinsics/timing, world frame, calibration source, or rosbag topic choice (e.g. deskewed clouds). Fix, then resubmit, and repeat until the renders match.
-5. Rebuild the Mac reference image from a clean worktree, as a background task.
-6. Only after the smoke matches: full May Scene A, then June B/R (PLAN.md).
+1. Optionally, a 30k-iteration run of the same window, to confirm the speckle clears with training.
+2. Full May Scene A with stock SplatAD, then June B and R (`docs/PLAN.md`).
+3. Before evals, decide the held-out protocol (a held-out stretch of the drive vs interleaved frames).
+4. Rebuild the Mac reference image from a clean worktree, in the background.
