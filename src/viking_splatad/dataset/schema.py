@@ -7,7 +7,7 @@ quaternions (x, y, z, w). Equality is exact for numpy arrays (see ``values_equal
 import dataclasses
 import numbers
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -118,13 +118,15 @@ class LidarInfo(ExactEqualityMixin):
     ``elevation_mapping`` maps channel id -> elevation angle [rad];
     ``azimuth_resolution`` is radians per azimuth bin; ``azimuth_tile_width`` is the
     number of azimuth bins per rasterisation tile; ``sweep_period`` is seconds/sweep.
+    ``min_lidar_dist`` is the ego filter: the extraction pipeline writes (dx, dy, dz) box
+    half-extents [m]; a scalar is read as a sphere radius [m].
     """
 
     lidar_type: str
     elevation_mapping: Dict[int, float]
     azimuth_resolution: float
     azimuth_tile_width: int
-    min_lidar_dist: float
+    min_lidar_dist: Union[float, Tuple[float, float, float]]
     intensity_scale: float
     sweep_period: float
 

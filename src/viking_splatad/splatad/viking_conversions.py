@@ -15,7 +15,7 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -64,7 +64,12 @@ class NeuradLidarModel:
             to the rasteriser, which sorts the values; ids only matter for missing points).
         azimuth_resolution_degrees: degrees per azimuth column.
         revolution_time_seconds: seconds per sweep.
-        min_lidar_radius: points closer than this [m] to the sensor are ego returns.
+        min_lidar_radius: points closer than this [m] to the sensor are ego returns (sphere
+            test; 0.0 = disabled). Set when the manifest stores a scalar ``min_lidar_dist``.
+        ego_box_half_extents: (dx, dy, dz) [m]; a point inside the box on every axis is an ego
+            return (box test; zeros = disabled). Set when the manifest stores a 3-vector, which
+            is what the extraction pipeline writes (``pipeline/derived.py``) and already applied
+            to the sweeps (``extract/lidar.py``), so re-applying it is idempotent.
     """
 
     type_name: str
@@ -72,6 +77,7 @@ class NeuradLidarModel:
     azimuth_resolution_degrees: float
     revolution_time_seconds: float
     min_lidar_radius: float
+    ego_box_half_extents: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -176,24 +182,59 @@ def neurad_lidar_model_from_manifest(lidar_manifest: dict) -> NeuradLidarModel:
         azimuth_resolution_degrees = FULL_TURN_DEGREES / nearest_column_count
     else:
         azimuth_resolution_degrees = float(np.rad2deg(lidar_manifest["azimuth_resolution"]))
+    # Ego filter: a scalar is a sphere radius; a 3-vector is the per-axis box half-extents the
+    # extraction pipeline derives. Exactly one of the two tests is active; the other is the
+    # identity (radius 0 / zero box keep every point).
+    ego_radius, ego_box = parse_ego_filter(lidar_manifest["min_lidar_dist"])
     return NeuradLidarModel(
         type_name=str(lidar_manifest["lidar_type"]),
         elevation_mapping_degrees=elevation_mapping_degrees,
         azimuth_resolution_degrees=azimuth_resolution_degrees,
         revolution_time_seconds=float(lidar_manifest["sweep_period"]),
-        min_lidar_radius=float(lidar_manifest["min_lidar_dist"]),
+        min_lidar_radius=ego_radius,
+        ego_box_half_extents=ego_box,
     )
 
 
-def load_lidar_sweep(sweep_path: Path, min_lidar_radius: float) -> np.ndarray:
+def parse_ego_filter(min_lidar_dist) -> Tuple[float, Tuple[float, float, float]]:
+    """Split the manifest's ``min_lidar_dist`` into (sphere radius, box half-extents).
+
+    Args:
+        min_lidar_dist: a real scalar (sphere radius [m]) or a length-3 sequence
+            (dx, dy, dz box half-extents [m]).
+
+    Returns:
+        ``(radius, (dx, dy, dz))`` with the unused test set to its identity value
+        (radius 0.0 or a zero box: ``||p|| >= 0`` and ``any(|p_i| >= 0)`` always hold).
+
+    Raises:
+        ValueError: any other shape.
+    """
+    values = np.asarray(min_lidar_dist, dtype=np.float64)
+    # 0-d: scalar radius, box disabled.
+    if values.ndim == 0:
+        return float(values), (0.0, 0.0, 0.0)
+    # Length-3 vector: box enabled, radius disabled.
+    if values.shape == (3,):
+        return 0.0, (float(values[0]), float(values[1]), float(values[2]))
+    raise ValueError(f"min_lidar_dist must be a scalar or 3 values, got shape {values.shape}")
+
+
+def load_lidar_sweep(
+    sweep_path: Path,
+    min_lidar_radius: float,
+    ego_box_half_extents: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> np.ndarray:
     """Load one sweep and drop ego returns and non-finite rows.
 
-    The manifest holds a single scalar ``min_lidar_dist``, interpreted as a sphere radius:
-    row is kept iff ``||xyz|| >= min_lidar_radius``.
+    A row is kept iff it is finite, ``||xyz|| >= min_lidar_radius`` (sphere test) and
+    ``any_i |xyz_i| >= ego_box_half_extents_i`` (box test, same rule as
+    ``extract/lidar.assemble_scan_array``). Either test is the identity at its zero value.
 
     Args:
         sweep_path: ``.npy`` file with float32 [n,5|6] ``x,y,z,intensity,t[,channel]``.
-        min_lidar_radius: Ego-return radius in metres.
+        min_lidar_radius: Ego-return radius in metres (0 = disabled).
+        ego_box_half_extents: Ego box half-extents (dx, dy, dz) in metres (zeros = disabled).
 
     Returns:
         float32 [m,5|6] array, m <= n.
@@ -201,7 +242,9 @@ def load_lidar_sweep(sweep_path: Path, min_lidar_radius: float) -> np.ndarray:
     sweep = np.load(sweep_path).astype(np.float32, copy=False)
     # Range of every point from the sensor origin (sensor frame).
     ranges = np.linalg.norm(sweep[:, :3], axis=1)
-    keep_mask = np.isfinite(sweep).all(axis=1) & (ranges >= min_lidar_radius)
+    # Outside the box on at least one axis = not an ego return.
+    outside_box = np.any(np.abs(sweep[:, :3]) >= np.asarray(ego_box_half_extents, dtype=np.float32), axis=1)
+    keep_mask = np.isfinite(sweep).all(axis=1) & (ranges >= min_lidar_radius) & outside_box
     return sweep[keep_mask]
 
 

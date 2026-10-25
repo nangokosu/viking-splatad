@@ -185,8 +185,12 @@ if NERFSTUDIO_AVAILABLE:
             Returns:
                 One float32 tensor per sweep.
             """
-            radius = self._lidar_arrays.model.min_lidar_radius
-            point_clouds = [torch.from_numpy(load_lidar_sweep(path, radius)) for path in filepaths]
+            # Ego filter from the manifest: sphere radius or box (one of them is the identity).
+            model = self._lidar_arrays.model
+            point_clouds = [
+                torch.from_numpy(load_lidar_sweep(path, model.min_lidar_radius, model.ego_box_half_extents))
+                for path in filepaths
+            ]
             if self.config.add_missing_points:
                 raise NotImplementedError(
                     "add_missing_points (Phase B) is not implemented for the Viking parser yet"
