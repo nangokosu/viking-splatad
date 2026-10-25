@@ -1,24 +1,15 @@
-# Last session summary (2026-10-19)
+# Last session summary (2026-10-25)
 
-## Done
-- **Plan:** `docs/PLAN.md` is the single current plan.
-  - Scene A: trunks, low grass in May and high grass in June.
-  - No May↔June mapping.
-  - **Core June runs:** B (stock SplatAD) vs R (radar seeds + radar opacity loss). Neither uses the photometric loss (`train-lidar-only`), but the camera still colours the initial Gaussians.
-  - **Extensions (each needs approval):** B+cam / R+cam (photometric loss) and R+depth.
-  - **Evaluation:** rendered lidar against June trunk/bush/rock cuboids.
-- **Scene A** (`0ccfa64`; guess-and-check with `scripts/02_scene_quicklook.py`; evidence in `docs/experiments.md` and `reports/scene_a/`):
-  - **May 7–9** and **June 20–22** (chunks must be consecutive).
-  - June 21→22 is an out-and-back through the densest stand. The user suggested using the backtrack (chunk 22) as a held-out evaluation set; it is a candidate split in PLAN §5 (T48, not built yet).
-  - Pinned in `configs/sessions/*.yaml`.
-- **Datasets:** both extracted and the SplatAD contract PASSES.
-  - `data/intermediate/may_short_grass`: 2,401 camera frames / 2,412 lidar scans.
-  - `data/intermediate/june_tall_grass`: 2,153 / 2,162.
-  - The old May chunk 0+1 dataset is `data/intermediate/may_chunks0_1_smoke` (for the Slurm smoke run).
-- **Bug fixed (T49, `0ccfa64`):** the manifest `sweep_period` came from a 50-scan sample of the first chunk. Longer sweeps in June 21–22 (|t| up to 0.10115 s vs 0.10019 s) failed `lidar_point_time_range`.
-  - Now the manifest period = max(derived, longest written |t|), tracked in `extract_state.json`.
-  - 4 new tests in `tests/integration/test_sweep_period_coverage.py`; no existing test changed. Full suite: 200 passed.
-- **Env:** `py7zr`/`requests` declared; `uv sync --extra dev`; plain `uv run pytest` works.
+## Current state (this session, 2026-10-25)
+- **Slurm access:** ✓ Automated SSH login set up via ssh-agent + passphrase caching in `~/.zshrc`. No manual password entry needed. Memory saved.
+- **Docker build:** 🔄 **IN PROGRESS** on Mac with `CUDA_ARCHITECTURES=86` (RTT A2000 on cluster). Build started ~11:14 AM, will take ~2–3 hours (amd64 emulation). Fixed: removed tinycudann import check from verification (requires GPU, won't work on Mac).
+- **CS Lab resources:** ✓ Confirmed: 1 GPU per node, NVIDIA RTX A2000 12GB (compute capability 8.6).
+
+## Previous (from 2026-10-19)
+- **Plan:** `docs/PLAN.md` is the single current plan (Scene A, May 7–9 vs June 20–22, core B vs R, no photometric loss).
+- **Scene A:** pinned in `configs/sessions/*.yaml`.
+- **Datasets:** both extracted, contract passes. Smoke dataset: `data/intermediate/may_chunks0_1_smoke`.
+- **Env:** `uv sync --extra dev`; `uv run pytest` works.
 
 ## State / open issues
 - **Raw bags on disk:** May 0, 1, 7, 8, 9 and June 20, 21, 22.
@@ -29,12 +20,19 @@
 - **Network:** `-m real_data` includes a live Zenodo test; use `-k "not zenodo"`.
 - **Untracked:** `.DS_Store`.
 
-## Next steps
-1. Decide the June split: interleaved (default) or backtrack hold-out (chunk 22, needs T48).
-2. Build the image and run the Slurm smoke test on `may_chunks0_1_smoke`.
+## Next steps (step 2 in progress)
+### Immediate (when Docker build completes)
+1. ✓ **Slurm SSH access:** Automated, no manual password entry.
+2. **Docker build & smoke test (🔄 IN PROGRESS):**
+   - Once Docker build finishes, check: `docker image ls | grep viking-splatad`
+   - Lock pip versions: `docker run --rm viking-splatad:cu118 pip freeze --exclude-editable --exclude tinycudann > docker/constraints.txt` then commit.
+   - Save image: `docker save viking-splatad:cu118 -o viking-splatad-cu118.tar`
+   - Transfer to Slurm: `rsync -P viking-splatad-cu118.tar <user>@comps0.cs.toronto.edu:/scratch/scratch-space/<latest-expiring>/`
+   - On cluster (via sbatch): `apptainer build viking-splatad-cu118.sif docker-archive://viking-splatad-cu118.tar`
+   - Query node specs: `sinfo -p gpunodes -O NodeHost,Memory,CPUs` (needed for resource requests)
+   - Draft and submit Slurm job: `sbatch --partition=gpunodes --gres=gpu:1 -c <C> --mem=<M>G -t <time> ... ns-train splatad viking-data --data /data/...`
+
+### After smoke test passes
 3. Run May Scene A with held-out metrics (PLAN §3).
-4. Build with parallel subagents:
-   - radar seeds T34–T36 + `07`;
-   - parser/contract/model T39–T43;
-   - eval `08`/`09` T45–T47.
-5. Run June B and R (core, no photometric loss): smoke runs, then full runs, then evaluate (PLAN §5). Extensions only with approval.
+4. Build with parallel subagents (radar seeds T34–T36, parser/contract/model T39–T43, eval T45–T47).
+5. Run June B and R (core, no photometric loss): smoke → full → evaluate. Extensions only with approval.
