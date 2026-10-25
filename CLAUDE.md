@@ -27,19 +27,19 @@ Plan: `docs/PLAN.md`. SplatAD internals: `docs/research/splatad_extension_points
 7. SplatAD training/rendering needs CUDA, so it runs only on the CS Lab Slurm cluster (see "GPU training on Slurm" below). Everything else (tests, conversion, non-CUDA GPU work) runs on the Mac, which may use its own GPU (MPS).
 8. Network fetches use an anonymous identifier (e.g. `viking-splatad/0.1`); no personal info in headers, URLs or bodies.
 9. Run Python with the project venv: `uv run pytest`. Set the venv up with `uv sync --extra dev`, because pytest is in the `dev` extra. Every import must be declared in `pyproject.toml`: a plain `uv sync` removes anything installed by hand.
-10. **Reproducibility (core goal):** every SplatAD run uses the image from `docker/Dockerfile.splatad` (run with Apptainer on Slurm, see `docker/README.md`). New dependencies go into the Dockerfile and `docker/constraints.txt`, never installed by hand on the cluster. Every upstream is pinned: base image by digest, git by full SHA, pip by constraints.
+10. **Reproducibility (core goal):** `docker/Dockerfile.splatad` is the single recipe and the source of every pin: git by full SHA, pip by `docker/constraints.txt`, toolchain versions. The CS Lab GPU nodes have no container runtime and block user namespaces (probed 2026-10-25), so every SplatAD run on Slurm uses the **native environment** that `scripts/slurm/build_env.sbatch` builds from that recipe (`scripts/slurm/submit_run.py build-env`). The environment is named by a hash of the committed recipe files, so a run always uses the environment its recipe describes. The Docker image is the reference build and is used on the Mac for CPU checks (`scripts/slurm/preflight_dataparser.py`). New dependencies go into the Dockerfile and `docker/constraints.txt` (plus `scripts/slurm/cluster_env.yaml` for conda-level tools), never installed by hand on the cluster.
 
 ## GPU training on Slurm (every run)
 Only for SplatAD (CUDA-only). Other GPU work uses the Mac's GPU.
 Source: https://support.cs.toronto.edu/systems/slurmresource.html
-1. **Mac first:** `uv run pytest` and `scripts/06_validate_contract.py` both pass.
+1. **Mac first:** `uv run pytest` and `scripts/06_validate_contract.py` both pass (`submit_run.py gates`), and the CPU preflight in the image shows sane lidar-on-image overlays.
 2. **Log in:** `ssh comps0.cs.toronto.edu` (comps0–3). Submit jobs from there. Never compute there.
 3. **Check nodes:** `slurm_report -g`, `sinfo -p gpunodes -O NodeHost,Memory,CPUs`. One GPU per node, so request all of its CPUs and most of its RAM. Read the sizes from `sinfo`. Never guess them.
-4. **Stage data:** `ls -1 /scratch/scratch-space/ | egrep expires`. Use the directory that expires last. The job must finish before that date.
-5. **Submit with `sbatch`:** always `--partition=gpunodes --gres=gpu:1 -c <C> --mem=<M>G -t <≤5-0>`. The defaults (1 core, 1 GB, 12 h) are too small. A limit over 5 days never schedules. Never use `--get-user-env`. Checkpoint often: jobs are killed at the time or memory limit.
+4. **Stage data:** `submit_run.py stage --session <s>` into `stage_root` (`configs/slurm.yaml`), currently `~/viking-splatad` on NFS home: the shared scratch volume was 99% full at the 2026-10-25 probe (user decision). If scratch is used again, take the directory that expires last (`ls -1 /scratch/scratch-space/ | egrep expires`), and the job must finish before that date.
+5. **Submit with `sbatch`** (via `submit_run.py submit`): always `--partition=gpunodes --gres=gpu:rtx_a6000:1 -c <C> --mem=<M>G -t <≤5-0>`; the environment is compiled for sm_86 (A6000). The defaults (1 core, 1 GB, 12 h) are too small. A limit over 5 days never schedules. Never use `--get-user-env`. Checkpoint often: jobs are killed at the time or memory limit.
 6. **Interactive (`srun ... -t 60 --pty bash`) for short debugging only.** Exit right away. Claimed-but-idle resources still lower priority.
 7. **Monitor:** `squeue -u $USER`, then `sacct` after the job ends. `scancel <id>` if it's stuck.
-8. **Clean up:** copy outputs off scratch before it expires.
+8. **Clean up:** `submit_run.py fetch <run_id>` copies outputs back; if scratch was used, do it before the directory expires.
 
 ## Session summary (read at start, overwrite at end)
 - **Start of session:** the last session's summary is imported below. Treat it as the current state and verify file/flag names it mentions before relying on them.

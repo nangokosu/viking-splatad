@@ -1,0 +1,28 @@
+# Conda layer of the native (no-container) SplatAD environment on the CS Lab GPU nodes.
+# The nodes have no container runtime and block user namespaces (probe jobs, 2026-10-25), so
+# build_env.sbatch reproduces docker/Dockerfile.splatad in user space. This file replaces the
+# Dockerfile's base image + apt layer; every version equals what the reference image ships
+# (read from viking-splatad:cu118: python3.10 --version, gcc --version, nvcc --version):
+#   python 3.10.12, gcc/g++ 11.4.0, CUDA toolkit 11.8 (nvcc 11.8.89).
+# The host's own CUDA 13.3 / gcc 15 / python 3.14 are too new for torch 2.0.1+cu118 and nvcc 11.8.
+# Only the host's NVIDIA driver (libcuda) is used, as with `apptainer --nv`.
+name: splatad
+channels:
+  # NVIDIA's frozen label for the 11.8.0 toolkit (same release as the nvidia/cuda:11.8.0 image).
+  - nvidia/label/cuda-11.8.0
+  - conda-forge
+dependencies:
+  - python=3.10.12
+  # Compilers nvcc 11.8 accepts (it rejects gcc > 11); same major.minor.patch as the image.
+  - gcc=11.4.0
+  - gxx=11.4.0
+  # nvcc, headers and dev libraries (cudart, cublas, cusparse, ...) for the extension builds.
+  - cuda-toolkit=11.8.0
+  # Build tools the Dockerfile took from apt (build-essential, cmake, ninja-build, git).
+  - cmake
+  - ninja
+  - git
+  - make
+  # Runtime libs the apt layer supplied for rendering videos and OpenCV.
+  - ffmpeg
+  - pip

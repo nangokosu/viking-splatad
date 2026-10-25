@@ -149,7 +149,10 @@ COPY configs /workspace/viking-splatad/configs
 COPY scripts /workspace/viking-splatad/scripts
 # Loaded by path in tests/unit/test_readonly_guard.py.
 COPY .claude/hooks/readonly_bash_guard.py /workspace/viking-splatad/.claude/hooks/readonly_bash_guard.py
-RUN python3.10 -m pip install -e "/workspace/viking-splatad[dev]"
+# The final-step pytest pin lives in constraints.txt as a comment (it cannot be a global
+# constraint: neurad-studio[dev] pins an older pytest in the step above).
+RUN python3.10 -m pip install -e "/workspace/viking-splatad[dev]" \
+        "$(grep -oE 'final-step-pin: pytest==[0-9.]+' /opt/viking/constraints.txt | cut -d' ' -f2)"
 
 # Register the `viking-data` dataparser with ns-train (value printed by
 # install_into_neurad.sh; T27).

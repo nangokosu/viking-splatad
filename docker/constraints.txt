@@ -8,6 +8,11 @@
 # setuptools is omitted by pip freeze; the bootstrap pin is kept explicitly
 # because neurad-studio's build needs setuptools<70.
 setuptools<70.0
+# pytest is NOT constrained globally: neurad-studio[dev] pins pytest==7.1.2 for its own
+# install step, and this repo's [dev] extra (pytest>=8) upgrades it in the last step. A
+# global pin satisfies only one of the two, so the final install step alone applies the
+# version below (read from this line by docker/Dockerfile.splatad and build_env.sbatch):
+# final-step-pin: pytest==9.1.1
 # pandaset @ git+https://github.com/scaleapi/pandaset-devkit.git@59be180e2a3f3e37f6d66af9e67bf944ccbf6ec0#subdirectory=python
 # viser @ git+https://github.com/atonderski/viser.git@57142e42df8edd4de33fd60a08d6bb6c35970aa1
 absl-py==2.5.1
@@ -225,7 +230,6 @@ pyproj==3.7.1
 pyquaternion==0.9.9
 pyrsistent==0.20.0
 PySocks==1.7.1
-pytest==9.1.1
 pytest-forked==1.7.5
 pytest-xdist==2.5.0
 python-box==6.1.0

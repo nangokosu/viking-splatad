@@ -1,0 +1,67 @@
+# Slurm submission settings for SplatAD runs on the CS Lab cluster (read by scripts/slurm/submit_run.py).
+# Source of the cluster rules: https://support.cs.toronto.edu/systems/slurmresource.html
+# No personal information here: the cluster username is taken at runtime from ~/.ssh/config
+# (User for this host) or from the VIKING_SLURM_USER environment variable.
+
+# Login node used to submit jobs (comps0-3 are equivalent; never compute there).
+ssh_host: comps0.cs.toronto.edu
+
+# The only partition with GPUs (CLAUDE.md "GPU training on Slurm", step 5).
+partition: gpunodes
+# The probe job saw RTX A6000 = compute capability 8.6 on gpunode2. build_env.sbatch compiles the
+# CUDA kernels for the GPU of the node it runs on (nvidia-smi compute_cap), so the environment
+# is sm_86-only and every job (build and run) must land on the same GPU type.
+# The GPU type used to filter `sinfo` rows is derived from this string (its middle field).
+gres: gpu:rtx_a6000:1
+
+# Fraction of the matching node's RAM requested with --mem. "Most of its RAM": the remaining
+# 10% is headroom for the OS, the Slurm daemon and the page cache, so the job is not
+# OOM-killed or the node marked unhealthy when it asks for every last MB.
+mem_fraction: 0.9
+
+# Stage directory on the cluster, RELATIVE TO THE REMOTE HOME (resolved to an absolute path over
+# ssh at submit time, so no username or home path is stored here). Holds bin/ (micromamba),
+# envs/, code/<sha>/, data/<session>/ and runs/<run_id>/.
+# NFS home, not /scratch/scratch-space: the scratch volume was 99% full (41 GB free, shared)
+# at the 2026-10-25 probe, while home had 551 GB free and does not expire (user decision).
+stage_root: viking-splatad
+
+# micromamba (user-space conda) used to create the environment. Pinned release and its
+# published sha256 (micromamba-linux-64.sha256 of that GitHub release, fetched 2026-10-25);
+# build_env.sbatch refuses a binary whose checksum differs.
+micromamba_version: 2.9.0-0
+micromamba_sha256: 366cd9cd8be14df1ab8ed50352a82111082a36686b2d389fdb79a92c3fafb3e3
+
+# Files whose committed contents define the environment. Their hash names the env directory
+# (envs/splatad-<hash>), so a run always uses the env its recipe describes, and changing any of
+# them requires a new `build-env`.
+environment_recipe_files:
+  - docker/Dockerfile.splatad
+  - docker/constraints.txt
+  - scripts/slurm/cluster_env.yaml
+  - scripts/slurm/build_env.sbatch
+  - pyproject.toml
+
+env_build:
+  # Conservative cap, far under the 5-day limit: the reference image build compiled the same
+  # kernels in ~2-3 h under amd64 emulation on a Mac; natively on 24 cores it is expected to be
+  # well under that. Refine from sacct Elapsed of the first build.
+  time_limit: "0-06:00:00"
+
+profiles:
+  smoke:
+    # SplatAD's stock schedule is max_num_iterations=30001 (neurad-studio method_configs).
+    # Smoke = a quarter of it: 30001 / 4 = 7500.25 -> 7500 iterations. Enough for Gaussians to
+    # densify and the loss to visibly fall, at a quarter of the cost.
+    max_num_iterations: 7500
+    # Stock steps_per_save is 2000. 7500 / 2500 = 3 checkpoints (steps 2500, 5000, 7500), so at
+    # least two exist before the end and checkpoint/resume can be exercised.
+    steps_per_save: 2500
+    # Conservative cap, far under the 5-day limit, for ~7.5k iterations plus the render pass;
+    # refine from the measured train/render timings in job_info.txt and `sacct` Elapsed.
+    time_limit: "0-06:00:00"
+    # Render the train and test poses so both fit quality and held-out quality can be viewed.
+    render_pose_source: train+test
+    # Halves each image side (2055x1541 -> ~1028x771): 1/4 of the pixels for ~1800 frames x 2
+    # outputs (rgb, gt-rgb), while trunk-scale detail stays visible.
+    render_downscale_factor: 2
