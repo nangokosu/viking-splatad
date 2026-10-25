@@ -122,7 +122,8 @@ def project_line(normalized_y: float, distortion: list, intrinsics: CameraIntrin
     x_values = np.linspace(-1.2, 1.2, sample_count)
     points_3d = np.stack([x_values, np.full(sample_count, normalized_y), np.ones(sample_count)], axis=1)
     camera_matrix = np.array([[intrinsics.fx, 0, intrinsics.cx], [0, intrinsics.fy, intrinsics.cy], [0, 0, 1.0]])
-    pixels, _ = cv2.projectPoints(points_3d, np.zeros(3), np.zeros(3), camera_matrix, np.array(distortion))
+    # OpenCV requires distortion to be float32/float64, not int.
+    pixels, _ = cv2.projectPoints(points_3d, np.zeros(3), np.zeros(3), camera_matrix, np.array(distortion, dtype=np.float32))
     return pixels.reshape(-1, 2)
 
 
@@ -177,7 +178,7 @@ def test_undistort_new_intrinsics_reproject_known_point():
     point_3d = np.array([[0.1, -0.05, 1.0]])
     camera_matrix = np.array([[SYNTHETIC_FX, 0, SYNTHETIC_CX], [0, SYNTHETIC_FY, SYNTHETIC_CY], [0, 0, 1.0]])
     distorted_pixel, _ = cv2.projectPoints(point_3d, np.zeros(3), np.zeros(3), camera_matrix,
-                                           np.array(SYNTHETIC_DISTORTION_OPENCV))
+                                           np.array(SYNTHETIC_DISTORTION_OPENCV, dtype=np.float32))
     canvas = np.zeros((SYNTHETIC_HEIGHT, SYNTHETIC_WIDTH), dtype=np.uint8)
     cv2.circle(canvas, tuple(np.round(distorted_pixel.reshape(2)).astype(int)), 3, 255, -1)
 
