@@ -61,14 +61,15 @@ def test_lidar_model_accepts_real_box_format():
 @pytest.mark.covers("T27")
 def test_load_lidar_sweep_box_keeps_points_outside_on_any_axis(tmp_path):
     """Box test: keep iff |x|>=dx or |y|>=dy or |z|>=dz (boundary counts as outside)."""
-    half_extents = (0.5, 0.4, 0.3)
+    # Dyadic half-extents are exact in float32, so the boundary row tests ">=" exactly.
+    half_extents = (0.5, 0.375, 0.25)
     xyz = np.array([
-        [0.1, 0.1, 0.1],     # inside on every axis -> ego
-        [0.6, 0.0, 0.0],     # outside on x -> keep
-        [0.0, -0.45, 0.0],   # outside on y (|y| = 0.45 >= 0.4) -> keep
-        [0.0, 0.0, 0.3],     # exactly on the z boundary -> keep (>=)
-        [0.49, 0.39, 0.29],  # just inside on every axis -> ego
-        [10.0, 0.0, 0.0],    # far scene point -> keep
+        [0.125, 0.125, 0.125],  # inside on every axis -> ego
+        [0.625, 0.0, 0.0],      # outside on x -> keep
+        [0.0, -0.4375, 0.0],    # outside on y (|y| = 0.4375 >= 0.375) -> keep
+        [0.0, 0.0, 0.25],       # exactly on the z boundary -> keep (>=)
+        [0.4375, 0.3125, 0.1875],  # inside on every axis -> ego
+        [10.0, 0.0, 0.0],       # far scene point -> keep
     ])
     # Expected mask from first principles, axis by axis.
     expected_keep = np.zeros(len(xyz), dtype=bool)

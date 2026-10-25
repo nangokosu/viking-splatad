@@ -102,11 +102,14 @@ RUN echo "${CUDA_ARCHITECTURES}" | tr ';' '\n' \
 
 WORKDIR /workspace
 
-# --- This repo (patcher + dataparser + tests) ---------------------------------
-# Copied before neurad-studio so the OUSTER_OS0_32 patch can be applied to the
-# fresh checkout. .dockerignore keeps data/, .venv and third_party/ out.
-COPY pyproject.toml /workspace/viking-splatad/pyproject.toml
-COPY src /workspace/viking-splatad/src
+# --- The OUSTER_OS0_32 patcher only (T28) --------------------------------------
+# Only the files install_into_neurad.sh needs (the patcher, its package
+# __init__s and registry.py; stdlib-only) are copied before the CUDA builds, so
+# editing the rest of src/ does not invalidate the hours-long layers below. The
+# script finds its sources relative to its own path (REPO_ROOT = ../../..).
+COPY src/viking_splatad/__init__.py src/viking_splatad/registry.py /opt/viking/patcher/src/viking_splatad/
+COPY src/viking_splatad/splatad/__init__.py src/viking_splatad/splatad/install_into_neurad.sh /opt/viking/patcher/src/viking_splatad/splatad/
+COPY src/viking_splatad/splatad/patches/ /opt/viking/patcher/src/viking_splatad/splatad/patches/
 
 # --- neurad-studio at the pinned commit, patched, editable install ------------
 # Step 1: shallow-fetch exactly the pinned commit (no moving branch heads).
@@ -118,7 +121,7 @@ RUN git init neurad-studio && cd neurad-studio && \
     git remote add origin https://github.com/georghess/neurad-studio.git && \
     git fetch --depth 1 origin "${NEURAD_STUDIO_COMMIT}" && \
     git checkout --detach FETCH_HEAD && \
-    bash /workspace/viking-splatad/src/viking_splatad/splatad/install_into_neurad.sh /workspace/neurad-studio && \
+    bash /opt/viking/patcher/src/viking_splatad/splatad/install_into_neurad.sh /workspace/neurad-studio && \
     TORCH_CUDA_ARCH_LIST="$(cat /opt/viking/torch_cuda_arch_list)" \
         python3.10 -m pip install -e ".[dev]" "dataclass-wizard<0.23"
 
@@ -138,6 +141,9 @@ RUN git init splatad && cd splatad && \
         python3.10 -m pip install --no-build-isolation --no-deps --force-reinstall -e .
 
 # --- This repo, editable, with test deps ---------------------------------------
+# Copied after the CUDA builds: src/ changes rebuild only the layers from here on.
+COPY pyproject.toml /workspace/viking-splatad/pyproject.toml
+COPY src /workspace/viking-splatad/src
 COPY tests /workspace/viking-splatad/tests
 COPY configs /workspace/viking-splatad/configs
 COPY scripts /workspace/viking-splatad/scripts
