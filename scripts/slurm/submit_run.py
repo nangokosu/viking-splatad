@@ -30,6 +30,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 import yaml
 
 # Project root = two levels above this file (scripts/slurm/submit_run.py).
@@ -350,6 +351,80 @@ def build_run_id(session: str, profile: str, git_sha: str, now_utc: datetime.dat
     return f"{session}-{profile}-{now_utc.strftime(RUN_TIMESTAMP_FORMAT)}-{git_sha[:SHORT_SHA_LENGTH]}"
 
 
+def dataset_time_span(session_dir: Path) -> Tuple[float, float]:
+    """Earliest and latest timestamp over every sensor stream of an intermediate dataset.
+
+    These are the bounds ADDataParser._filter_based_on_time measures its fractions against
+    (``min``/``max`` of all camera and lidar times).
+
+    Args:
+        session_dir: ``data/intermediate/<session>`` (holds ``poses.npz``).
+
+    Returns:
+        (earliest, latest) in seconds.
+
+    Raises:
+        ValueError: If ``poses.npz`` has no ``*__times`` arrays.
+    """
+    with np.load(session_dir / "poses.npz") as poses:
+        time_arrays = [poses[key_name] for key_name in poses.files if key_name.endswith("__times")]
+    if not time_arrays:
+        raise ValueError(f"{session_dir}/poses.npz has no '<sensor>__times' arrays")
+    return (float(min(times.min() for times in time_arrays)),
+            float(max(times.max() for times in time_arrays)))
+
+
+def window_fractions(earliest_time: float, latest_time: float, window_start_seconds: float,
+                     window_seconds: float) -> Tuple[float, float]:
+    """Convert a time window into the dataparser's dataset start/end fractions.
+
+    ADDataParser keeps data with times in [t0 + f_start*D, t0 + f_end*D], where t0 is the
+    earliest and D = latest - earliest the full span. Solving for the window
+    [t0 + s, t0 + s + w] gives f_start = s / D and f_end = (s + w) / D.
+
+    Args:
+        earliest_time: Earliest sensor time [s].
+        latest_time: Latest sensor time [s].
+        window_start_seconds: Window start s, measured from the earliest time.
+        window_seconds: Window length w.
+
+    Returns:
+        (start_fraction, end_fraction), both in [0, 1], start < end.
+
+    Raises:
+        ValueError: If the window is empty or not inside the recording.
+    """
+    duration = latest_time - earliest_time
+    if duration <= 0 or window_seconds <= 0 or window_start_seconds < 0:
+        raise ValueError("window and recording must have positive length and a non-negative start")
+    if window_start_seconds + window_seconds > duration:
+        raise ValueError(f"window [{window_start_seconds}, {window_start_seconds + window_seconds}] s "
+                         f"exceeds the {duration:.2f} s recording")
+    return window_start_seconds / duration, (window_start_seconds + window_seconds) / duration
+
+
+def profile_window_fractions(profile_settings: Dict[str, Any], session: str) -> Tuple[float, float]:
+    """Dataset fractions for a profile: its time window if set, else the whole recording.
+
+    Args:
+        profile_settings: ``profiles.<name>`` mapping (optional ``window_start_seconds`` and
+            ``window_seconds``, both or neither).
+        session: Dataset name under data/intermediate/ (its timestamps define the span).
+
+    Returns:
+        (start_fraction, end_fraction).
+    """
+    window_keys_present = ["window_start_seconds" in profile_settings, "window_seconds" in profile_settings]
+    if not any(window_keys_present):
+        return 0.0, 1.0
+    # Half a window is a config mistake; say so instead of failing later with a KeyError.
+    if not all(window_keys_present):
+        raise ValueError("profile sets only one of window_start_seconds / window_seconds; set both or neither")
+    earliest_time, latest_time = dataset_time_span(PROJECT_ROOT / "data" / "intermediate" / session)
+    return window_fractions(earliest_time, latest_time, float(profile_settings["window_start_seconds"]),
+                            float(profile_settings["window_seconds"]))
+
+
 def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id: str,
                           git_sha: str, absolute_stage_root: str, env_prefix: str) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
@@ -365,6 +440,7 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
     Returns:
         Mapping variable name -> string value.
     """
+    start_fraction, end_fraction = profile_window_fractions(profile_settings, session)
     return {
         "RUN_ID": run_id,
         "SESSION": session,
@@ -376,13 +452,22 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         "STEPS_PER_SAVE": str(profile_settings["steps_per_save"]),
         "RENDER_POSE_SOURCE": str(profile_settings["render_pose_source"]),
         "RENDER_DOWNSCALE_FACTOR": str(profile_settings["render_downscale_factor"]),
+        # repr keeps every digit of the float, so the job sees exactly the computed window.
+        "DATASET_START_FRACTION": repr(start_fraction),
+        "DATASET_END_FRACTION": repr(end_fraction),
     }
 
 
 def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, time_limit: str,
                          job_name: str, output_path: str, job_environment: Dict[str, str],
                          script_path: str) -> List[str]:
-    """Build the sbatch argument list (resources on the command line, none in the script).
+    """Build the submission command: ``env K=V ... sbatch <resources> <script>``.
+
+    Job variables are set in the submitting environment, which plain ``sbatch`` propagates
+    (its default is ``--export=ALL``). Passing them with ``--export=ALL,K=V`` instead makes
+    this cluster's Slurm retrieve the user's login environment on the node; that fails and the
+    job is requeued and held (``user_env_retrieval_failed_requeued_held``; jobs 222519 and
+    222526, while the same test job submitted as ``env FOO=bar sbatch`` ran, 2026-10-25).
 
     Args:
         partition: Slurm partition.
@@ -392,29 +477,32 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
         time_limit: ``D-HH:MM:SS``; must be at most 5 days.
         job_name: --job-name value.
         output_path: --output path (may contain %j).
-        job_environment: Variables exported in addition to the submitting environment.
+        job_environment: Variables the job needs, set via ``env`` before ``sbatch``.
         script_path: Remote path of the batch script.
 
     Returns:
-        Argument list starting with ``sbatch``. Never contains ``--get-user-env``.
+        Argument list ``["env", "K=V", ..., "sbatch", ...]``. Never contains ``--get-user-env``
+        or ``--export``.
 
     Raises:
-        ValueError: If the time limit exceeds 5 days, resources are non-positive, or an exported
-            value contains a comma (which would split the --export list).
+        ValueError: If the time limit exceeds 5 days, resources are non-positive, or a variable
+            name is not a valid shell identifier (``env`` would misparse it).
     """
     # Step 1: validate the cluster rules.
     if parse_slurm_time_limit_seconds(time_limit) > MAXIMUM_TIME_LIMIT_SECONDS:
         raise ValueError(f"time limit {time_limit} exceeds the 5-day cluster maximum")
     if cpus <= 0 or memory_gb <= 0:
         raise ValueError(f"cpus ({cpus}) and memory_gb ({memory_gb}) must be positive")
-    # Step 2: --export is comma-separated, so a comma inside a value would corrupt it.
-    for variable_name, variable_value in job_environment.items():
-        if "," in variable_value:
-            raise ValueError(f"exported {variable_name}={variable_value!r} contains a comma")
-    export_text = ",".join(["ALL"] + [f"{variable_name}={variable_value}"
-                                      for variable_name, variable_value in job_environment.items()])
+    # Step 2: `env` splits each assignment at the first "=", so names must be identifiers;
+    # values may contain anything (ssh_command quotes every argument for the remote shell).
+    for variable_name in job_environment:
+        if not variable_name.isidentifier():
+            raise ValueError(f"job variable name {variable_name!r} is not a valid identifier")
+    environment_assignments = [f"{variable_name}={variable_value}"
+                               for variable_name, variable_value in job_environment.items()]
     # Step 3: assemble the arguments.
     return [
+        "env", *environment_assignments,
         "sbatch",
         f"--partition={partition}",
         f"--gres={gres}",
@@ -423,7 +511,6 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
         "-t", time_limit,
         f"--job-name={job_name}",
         f"--output={output_path}",
-        f"--export={export_text}",
         script_path,
     ]
 
@@ -632,8 +719,10 @@ def submit_sbatch(ssh_target: str, sbatch_arguments: List[str]) -> str:
     Returns:
         The Slurm job id.
     """
-    # --parsable prints "jobid[;cluster]".
-    parsable_arguments = sbatch_arguments[:1] + ["--parsable"] + sbatch_arguments[1:]
+    # --parsable prints "jobid[;cluster]"; it goes right after the sbatch token.
+    sbatch_position = sbatch_arguments.index("sbatch") + 1
+    parsable_arguments = (sbatch_arguments[:sbatch_position] + ["--parsable"]
+                          + sbatch_arguments[sbatch_position:])
     sbatch_result = run_checked(ssh_command(ssh_target, parsable_arguments), "sbatch")
     return sbatch_result.stdout.strip().split(";")[0]
 

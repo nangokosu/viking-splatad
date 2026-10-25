@@ -8,10 +8,12 @@ import datetime
 import hashlib
 import importlib.util
 import math
+import shlex
 import subprocess
 from pathlib import Path
 from typing import List
 
+import numpy as np
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -97,16 +99,18 @@ def test_parse_slurm_time_limit_seconds_known_values():
 
 
 def test_build_sbatch_command_contents():
-    """Resources are all on the command line; --get-user-env never appears."""
+    """Resources are all on the command line; job variables go through `env`, never --export."""
     submit_module = load_submit_module()
     sbatch_arguments = build_example_sbatch(submit_module, "0-06:00:00")
-    assert sbatch_arguments[0] == "sbatch"
+    sbatch_position = sbatch_arguments.index("sbatch")
+    # `env K=V ... sbatch`: variables precede sbatch (the cluster holds --export=ALL,K=V jobs).
+    assert sbatch_arguments[:sbatch_position] == ["env", "RUN_ID=r", "SESSION=example"]
     assert "--partition=gpunodes" in sbatch_arguments
     assert "--gres=gpu:rtx_a6000:1" in sbatch_arguments
     assert sbatch_arguments[sbatch_arguments.index("-c") + 1] == str(A6000_NODE_CPUS)
     assert f"--mem={EXAMPLE_MEMORY_GB}G" in sbatch_arguments
     assert sbatch_arguments[sbatch_arguments.index("-t") + 1] == "0-06:00:00"
-    assert "--export=ALL,RUN_ID=r,SESSION=example" in sbatch_arguments
+    assert not any(argument.startswith("--export") for argument in sbatch_arguments)
     assert not any("get-user-env" in argument for argument in sbatch_arguments)
     assert sbatch_arguments[-1] == "/stage/code/sha/run.sbatch"
 
@@ -223,7 +227,7 @@ def make_fake_cluster(full_sha: str, absolute_stage_root: str, environment_built
             return subprocess.CompletedProcess(command, 0 if environment_built else 1, stdout="", stderr="")
         if remote_text.startswith("sinfo"):
             return subprocess.CompletedProcess(command, 0, stdout=SYNTHETIC_SINFO_TEXT, stderr="")
-        if remote_text.startswith("sbatch"):
+        if " sbatch " in f" {remote_text} ":
             return subprocess.CompletedProcess(command, 0, stdout="4242\n", stderr="")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
     return fake_run_command
@@ -242,6 +246,9 @@ def test_submit_run_issues_expected_remote_commands(monkeypatch, tmp_path):
                         lambda git_sha, relative_path: relative_path.encode())
     monkeypatch.setattr(submit_module, "SUBMITTED_LEDGER_PATH", tmp_path / "submitted.tsv")
     monkeypatch.delenv("VIKING_SLURM_USER", raising=False)
+    # Synthetic recording span, so the profile's time window does not read a real dataset.
+    synthetic_span = (5.0, 205.0)
+    monkeypatch.setattr(submit_module, "dataset_time_span", lambda session_dir: synthetic_span)
     config = submit_module.load_slurm_config()
     moment = datetime.datetime(2026, 10, 25, 1, 2, 3, tzinfo=datetime.timezone.utc)
     job_id, run_id = submit_module.submit_run(config, "may_short_grass", "smoke", skip_gates=True,
@@ -249,10 +256,17 @@ def test_submit_run_issues_expected_remote_commands(monkeypatch, tmp_path):
     assert job_id == "4242"
     assert run_id == f"may_short_grass-smoke-20261025-010203-{full_sha[:7]}"
     sbatch_remote_text = next(command[-1] for command in issued_commands
-                              if command[0] == "ssh" and command[-1].startswith("sbatch"))
+                              if command[0] == "ssh" and " sbatch " in f" {command[-1]} ")
     expected_memory_gb = math.floor(config["mem_fraction"] * A6000_NODE_MEMORY_MB / 1024)
     assert f"--mem={expected_memory_gb}G" in sbatch_remote_text
     assert f"-c {A6000_NODE_CPUS}" in sbatch_remote_text
+    # Window fractions exported exactly as s / D and (s + w) / D of the synthetic span.
+    smoke_profile = config["profiles"]["smoke"]
+    span_duration = synthetic_span[1] - synthetic_span[0]
+    expected_start_fraction = smoke_profile["window_start_seconds"] / span_duration
+    expected_end_fraction = (smoke_profile["window_start_seconds"] + smoke_profile["window_seconds"]) / span_duration
+    assert f"DATASET_START_FRACTION={expected_start_fraction!r}" in sbatch_remote_text
+    assert f"DATASET_END_FRACTION={expected_end_fraction!r}" in sbatch_remote_text
     expected_recipe_hash = submit_module.compute_recipe_hash(
         {relative_path: relative_path.encode() for relative_path in config["environment_recipe_files"]})
     assert f"ENV_PREFIX={absolute_stage_root}/envs/splatad-{expected_recipe_hash}" in sbatch_remote_text
@@ -274,4 +288,86 @@ def test_submit_run_refuses_when_environment_not_built(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="build-env"):
         submit_module.submit_run(submit_module.load_slurm_config(), "may_short_grass", "smoke",
                                  skip_gates=True)
-    assert not any(command[0] == "ssh" and command[-1].startswith("sbatch") for command in issued_commands)
+    assert not any(command[0] == "ssh" and " sbatch " in f" {command[-1]} " for command in issued_commands)
+
+
+def test_window_fractions_known_values_and_inverse():
+    """f = s / D and (s + w) / D; mapping back with ADDataParser's formula recovers the window."""
+    submit_module = load_submit_module()
+    earliest_time, latest_time = 10.0, 210.0
+    window_start_seconds, window_seconds = 50.0, 15.0
+    start_fraction, end_fraction = submit_module.window_fractions(
+        earliest_time, latest_time, window_start_seconds, window_seconds)
+    duration = latest_time - earliest_time
+    assert start_fraction == pytest.approx(window_start_seconds / duration)
+    assert end_fraction == pytest.approx((window_start_seconds + window_seconds) / duration)
+    # ADDataParser keeps [t0 + f_start * D, t0 + f_end * D]; that must be the requested window.
+    assert earliest_time + start_fraction * duration == pytest.approx(earliest_time + window_start_seconds)
+    assert earliest_time + end_fraction * duration == pytest.approx(
+        earliest_time + window_start_seconds + window_seconds)
+
+
+def test_window_fractions_rejects_windows_outside_the_recording():
+    """A window past the end, of zero length, or starting before the recording is refused."""
+    submit_module = load_submit_module()
+    with pytest.raises(ValueError):
+        submit_module.window_fractions(0.0, 100.0, 90.0, 20.0)
+    with pytest.raises(ValueError):
+        submit_module.window_fractions(0.0, 100.0, 10.0, 0.0)
+    with pytest.raises(ValueError):
+        submit_module.window_fractions(0.0, 100.0, -1.0, 5.0)
+
+
+def test_dataset_time_span_covers_every_sensor_stream(tmp_path):
+    """Span = min/max over all '<sensor>__times' arrays, ignoring pose arrays."""
+    submit_module = load_submit_module()
+    camera_times = np.array([1.5, 2.5, 3.5])
+    lidar_times = np.array([1.0, 2.0, 4.0])
+    np.savez(tmp_path / "poses.npz", cam__times=camera_times, lidar__times=lidar_times,
+             cam__poses_world_sensor=np.zeros((3, 4, 4)))
+    assert submit_module.dataset_time_span(tmp_path) == (
+        min(camera_times.min(), lidar_times.min()), max(camera_times.max(), lidar_times.max()))
+
+
+def test_whole_recording_when_profile_has_no_window():
+    """Without window keys the job gets fractions 0 and 1 (no dataset files read)."""
+    submit_module = load_submit_module()
+    assert submit_module.profile_window_fractions({"max_num_iterations": 1}, "unused") == (0.0, 1.0)
+
+
+def test_half_specified_window_is_a_clear_error():
+    """Only one of the two window keys is a config error, reported by name."""
+    submit_module = load_submit_module()
+    with pytest.raises(ValueError, match="window_start_seconds"):
+        submit_module.profile_window_fractions({"window_seconds": 15}, "unused")
+
+
+def test_submit_sbatch_puts_parsable_right_after_the_sbatch_token(monkeypatch):
+    """--parsable must follow `sbatch`, not land among the `env` assignments."""
+    submit_module = load_submit_module()
+    issued_commands: List[List[str]] = []
+
+    def fake_run_command(command, capture_output=True, input_text=None):
+        """Record the command; reply like `sbatch --parsable` (job id;cluster)."""
+        issued_commands.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="777;cluster\n", stderr="")
+
+    monkeypatch.setattr(submit_module, "run_command", fake_run_command)
+    sbatch_arguments = build_example_sbatch(submit_module, "0-01:00:00")
+    assert submit_module.submit_sbatch("host", sbatch_arguments) == "777"
+    remote_arguments = shlex.split(issued_commands[0][-1])
+    sbatch_position = remote_arguments.index("sbatch")
+    assert remote_arguments[sbatch_position + 1] == "--parsable"
+    # Everything else is unchanged and in order.
+    assert remote_arguments[:sbatch_position + 1] + remote_arguments[sbatch_position + 2:] == sbatch_arguments
+
+
+def test_build_sbatch_command_rejects_non_identifier_variable_names():
+    """`env` splits at the first '=', so a name like 'A=B' or 'A B' must be refused."""
+    submit_module = load_submit_module()
+    for bad_name in ("A=B", "A B", "1ABC"):
+        with pytest.raises(ValueError, match="identifier"):
+            submit_module.build_sbatch_command(
+                partition="gpunodes", gres="gpu:rtx_a6000:1", cpus=1, memory_gb=1,
+                time_limit="0-00:10:00", job_name="job", output_path="out",
+                job_environment={bad_name: "value"}, script_path="script")

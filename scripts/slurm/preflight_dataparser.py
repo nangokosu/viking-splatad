@@ -194,10 +194,19 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="Directory for overlay PNGs.")
     parser.add_argument("--frames", type=int, default=5,
                         help="Number of overlay frames (default 5: start, quartiles, end).")
+    parser.add_argument("--dataset-start-fraction", type=float, default=0.0,
+                        help="Same as viking-data --dataset-start-fraction (time window start).")
+    parser.add_argument("--dataset-end-fraction", type=float, default=1.0,
+                        help="Same as viking-data --dataset-end-fraction (time window end).")
     arguments = parser.parse_args(argument_list)
 
-    # Same config path as `ns-train splatad viking-data --data ... --session-name ...`.
-    dataparser = VikingHillDataParserConfig(data=arguments.data, session_name=arguments.session_name).setup()
+    # Same config path as `ns-train splatad viking-data --data ... --session-name ...
+    # --dataset-start-fraction ... --dataset-end-fraction ...`.
+    dataparser = VikingHillDataParserConfig(
+        data=arguments.data, session_name=arguments.session_name,
+        dataset_start_fraction=arguments.dataset_start_fraction,
+        dataset_end_fraction=arguments.dataset_end_fraction,
+    ).setup()
     train_outputs = dataparser.get_dataparser_outputs(split="train")
     summarise_split("train", train_outputs)
     summarise_split("test", dataparser.get_dataparser_outputs(split="test"))

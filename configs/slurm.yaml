@@ -50,18 +50,30 @@ env_build:
 
 profiles:
   smoke:
-    # SplatAD's stock schedule is max_num_iterations=30001 (neurad-studio method_configs).
-    # Smoke = a quarter of it: 30001 / 4 = 7500.25 -> 7500 iterations. Enough for Gaussians to
-    # densify and the loss to visibly fall, at a quarter of the cost.
-    max_num_iterations: 7500
-    # Stock steps_per_save is 2000. 7500 / 2500 = 3 checkpoints (steps 2500, 5000, 7500), so at
-    # least two exist before the end and checkpoint/resume can be exercised.
-    steps_per_save: 2500
-    # Conservative cap, far under the 5-day limit, for ~7.5k iterations plus the render pass;
-    # refine from the measured train/render timings in job_info.txt and `sacct` Elapsed.
-    time_limit: "0-06:00:00"
-    # Render the train and test poses so both fit quality and held-out quality can be viewed.
+    # Goal: shortest run that still tests the dataparser and conversion pipeline, not quality.
+    # Time window, in seconds from the earliest sensor timestamp; submit_run.py converts it to
+    # the dataparser's --dataset-start/end-fraction from the dataset's own timestamps.
+    # Chosen from a 25-frame contact sheet with per-frame speed of may_chunks0_1_smoke
+    # (2026-10-25, user asked for a non-forest scene):
+    #   * 0-22 s the robot stands still (no parallax, no signal), so the window starts later;
+    #   * 38-83 s is the parking lot / building stretch, driven straight at ~0.93 m/s;
+    #   * 52-67 s holds a parked car passing close by (frames #531, #607: strong parallax that
+    #     exposes pose/timing errors), flat facades with windows (straight edges that expose
+    #     intrinsics/distortion errors), a sign and a boulder (#682).
+    # 15 s at ~10 Hz is ~150 camera frames and ~150 sweeps over ~14 m, so neighbouring views
+    # overlap heavily; the 0.9 train fraction holds out ~15 interleaved frames for viewing.
+    window_start_seconds: 52
+    window_seconds: 15
+    # ~135 training frames x ~22 visits each = 3000 iterations (one image per iteration):
+    # enough for a recognisable fit, a tenth of SplatAD's stock 30001.
+    max_num_iterations: 3000
+    # 3000 / 1000 = 3 checkpoints, so a kill mid-run still leaves something to render.
+    steps_per_save: 1000
+    # Conservative cap, far under the 5-day limit, for 3k iterations plus loading and the render.
+    # Refine from the measured train/render timings in job_info.txt and `sacct` Elapsed.
+    time_limit: "0-02:00:00"
+    # Render every pose in the window, training views and held-out views. Held-out views
+    # expose wrong geometry that training views can hide by memorising; viewed only, no metrics.
     render_pose_source: train+test
-    # Halves each image side (2055x1541 -> ~1028x771): 1/4 of the pixels for ~1800 frames x 2
-    # outputs (rgb, gt-rgb), while trunk-scale detail stays visible.
-    render_downscale_factor: 2
+    # Full resolution: only ~150 frames, and pixel-level misalignment is what we look for.
+    render_downscale_factor: 1
