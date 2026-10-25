@@ -62,14 +62,9 @@ def test_mean_metrics_average_each_key_over_its_own_scans():
 def test_glossary_documents_every_lidar_npz_key():
     """Each npz key appears as a `key` table cell in the run-folder glossary, and the key list has no repeats."""
     render_module = load_render_lidar_module()
-    glossary_text = (PROJECT_ROOT / "scripts" / "slurm" / "RUN_OUTPUTS_GLOSSARY.md").read_text()
+    glossary_text = (PROJECT_ROOT / "runs" / "RUN_FOLDER_GLOSSARY.md").read_text()
     assert len(set(render_module.LIDAR_NPZ_KEYS)) == len(render_module.LIDAR_NPZ_KEYS)
     undocumented_keys = [npz_key for npz_key in render_module.LIDAR_NPZ_KEYS
                          if f"| `{npz_key}` |" not in glossary_text]
     assert undocumented_keys == []
 
-
-def test_sbatch_copies_glossary_into_the_home_run_folder():
-    """The job copies the glossary of its own code snapshot next to job_info.txt."""
-    sbatch_text = (PROJECT_ROOT / "scripts" / "slurm" / "splatad_run.sbatch").read_text()
-    assert 'cp "$CODE_DIR/scripts/slurm/RUN_OUTPUTS_GLOSSARY.md" "$HOME_RUN_DIR/"' in sbatch_text

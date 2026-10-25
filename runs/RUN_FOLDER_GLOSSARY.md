@@ -1,13 +1,12 @@
 # SplatAD run folder glossary
 
-Every run from `scripts/slurm/splatad_run.sbatch` has this layout. The job copies this file into the run folder, so the copy you are reading matches the code version that produced the run (`GIT_SHA` in `job_info.txt`).
+This document covers every run folder in `runs/`. All runs from `scripts/slurm/splatad_run.sbatch` share one layout. It is the only copy: it lives in the repo at `runs/RUN_FOLDER_GLOSSARY.md` and is versioned with the code, so update it whenever the job's outputs change. Differences between older and newer runs are listed under "Version notes" at the end.
 
 Path on the Mac after `submit_run.py fetch <run_id>`: `runs/<run_id>/`. On the cluster: `~/viking-splatad/runs/<run_id>/`.
-`<run_id>` = `<session>-<profile>-<UTC yyyymmdd-HHMMSS>-<short sha>`.
+`<run_id>` = `<session>-<profile>-<UTC yyyymmdd-HHMMSS>-<short sha>`. The short sha is the code commit; `GIT_SHA` in `job_info.txt` gives it in full.
 
 ```
 runs/<run_id>/
-├── RUN_OUTPUTS_GLOSSARY.md            this file
 ├── job_info.txt                       settings, environment, GPU, timings
 ├── slurm-<job id>.out                 Slurm log (stdout + stderr of the job)
 ├── compare/                           only if you ran scripts/slurm/compare_renders.py on the Mac
@@ -99,4 +98,4 @@ runs/<run_id>/
 | `median_chamfer_distance` | same, using `pred_points_median` | m², lower |
 
 ## Version notes
-- Runs before commit `806db4f` (e.g. `may_chunks0_1_smoke-smoke-20261025-182824-b8104e1`) have camera renders only. They have no `lidar/`, no `lidar_metrics.json`, no `TRAIN_SEED` (their seed was nerfstudio's default, 42) and no copy of this file from the job.
+- Runs before commit `806db4f` (e.g. `may_chunks0_1_smoke-smoke-20261025-182824-b8104e1`) have camera renders only. They have no `lidar/`, no `lidar_metrics.json`, no `TRAIN_SEED` (their seed was nerfstudio's default, 42).

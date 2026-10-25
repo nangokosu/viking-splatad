@@ -8,12 +8,12 @@
   - It also writes `renders/<split>/lidar_metrics.json` with SplatAD's built-in per-scan lidar metrics.
   - New transform T50 (`src/viking_splatad/splatad/rendered_lidar.py`): dataparser-frame lidar pose → map frame. It rejects a non-rigid w2m.
   - `splatad_run.sbatch` has a new step (e2) and logs the `lidar_render_elapsed_s` milestone.
-- **Run-folder glossary** (commit below): `scripts/slurm/RUN_OUTPUTS_GLOSSARY.md` documents every file, `job_info.txt` key, frame, npz key and lidar metric definition. The job copies it into each run folder. A test keeps it in sync with `LIDAR_NPZ_KEYS`, and the script refuses to write other keys. It was also copied into the existing smoke run folder on the Mac.
+- **Run-folder glossary** (`b77c786`, then moved in the commit below): `runs/RUN_FOLDER_GLOSSARY.md` is one committed document that covers every run folder: layout, `job_info.txt` keys, frames, camera files, lidar npz keys and lidar metric definitions. The rest of `runs/` stays gitignored. A test keeps it in sync with `LIDAR_NPZ_KEYS`, and the script refuses to write other keys.
 - **Training seed** (`806db4f`):
   - Profiles in `configs/slurm.yaml` require an integer `seed` (smoke: 42, nerfstudio's default). `submit_run.py` exports it as `TRAIN_SEED`, and the sbatch passes it as `--machine.seed`.
   - Runs are still not bit-exact, because of float-atomic gradient sums in the gsplat/SplatAD backward (verified at the pinned SHA), the tcnn backward, and `cudnn.benchmark=True`.
 - **`running-splatad-render-jobs` skill:** updated for the lidar outputs, the map-frame use, monitoring the lidar step and the seed limits. A fresh agent tested it.
-- **Tests:** 257 passed, 3 skipped. The new tests are `test_rendered_lidar.py`, `test_render_lidar_script.py` and the seed/sbatch tests in `test_slurm_submit.py`. No existing test was changed.
+- **Tests:** 256 passed, 3 skipped. The new tests are `test_rendered_lidar.py`, `test_render_lidar_script.py` and the seed/sbatch tests in `test_slurm_submit.py`. No existing test was changed.
 
 ## Current state
 - **Cluster:**

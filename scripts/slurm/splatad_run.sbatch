@@ -81,8 +81,6 @@ trap copy_results_home EXIT
   nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv,noheader
 } > "$JOB_INFO"
 cat "$JOB_INFO"
-# Glossary of this run folder's files and keys, from this run's own code version.
-cp "$CODE_DIR/scripts/slurm/RUN_OUTPUTS_GLOSSARY.md" "$HOME_RUN_DIR/"
 
 # ---- (b) environment ---------------------------------------------------------------------
 # PATH, CUDA_HOME, LD_LIBRARY_PATH and the viking-data dataparser registration.

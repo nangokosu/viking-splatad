@@ -57,7 +57,7 @@ SUPPORTED_SPLITS = ("train", "test")
 HALF_PERIOD_DIVISOR = 2.0
 # poses.npz key separator, as in dataset/writer.py (POSE_KEY_SEPARATOR); key = <sensor>__times.
 POSES_TIMES_SUFFIX = "__times"
-# Keys of every per-scan npz. scripts/slurm/RUN_OUTPUTS_GLOSSARY.md documents each one (a test
+# Keys of every per-scan npz. runs/RUN_FOLDER_GLOSSARY.md documents each one (a test
 # keeps the two in sync), and render_split refuses to write a file with any other key set.
 LIDAR_NPZ_KEYS = (
     "pred_points", "pred_points_median", "gt_points", "raster_pts",
@@ -251,7 +251,7 @@ def render_split(pipeline: Any, split_name: str, output_path: Path, sweep_stems:
             "absolute_time_s": np.float64(absolute_time_seconds),
             "sweep_index": np.int64(sweep_index),
         }
-        # The glossary copied into every run folder documents exactly LIDAR_NPZ_KEYS.
+        # runs/RUN_FOLDER_GLOSSARY.md documents exactly LIDAR_NPZ_KEYS.
         if set(scan_record) != set(LIDAR_NPZ_KEYS):
             raise ValueError(f"npz keys {sorted(scan_record)} differ from LIDAR_NPZ_KEYS")
         np.savez_compressed(scan_directory / f"{sweep_stem}.npz", **scan_record)
