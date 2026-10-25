@@ -41,3 +41,13 @@ apptainer exec --nv --bind <data_dir>:/data viking-splatad-cu118.sif ns-train sp
 ```
 
 `--nv` passes the host NVIDIA driver into the container. Only the driver comes from the host. Everything else is in the image.
+
+## Built images
+
+| Tag | Image ID | Built from commit | `CUDA_ARCHITECTURES` | Notes |
+|---|---|---|---|---|
+| `viking-splatad:cu118` | `aab3781dea3e` | `a14bb2a` | `86` | sm_86 cubin only, no PTX: runs on the RTX A6000/A4500/A4000/A2000 nodes, **not** the RTX 4090 (sm_89) nodes. `constraints.txt` was frozen from this image afterwards. |
+
+Layer order matters for rebuild cost. `docker/constraints.txt` and `src/` are copied **before** the neurad-studio
+and splatad CUDA builds, so changing either one recompiles everything (hours under emulation). `tests/`,
+`configs/` and `scripts/` are copied after, so changing them is cheap.
