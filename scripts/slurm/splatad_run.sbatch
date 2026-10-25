@@ -15,7 +15,7 @@
 #
 # Required environment (set by submit_run.py as `env K=V sbatch ...`):
 #   RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX ENV_EXPIRES_EPOCH COPY_BACK_BWLIMIT_KIB
-#   MAX_NUM_ITERATIONS STEPS_PER_SAVE RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR
+#   MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR
 #   DATASET_START_FRACTION DATASET_END_FRACTION  (time window; 0 and 1 = whole recording)
 #
 # Stage layout ($STAGE_ROOT): data/<session>/, code/<sha>/ (committed repo snapshot),
@@ -26,7 +26,7 @@ set -euo pipefail
 
 # ---- check the required variables (set -u alone would give a less clear message) ----------
 for required_variable in RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX \
-    ENV_EXPIRES_EPOCH COPY_BACK_BWLIMIT_KIB MAX_NUM_ITERATIONS STEPS_PER_SAVE RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
+    ENV_EXPIRES_EPOCH COPY_BACK_BWLIMIT_KIB MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
     DATASET_START_FRACTION DATASET_END_FRACTION; do
   if [ -z "${!required_variable:-}" ]; then
     echo "ERROR: $required_variable is not set (submit with scripts/slurm/submit_run.py)" >&2
@@ -72,7 +72,7 @@ trap copy_results_home EXIT
   echo "slurm_mem_per_node_mb: ${SLURM_MEM_PER_NODE:-unset}"
   echo "scratch_run_dir: $RUN_DIR"
   for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX \
-      ENV_EXPIRES_EPOCH COPY_BACK_BWLIMIT_KIB MAX_NUM_ITERATIONS STEPS_PER_SAVE RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
+      ENV_EXPIRES_EPOCH COPY_BACK_BWLIMIT_KIB MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
       DATASET_START_FRACTION DATASET_END_FRACTION; do
     echo "$exported_variable: ${!exported_variable:-}"
   done
@@ -100,6 +100,9 @@ print('gpu_check:', torch.cuda.get_device_name(0), torch.cuda.get_device_capabil
 print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 
 # ---- (d) train --------------------------------------------------------------------------
+# --machine.seed seeds python/numpy/torch (all CUDA devices) before setup (nerfstudio train.py).
+# It does not make training bit-exact: the gsplat/SplatAD and tcnn backward passes accumulate
+# gradients with float atomics, so the same seed gives statistically similar runs only.
 # --experiment-name and --timestamp make the output path deterministic:
 # $RUN_DIR/train/$SESSION/splatad/$RUN_ID/{config.yml,nerfstudio_models/step-*.ckpt}
 TRAIN_START_SECONDS=$(date +%s)
@@ -111,6 +114,7 @@ ns-train splatad \
   --timestamp "$RUN_ID" \
   --max-num-iterations "$MAX_NUM_ITERATIONS" \
   --steps-per-save "$STEPS_PER_SAVE" \
+  --machine.seed "$TRAIN_SEED" \
   viking-data --data "$STAGE_ROOT/data" --session-name "$SESSION" \
   --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION"
 TRAIN_END_SECONDS=$(date +%s)
@@ -143,11 +147,28 @@ ns-render dataset \
   --image-format jpeg \
   ${RENDER_DOWNSCALE_ARGS[@]+"${RENDER_DOWNSCALE_ARGS[@]}"}  # empty-array-safe under set -u (bash < 4.4)
 RENDER_END_SECONDS=$(date +%s)
-
-# ---- (f) done -------------------------------------------------------------------------------
 {
   echo "render_end_epoch_s: $RENDER_END_SECONDS"
   echo "render_elapsed_s: $((RENDER_END_SECONDS - RENDER_START_SECONDS))"
+} >> "$JOB_INFO"
+
+# ---- (e2) render lidar ------------------------------------------------------------------------
+# ns-render's --render-point-clouds fails on SplatAD and only plots PNGs, so lidar goes through
+# SplatAD's own get_lidar_outputs + filter_lidar_pred_and_gt in our script, at every input lidar
+# pose of the same splits: renders/<split>/lidar/<idx>_<ts_ns>.npz + renders/<split>/lidar_metrics.json.
+LIDAR_RENDER_START_SECONDS=$(date +%s)
+echo "lidar_render_start_epoch_s: $LIDAR_RENDER_START_SECONDS" >> "$JOB_INFO"
+python "$CODE_DIR/scripts/08_render_lidar_pointcloud.py" \
+  --load-config "$TRAIN_CONFIG" \
+  --output-path "$RUN_DIR/renders" \
+  --pose-source "$RENDER_POSE_SOURCE" \
+  --dataset-dir "$STAGE_ROOT/data/$SESSION"
+LIDAR_RENDER_END_SECONDS=$(date +%s)
+
+# ---- (f) done -------------------------------------------------------------------------------
+{
+  echo "lidar_render_end_epoch_s: $LIDAR_RENDER_END_SECONDS"
+  echo "lidar_render_elapsed_s: $((LIDAR_RENDER_END_SECONDS - LIDAR_RENDER_START_SECONDS))"
   echo "end_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >> "$JOB_INFO"
-echo "done: run $RUN_ID, train $((TRAIN_END_SECONDS - TRAIN_START_SECONDS)) s, render $((RENDER_END_SECONDS - RENDER_START_SECONDS)) s"
+echo "done: run $RUN_ID, train $((TRAIN_END_SECONDS - TRAIN_START_SECONDS)) s, render $((RENDER_END_SECONDS - RENDER_START_SECONDS)) s, lidar render $((LIDAR_RENDER_END_SECONDS - LIDAR_RENDER_START_SECONDS)) s"

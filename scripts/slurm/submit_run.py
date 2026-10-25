@@ -482,7 +482,14 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
 
     Returns:
         Mapping variable name -> string value.
+
+    Raises:
+        ValueError: If the profile has no integer ``seed`` (every run must record its seed).
     """
+    # A run without an explicit seed would silently take nerfstudio's default; require it instead.
+    train_seed = profile_settings.get("seed")
+    if isinstance(train_seed, bool) or not isinstance(train_seed, int):
+        raise ValueError(f"profile needs an integer 'seed' (got {train_seed!r})")
     start_fraction, end_fraction = profile_window_fractions(profile_settings, session)
     return {
         "RUN_ID": run_id,
@@ -495,6 +502,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         "COPY_BACK_BWLIMIT_KIB": str(copy_back_bwlimit_kib),
         "MAX_NUM_ITERATIONS": str(profile_settings["max_num_iterations"]),
         "STEPS_PER_SAVE": str(profile_settings["steps_per_save"]),
+        # ns-train --machine.seed: seeds python/numpy/torch RNGs (not bit-exact, see the sbatch).
+        "TRAIN_SEED": str(train_seed),
         "RENDER_POSE_SOURCE": str(profile_settings["render_pose_source"]),
         "RENDER_DOWNSCALE_FACTOR": str(profile_settings["render_downscale_factor"]),
         # repr keeps every digit of the float, so the job sees exactly the computed window.

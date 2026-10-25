@@ -420,3 +420,50 @@ def test_submit_run_refuses_env_on_expiring_scratch(monkeypatch, tmp_path):
         submit_module.submit_run(submit_module.load_slurm_config(), "may_short_grass", "smoke",
                                  skip_gates=True, now_utc=moment)
     assert not any(command[0] == "ssh" and " sbatch " in f" {command[-1]} " for command in issued_commands)
+
+
+def build_example_job_environment(submit_module, profile_settings):
+    """Job environment for a profile without a time window (no dataset read).
+
+    Args:
+        submit_module: Loaded submit_run module.
+        profile_settings: Profile mapping under test.
+
+    Returns:
+        The exported variable mapping.
+    """
+    env_marker = {"env_prefix": "/scratch/envs/splatad-x", "expires_epoch": "1"}
+    return submit_module.build_job_environment(profile_settings, "s", "run", "a" * 40, "/h/stage",
+                                               env_marker, 1)
+
+
+def test_job_environment_exports_the_profile_seed():
+    """The profile's seed reaches the job verbatim as TRAIN_SEED (the sbatch's --machine.seed)."""
+    submit_module = load_submit_module()
+    smoke_profile = dict(submit_module.load_slurm_config()["profiles"]["smoke"])
+    # Drop the window so no dataset is read; the seed path does not depend on it.
+    smoke_profile.pop("window_start_seconds")
+    smoke_profile.pop("window_seconds")
+    job_environment = build_example_job_environment(submit_module, smoke_profile)
+    assert job_environment["TRAIN_SEED"] == str(smoke_profile["seed"])
+
+
+@pytest.mark.parametrize("bad_seed", [None, "42", 4.2, True])
+def test_job_environment_requires_an_integer_seed(bad_seed):
+    """Missing, string, float or bool seeds are refused rather than defaulted."""
+    submit_module = load_submit_module()
+    profile_settings = {"max_num_iterations": 1, "steps_per_save": 1, "render_pose_source": "test",
+                        "render_downscale_factor": 1}
+    if bad_seed is not None:
+        profile_settings["seed"] = bad_seed
+    with pytest.raises(ValueError, match="seed"):
+        build_example_job_environment(submit_module, profile_settings)
+
+
+def test_sbatch_passes_seed_and_renders_lidar_for_the_same_poses():
+    """Static check of splatad_run.sbatch: seed to ns-train, lidar render on the camera render's splits."""
+    sbatch_text = (PROJECT_ROOT / "scripts" / "slurm" / "splatad_run.sbatch").read_text()
+    assert '--machine.seed "$TRAIN_SEED"' in sbatch_text
+    lidar_step_text = sbatch_text[sbatch_text.index('python "$CODE_DIR/scripts/08_render_lidar_pointcloud.py"'):]
+    assert '--pose-source "$RENDER_POSE_SOURCE"' in lidar_step_text.split("\n\n")[0]
+    assert '--dataset-dir "$STAGE_ROOT/data/$SESSION"' in lidar_step_text.split("\n\n")[0]

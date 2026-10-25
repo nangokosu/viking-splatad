@@ -74,6 +74,10 @@ profiles:
     max_num_iterations: 3000
     # 3000 / 1000 = 3 checkpoints, so a kill mid-run still leaves something to render.
     steps_per_save: 1000
+    # ns-train --machine.seed (python/numpy/torch RNGs). 42 = nerfstudio's MachineConfig default,
+    # so earlier smoke runs used the same value; set here so every run records it. It does not
+    # make training bit-exact (float-atomic gradient sums in gsplat/SplatAD and tcnn backward).
+    seed: 42
     # Conservative cap, far under the 5-day limit, for 3k iterations plus loading and the render.
     # Refine from the measured train/render timings in job_info.txt and `sacct` Elapsed.
     time_limit: "0-02:00:00"

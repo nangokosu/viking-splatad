@@ -21,6 +21,8 @@ PLANNED_TRANSFORM_IDS = frozenset(
         "T29", "T30", "T31", "T32", "T33",
         # Sweep period covering every extracted sweep (fix for the June 20-22 contract failure).
         "T49",
+        # Rendered lidar scans: dataparser-frame pose -> map-frame pose (scripts/08_*).
+        "T50",
     }
 )
 
