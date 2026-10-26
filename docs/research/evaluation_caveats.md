@@ -46,7 +46,7 @@ For a ray aimed at a trunk base behind grass:
 - **Backtrack hold-out** (candidate, T48): the return pass views the trunks a few metres to the side, possibly through thinner grass or at another angle. This is the one planned split where a render can show R's gain.
 - **Raised virtual sensor** (proposal, needs approval): a mode-2 render from a pose lifted above the grass height. The grass path length to a trunk base shrinks when looking down. This is a novel pose, outside the plan's held-out-pose ground rule, so it would be an extension, not a core metric.
 
-## 5. Measuring "in the model" directly: occupancy from the Gaussians (proposal)
+## 5. Measuring "in the model" directly: occupancy from the Gaussians (adopted: PLAN §5 P2, T56–T57)
 **Data.** Every checkpoint (`step-*.ckpt`) holds the Gaussians as tensors. Read them with `torch.load(path, map_location="cpu")["pipeline"]`, keys `_model.gauss_params.<name>`, N rows each:
 
 | key | shape | stored as | use |
@@ -73,7 +73,7 @@ For a ray aimed at a trunk base behind grass:
 - **Radar-invented trunks** show up here as false positives that a render might hide behind grass. That makes T46-style precision on this grid essential, not optional.
 - It is not a rendered sensor measurement, so it cannot be compared with GT lidar scans. Compare it only with the GT occupancy grid.
 
-## 6. Per-cell breakdown: why the lidar missed (proposal)
+## 6. Per-cell breakdown: why the lidar missed (adopted: PLAN §5)
 Classify each GT trunk cell, from the recorded June scans at the eval poses:
 - **seen:** lidar returns inside the cuboid;
 - **blocked:** rays towards the cuboid returned from something nearer;
@@ -81,7 +81,7 @@ Classify each GT trunk cell, from the recorded June scans at the eval poses:
 
 Report every metric per class. The radar claim concerns **blocked** and **no return**. On **seen** cells, B and R should agree.
 
-## 7. Proposed reading of the results (not yet adopted in PLAN)
+## 7. Reading of the results (adopted 2026-10-26: PLAN §5 P1 + P2)
 | measure | answers | role |
 |---|---|---|
 | Gaussian-occupancy detection + precision vs GT grid, per §6 class | is the trunk **in the model**, and does radar invent trunks? | **primary** test of the radar claim |
@@ -89,4 +89,4 @@ Report every metric per class. The radar claim concerns **blocked** and **no ret
 | Per-cell gap between the two | "present but hidden" (occluded by grass Gaussians) | explains the difference between the two above |
 | Gated render metrics, `ray_drop_accuracy`, Chamfer, depth | sensor-faithfulness of the render | report only |
 
-Adopting this changes PLAN §5's primary metric. It is a decision for the user.
+Adopted in PLAN §5 as two primary tests: **P1** (rendered lidar, ungated) and **P2** (Gaussian occupancy, T56–T57). R must beat B on blocked and no-return cells in at least one, and must not lose precision in either. §5 and §6 above are no longer proposals.

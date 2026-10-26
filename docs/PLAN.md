@@ -152,33 +152,74 @@ Two extra runs: the same as core B and R with camera training on (`train-lidar-o
   - Radar seeds come from the train split only (CLAUDE.md rule 5), so in this split they come from chunks 20+21.
   - May has a similar return section (the chunk-8 loop and chunk 9), if May needs the same split.
 
-**Rendered lidar point cloud** (`08_render_lidar_pointcloud.py`, in the SplatAD job on Slurm). For each eval lidar pose:
-1. call `filter_lidar_pred_and_gt(output_point_cloud=True)`;
-2. go lidar → world, then apply `inv(w2m)` to reach the map frame;
-3. accumulate over the eval poses.
+**Two primary tests.** `render_lidar` reports only the first opaque surface on each ray. A trunk base that radar kept behind grass Gaussians is therefore invisible from the training-like eval poses, even though it is in the model: the occluding grass is what lets it survive the lidar losses (`docs/research/evaluation_caveats.md` §3). So the radar claim is judged by two primary tests, always run together on the same GT, cells and thresholds:
+- **P1, rendered lidar** asks what a lidar at the eval poses would see.
+- **P2, Gaussian occupancy** asks what the model contains.
 
-**Point extraction (binding).** The ray-drop gate (`sigmoid(ray_drop) ≤ 0.5`) is primary for no metric.
-- With no-returns on, the gate replays the neighbouring frames' lidar drop-outs on the interleaved split. It would remove radar-recovered trunks in exactly the directions the lidar missed.
-- T45, T46 and the occupancy comparison use **ungated** extraction: accumulation above a config threshold, the same for May, B, R and R+depth. Gated numbers are reported beside them.
-- A render shows only the first surface, so an occupancy grid from **Gaussian density** is compared with the same GT grid as well.
-- Detection is broken down per GT cell into "seen", "blocked" (an earlier return) and "no return" (the no-return files of the eval poses).
-- Rationale: `docs/research/no_return_impact.md`.
-- Open caveats: renders show only the first surface, so radar trunks behind grass Gaussians stay hidden at training-like poses. The split decides what a render can reveal. There is a proposed Gaussian-based occupancy grid. See `docs/research/evaluation_caveats.md` (not yet adopted here).
+R must beat B on at least one of them on blocked and no-return cells (below), and must not lose precision on either.
 
-**Ground truth:** June cuboids of Tree_trunk, Bush_or_small_tree (young trees) and Rock. No grass and no canopy.
-- Cuboids are kept only if they lie within lidar range and FOV of at least one eval pose (T32).
-- Objects that this traversal's lidar never saw are kept on purpose. That is where radar should help.
+**P1, rendered lidar point cloud** (`08_render_lidar_pointcloud.py`, in the SplatAD job on Slurm). For each eval lidar pose:
+1. call `get_lidar_outputs` on the scan's rays;
+2. **ungated extraction (binding):** keep a ray as a point if its accumulation is above `eval.render_accumulation_threshold` (config), the same for May, B, R and R+depth. SplatAD's ray-drop gate (`sigmoid(ray_drop) ≤ 0.5`) is primary for no metric:
+   - with Ouster no-returns on, it replays the neighbouring frames' drop-outs on the interleaved split;
+   - so it would remove radar-recovered trunks in exactly the directions the lidar missed (`docs/research/no_return_impact.md`).
+   - Gated numbers are reported beside the ungated ones.
+3. go lidar → world, then apply `inv(w2m)` to reach the map frame (T50);
+4. accumulate over the eval poses, then voxelise onto the GT grid.
 
-| metric | definition | expectation |
+**P2, occupancy from the Gaussians** (from the run's checkpoint; no rendering, so no visibility):
+- **T56, load:** `torch.load(step-*.ckpt)["pipeline"]`, keys `_model.gauss_params.{means, scales, quats, opacities}`. Static Gaussians only (all of them; there are no actors). Convert:
+  - Σ = R(q̂)·diag(exp(s))²·R(q̂)ᵀ;
+  - o = sigmoid(opacities);
+  - means and Σ to the map frame with the same `inv(w2m)` as P1.
+  - Write `gaussians.npz` next to the lidar renders.
+- **T57, grid:** Gaussian k's 3-D alpha is α_k(x) = o_k·exp(−½(x−μ_k)ᵀΣ_k⁻¹(x−μ_k)), the 3-D form of the alpha the rasteriser uses.
+  - Voxel occupancy = 1 − ∏_k(1 − α_k(x)) at the voxel centre, visiting only voxels inside each Gaussian's 3σ ellipsoid.
+  - A voxel is occupied if occupancy ≥ `eval.render_accumulation_threshold`, the same value as P1. So the two grids differ only by visibility.
+- **Scored cells:** only cells within lidar range and FOV of at least one eval pose (T32). P2 also counts Gaussians in space no sensor saw (e.g. SplatAD's random init points).
+- **Precision is essential here:** P2 exposes radar-invented trunks that a render could hide behind grass.
+
+**Why the lidar missed each GT cell.** Every metric is reported per GT cell class, from the recorded June scans at the eval poses:
+- **seen:** returns inside the cuboid;
+- **blocked:** rays towards it returned from something nearer;
+- **no return:** rays towards it got no echo (the `lidar_no_return/` files).
+
+The radar claim concerns blocked and no-return cells. B and R should agree on seen cells.
+
+**Ground truth: files and frame** (evaluation only; never a SplatAD input, seed, seed filter or loss target, CLAUDE.md rule 6).
+- **Source labels:** `short_and_tall_grass_labels.json`. This is one file, with byte-identical copies at `data/raw/{may_short_grass,june_tall_grass}/extracted/ros2_jazzy/cuboid_labels/` (config `session.labels_json`). It holds two samples:
+  - **May:** `5cm_map_2024_05_dense.ply`, 467 cuboids, selected by `session.labels_sample_key: "2024_05"`;
+  - **June:** `5cm_map_2024_06_high_grass_registered_subsampled.ply`, 549 cuboids, selected by `"2024_06"`.
+
+  **The evaluation uses only the June sample.** The May sample is never compared with June (no May ↔ June mapping).
+- **Derived GT:** `scripts/05_extract_cuboids.py --config configs/sessions/june_tall_grass.yaml` writes `data/gt/june_tall_grass/` (config `session.gt_dir`):
+  - `cuboids.json`: per box `box_id, class_id, class_name, center_xyz, dimensions_xyz, quaternion_xyzw, corners_xyz`;
+  - `occupancy.npz`: the GT voxel grid, a class id per voxel; voxel = 0.5 × median trunk diameter; its origin and shape define the grid for P1 and P2;
+  - `summary.md`.
+
+  As of 2026-10-26 only `data/gt/may_short_grass/` exists; the June GT must be generated before evaluation.
+- **Frame:** the label file carries no frame information. Before evaluation, the June check (§1 step 5) must confirm that the June label map frame equals the June `/icp_odom` map frame. P1 and P2 both land in that frame via `inv(w2m)`.
+- **Classes scored:** tree_trunk (1), bush_or_small_tree (4, young trees) and rock (3). Not scored: canopy (2), car, building, lamp/sign and ignore (8); grass has no class.
+- **Kept cuboids:** only those within lidar range and FOV of at least one eval pose (T32). Objects this traversal's lidar never saw are kept on purpose, because that is where radar should help.
+
+| metric | definition | role / expectation |
 |---|---|---|
-| **Object detection rate** per class (T45) | fraction of kept cuboids with ≥ n_min rendered points inside. n_min is derived from the GT June lidar point density on the same cuboids at the same poses | R > B |
-| **Trunk precision / false-positive trunks** (T46) | (a) fraction of rendered points in the trunk height band that fall inside a GT object cuboid; (b) the number of trunk-like vertical clusters matching no cuboid | R ≥ B (radar must not invent trunks) |
+| **Detection rate per class (T45)**, P1 and P2, per seen / blocked / no-return | P1: fraction of kept cuboids with ≥ n_min ungated rendered points inside; n_min comes from the GT June lidar point density on the same cuboids at the same poses. P2: fraction of kept cuboids whose occupied-voxel fraction is ≥ f_min, reported as a curve over f_min (no single threshold tuned on GT) | **primary**: R > B on blocked/no-return in P1 or P2; R ≈ B on seen |
+| **Trunk precision / false-positive trunks (T46)**, P1 and P2 | (a) fraction of rendered points (P1) or occupied voxels (P2) in the trunk height band that fall inside a GT cuboid; (b) trunk-like vertical clusters matching no cuboid | **primary**: R ≥ B on both (radar must not invent trunks) |
+| Present but hidden | per GT cell: occupied in P2 but no rendered point in P1 | explains P1 vs P2; expected larger for R (trunks behind grass Gaussians) |
+| Gated P1 metrics | as T45/T46 with SplatAD's ray-drop gate | report (sensor-faithful view) |
 | Lidar depth / Chamfer / ray-drop | SplatAD built-in, on eval lidars | report |
 | Camera PSNR / SSIM / LPIPS | extension runs only: full frame and inside the trunk-above-grass mask (§4.3) | R+cam ≈ B+cam (radar must not hurt) |
 
+**Reading the results:**
+- **R > B in P2 but not in P1:** the radar trunks exist in the model but are hidden behind grass from these poses. The claim "radar puts trunks into the reconstruction" holds. Showing them in a render needs other views: the backtrack split, or an approved raised-sensor extension (`evaluation_caveats.md` §4).
+- **R > B in P1 too:** visible gain.
+- **R > B in neither:** no gain.
+- **R precision < B in either test:** radar invents geometry.
+
 **Figures (`09_compare_runs.py`):**
 - **BEV** (T47): rendered points B | R | GT June lidar, with cuboid outlines;
-- occupancy grids (`labels/occupancy.py`) against the cuboids;
+- occupancy grids against `data/gt/june_tall_grass/occupancy.npz`: P1 and P2 for B and R, coloured seen / blocked / no return;
 - zooms on trunks that B misses and R recovers.
 
 ## 6. New transforms and tests (one known-answer test each; add tests, never edit existing ones)
@@ -203,6 +244,8 @@ Two extra runs: the same as core B and R with camera training on (`train-lidar-o
 | T53 | no-return cells of an organized cloud | known range-0 cells give their exact ring, column, time; an unorganized cloud raises |
 | T54 | no-return directions to the reference pose → sidecar rows | a known yaw rate rotates each direction by rate × time; t = capture − reference |
 | T55 | sidecar rows → 2000 m placeholders (dataparser, `add_missing_points`) | xyz = 2000·d, depth beyond SplatAD's return threshold, layout matches the sweep |
+| T56 | checkpoint Gaussians → map-frame means, covariances, opacities (P2) | a hand-made state dict: log-scales, an unnormalised quaternion and logit opacity give the exact Σ = R·diag(e^s)²·Rᵀ and sigmoid; `inv(w2m)` moves μ and rotates Σ |
+| T57 | Gaussian occupancy grid (P2) | one Gaussian gives occupancy σ(o) at its centre and visits exactly its 3σ voxels; two overlapping Gaussians give 1 − (1−α₁)(1−α₂) |
 
 ## 7. File structure (new items marked +)
 ```
@@ -215,6 +258,7 @@ src/viking_splatad/
   +splatad/radar_model.py (T41 + losses)  +splatad/radar_method.py
   dataset/schema.py (optional radar_inputs entry)  contract/splatad_contract.py (radar checks)
   +eval/rendered_pointcloud.py detection.py bev.py  # T45–T47
+  +eval/gaussian_occupancy.py                       # T56 (checkpoint → gaussians.npz, torch, CPU) + T57 (grid, numpy)
 scripts/+07_build_radar_seeds.py +08_render_lidar_pointcloud.py +09_compare_runs.py +slurm/{splatad_run.sbatch,submit_run.py}
 ```
 
@@ -225,7 +269,8 @@ scripts/+07_build_radar_seeds.py +08_render_lidar_pointcloud.py +09_compare_runs
 3. **Build with parallel subagents**, each told to add tests and never edit existing ones; `transform-test-runner` runs after each:
    - (a) radar seeds T34–T36 + `07`;
    - (b) parser/contract/model T39–T43;
-   - (c) eval `08`/`09` T45–T47.
+   - (c) eval `08`/`09` T45–T47, plus the P2 Gaussian occupancy T56–T57;
+   - (d) the June GT: `05_extract_cuboids.py` for `june_tall_grass`, after the §1 June frame check.
 4. **June B and R** (core, lidar-only) on Slurm: a smoke run each, then the full step count.
 5. **Evaluate** (§5) and write `docs/experiments.md`.
 6. **Extensions, each with approval:**
