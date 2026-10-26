@@ -29,16 +29,19 @@
   - `docs/research/no_return_impact.md` and `docs/research/evaluation_caveats.md`;
   - PLAN §5 now has two primary tests, P1 (rendered lidar, ungated) and P2 (occupancy from the checkpoint's Gaussians, T56–T57);
   - PLAN §5 adds a seen / blocked / no-return breakdown and names the ground-truth files explicitly.
+- **Cleanup, at the user's request:** all old smoke-run outputs are deleted (runs 81e2b1f, b8104e1 and 4b2427a/job 222633, including its checkpoint), on the workdisk and on the Mac. Also deleted:
+  - the failed and empty envs and the old scratch marker/locks on the workdisk;
+  - the whole scratch area (`/scratch/scratch-space/expires-2026-Nov-07/viking-splatad-<user>`, 36 GB, via srun job 222850).
+
+  Kept: the smoke **dataset** `may_chunks0_1_smoke`, the run ledger `runs/submitted.tsv`, and the build logs.
 - New tests only, no existing test modified. Full suite: 296 passed, 3 skipped. The real-bag pipeline test passes.
 
 ## Current state
-- **Cluster (`/w/20262/<user>/viking-splatad`):** code `cbe6bfd` and `595582b` and all three datasets (with the sidecar) are staged. Remote file counts equal the local ones (11,467 / 10,309 / 8,701). No smoke run has been submitted yet.
+- **Cluster (`/w/20262/<user>/viking-splatad`):** code `cbe6bfd` and `595582b` and all three datasets (with the sidecar) are staged. `runs/` is empty, and `envs/` holds only `splatad-3f478d42f203`. Nothing is on scratch. Remote file counts equal the local ones (11,467 / 10,309 / 8,701). No smoke run has been submitted yet.
 - **Environment: `envs/splatad-3f478d42f203` is built and marked complete** (job 222829, after the glossary fix `b83ec4b`/`1ec2a91`).
   - GPU import check OK on an A6000; pytest 295 passed.
   - Pip drift: only the expected `pytest` pin and `packaging`.
   - The locks are byte-identical to the committed ones (README note).
-  - Workdisk leftovers to delete when convenient: the failed `splatad-c80e445ccb11` (17 GB, no marker), the empty `splatad-5e2b8f64f32e`, and the stale `splatad-a1e9255584ab.marker` and `-locks/` (old scratch env).
-- **The job-222633 checkpoint exists only on scratch**, which expires 2026-11-07. Not rescued, by the user's choice for now.
 - **Elevation-mapping bias (not fixed):** T16's per-ring median includes near-return parallax. For example, ring 31 is −38.1° in the map but −44.5° in the fitted beam model. This affects SplatAD's lidar model. Consider using the T51 far-field elevations.
 - Home: `~/.cache/yarn` (cluster) is left as is, pending a decision.
 - Carried over:
@@ -56,4 +59,3 @@
 4. Evaluation per PLAN §5:
    - first the §1 June frame check and `05_extract_cuboids.py` for `june_tall_grass` (June GT not generated yet);
    - then P1 (T45–T47 on ungated rendered points) and P2 (T56–T57 Gaussian occupancy), with the seen / blocked / no-return breakdown.
-5. Recover the 222633 checkpoint before 2026-11-07, if it is still wanted.
