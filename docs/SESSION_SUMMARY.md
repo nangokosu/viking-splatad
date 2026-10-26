@@ -27,10 +27,7 @@
 - New tests only, no existing test modified. Full suite: 296 passed, 3 skipped. The real-bag pipeline test passes.
 
 ## Current state
-- **Cluster (`/w/20262/<user>/viking-splatad`):**
-  - Code `cbe6bfd` is staged, and so is `data/may_chunks0_1_smoke` (with the sidecar).
-  - Staging of `may_short_grass` and `june_tall_grass` was restarted after an rsync hang (Mac sleep). Check that both finished: `data/stage_*_phaseB.log`, and the remote file counts should equal the local ones.
-  - No smoke run has been submitted yet.
+- **Cluster (`/w/20262/<user>/viking-splatad`):** code `cbe6bfd` and `595582b` and all three datasets (with the sidecar) are staged. Remote file counts equal the local ones (11,467 / 10,309 / 8,701). No smoke run has been submitted yet.
 - **Open issue: environment build 222810 failed its final pytest step**, so `envs/splatad-c80e445ccb11` (17 GB) has no `.build-complete` marker or `.marker` file, and `submit` will refuse to run.
   - Two failures: `test_render_lidar_script.py::test_glossary_*`. They read `runs/RUN_FOLDER_GLOSSARY.md`, which is in neither `STAGED_REPO_PATHS` (`submit_run.py`) nor the Dockerfile's COPYs.
   - Fix: ship the glossary in both. This changes the recipe hash, so a rebuild follows.
@@ -44,10 +41,9 @@
   - The Mac image predates `c713a02`, so bind-mount `src/` for CPU checks.
 
 ## Next steps
-1. Confirm that May and June staging finished.
-2. Fix the build: add `runs/RUN_FOLDER_GLOSSARY.md` to `STAGED_REPO_PATHS` and the Dockerfile COPYs. Then commit, run `build-env`, check that the log ends with `== environment complete`, fetch the locks into `docker/cluster-locks/`, and commit them.
-3. Smoke run on `may_chunks0_1_smoke` with `add_missing_points` on (only when the user asks). Check that `ray_drop_accuracy` falls below 1 and means something, and that `job_info.txt` shows `ADD_MISSING_POINTS: True`.
-4. Decide on the T16 elevation mapping (median vs. far-field fit) before the full runs.
-5. Full May Scene A run, then June B and R, all with the same seed and with `add_missing_points` on.
-6. Evaluation (T45–T47): ungated extraction (accumulation threshold), the same rule for every run, plus a Gaussian-density occupancy grid, against the GT occupancy grid. Report the gated variant as secondary.
-7. Recover the 222633 checkpoint before 2026-11-07, if it is still wanted.
+1. Fix the build: add `runs/RUN_FOLDER_GLOSSARY.md` to `STAGED_REPO_PATHS` and the Dockerfile COPYs. Then commit, run `build-env`, check that the log ends with `== environment complete`, fetch the locks into `docker/cluster-locks/`, and commit them.
+2. Smoke run on `may_chunks0_1_smoke` with `add_missing_points` on (only when the user asks). Check that `ray_drop_accuracy` falls below 1 and means something, and that `job_info.txt` shows `ADD_MISSING_POINTS: True`.
+3. Decide on the T16 elevation mapping (median vs. far-field fit) before the full runs.
+4. Full May Scene A run, then June B and R, all with the same seed and with `add_missing_points` on.
+5. Evaluation (T45–T47): ungated extraction (accumulation threshold), the same rule for every run, plus a Gaussian-density occupancy grid, against the GT occupancy grid. Report the gated variant as secondary.
+6. Recover the 222633 checkpoint before 2026-11-07, if it is still wanted.
