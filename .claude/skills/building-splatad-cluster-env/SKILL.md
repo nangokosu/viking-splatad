@@ -1,6 +1,6 @@
 ---
 name: building-splatad-cluster-env
-description: Use when the SplatAD native environment on the CS Lab Slurm cluster is missing or stale - submit_run.py says the env is not built, a recipe file changed (Dockerfile.splatad, constraints.txt, cluster_env.yaml, build_env.sbatch, pyproject.toml), a build job died or failed to compile/link, or the Mac reference Docker image needs rebuilding.
+description: Use when the SplatAD native environment on the CS Lab Slurm cluster is missing or stale - submit_run.py says the env is not built, a recipe file changed (Dockerfile.splatad, constraints.txt, cluster_env.yaml, build_env.sbatch, pyproject.toml), a build job died or failed to compile/link, or the local reference Docker image needs rebuilding.
 ---
 
 # Building the SplatAD cluster environment
@@ -8,18 +8,20 @@ description: Use when the SplatAD native environment on the CS Lab Slurm cluster
 ## Overview
 CS Lab GPU nodes have **no container runtime** and block user namespaces, so SplatAD runs in a native env that `scripts/slurm/build_env.sbatch` replays from `docker/Dockerfile.splatad`. The env is named `splatad-<12-hex hash of the recipe files>` and lives, with its marker, in `<stage root>/envs/` on the persistent MSCAC workdisk (`workdisk_root` in `configs/slurm.yaml`; currently `/w/20262/<user>/viking-splatad`). Never install anything by hand on the cluster.
 
+The env lives under each user's own stage root, so every user builds it once with their own account. **First do the one-time login setup** (own username in `~/.ssh/config` or `VIKING_SLURM_USER`, ssh key or ControlMaster, workdisk check) from the `running-splatad-render-jobs` skill. `<user>` below means your own CS username; it and your password never go into repo files.
+
 ## Rebuild or not?
 
 | Change | Rebuild env? |
 |---|---|
 | `src/`, `tests/`, `configs/` (except recipe list), data, profiles | **No** — jobs put `code/<sha>/src` first on `PYTHONPATH` |
 | Any file in `environment_recipe_files` (`configs/slurm.yaml`) | **Yes** — new hash, new env |
-| Docker image on the Mac | Only for the Mac reference/CPU preflight; cluster never uses it |
+| Local Docker image | Only for the local reference/CPU preflight; cluster never uses it |
 
-## Run (Mac, repo root)
+## Run (local machine, repo root)
 ```bash
 git status                     # recipe changes must be COMMITTED (build stages HEAD via git archive)
-VIKING_SLURM_USER=<user> uv run python scripts/slurm/submit_run.py build-env
+uv run python scripts/slurm/submit_run.py build-env
 ```
 Prints the job id and log path `<stage root>/envs/logs/splatad-<hash>-<job>.out`. Re-running prints `environment already built` when the marker exists. The build's pytest runs HEAD's `src/`, so a broken commit fails the build.
 
@@ -31,7 +33,7 @@ Prints the job id and log path `<stage root>/envs/logs/splatad-<hash>-<job>.out`
 ```bash
 scp '<user>@comps0.cs.toronto.edu:/w/20262/<user>/viking-splatad/envs/splatad-<hash>-locks/*' docker/cluster-locks/
 ```
-(quote the glob — zsh expands it locally otherwise), check the log's `pip drift` block (expected: only the `pytest` final-step pin and `packaging` from conda), grep the locks for the username/home path, commit locks + a note in `docker/README.md`. Locks are records, not recipe inputs: committing them does not change the hash.
+(quote the glob — zsh expands it locally otherwise), check the log's `pip drift` block (expected: only the `pytest` final-step pin and `packaging` from conda), grep the locks for your username/home path (they must contain neither), commit locks + a note in `docker/README.md`. Locks are records, not recipe inputs: committing them does not change the hash.
 
 ## Symptom → cause → fix (all seen on this cluster)
 
@@ -48,7 +50,8 @@ scp '<user>@comps0.cs.toronto.edu:/w/20262/<user>/viking-splatad/envs/splatad-<h
 
 Kernels compile for the node's GPU (`nvidia-smi compute_cap`); jobs request `gpu:rtx_a6000:1` (sm_86). Do not switch GPU type without rebuilding.
 
-## Mac reference image
+## Local reference image (Docker)
+`--platform linux/amd64` is required on Apple-silicon Macs and harmless on x86-64 Linux.
 ```bash
 docker build --platform linux/amd64 -f docker/Dockerfile.splatad --build-arg CUDA_ARCHITECTURES=86 -t viking-splatad:cu118 .
 ```

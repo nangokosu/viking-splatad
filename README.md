@@ -11,8 +11,9 @@ Research question and proposal: `docs/proposal/`.
   - Radar is never rendered. Runs are judged on the rendered lidar point cloud against the June trunk, bush and rock cuboids.
 - **SplatAD internals:** `docs/research/splatad_extension_points.md`.
 - **Experiments:** `docs/experiments.md`.
-- **Phase-1 findings:** `~/.claude/plans/start-a-new-claude-cosmic-cascade.md`.
-- **Project rules:** `CLAUDE.md`.
+- **Phase-1 findings:** `docs/research/phase1_findings.md`.
+- **Project rules:** `CLAUDE.md` (`AGENTS.md` is a symlink to it, for Codex).
+- **Slurm skills:** `.claude/skills/` (`.agents/skills` links to it, for Codex). Each user's cluster login stays on their own machine; see the one-time setup in `running-splatad-render-jobs`.
 
 ## Per-session runbook (replace `may_short_grass` with `june_tall_grass`)
 

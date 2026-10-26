@@ -10,9 +10,18 @@ Extensions, each run only with the user's approval: the photometric loss (B+cam,
 
 May Scene A is trained with stock SplatAD and checked on held-out metrics. **No May ↔ June mapping:** no ICP and no cross-run alignment.
 
-Plan: `docs/PLAN.md`. SplatAD internals: `docs/research/splatad_extension_points.md`. Phase-1 findings and the T1–T33 table: `~/.claude/plans/start-a-new-claude-cosmic-cascade.md`.
+Plan: `docs/PLAN.md`. SplatAD internals: `docs/research/splatad_extension_points.md`. Phase-1 findings and the T1–T33 table: `docs/research/phase1_findings.md`.
 
-## Rules (in addition to ~/CLAUDE.md, which still applies: heavy comments, descriptive names, no hardcoded values)
+`AGENTS.md` is a symlink to this file, so Claude Code and Codex read the same rules. Edit `CLAUDE.md` only; `tests/test_agent_instructions_sync.py` fails if the two ever differ. The skills live in `.claude/skills/`; `.agents/skills` is a symlink to it for Codex.
+
+## General code rules (every language, every contributor and agent)
+1. **Comments:** a docstring per function (purpose, params, return, in the language's doc-comment convention); inline step-by-step comments through the logic; the math or algorithm explained where used (formulas, invariants, complexity). Precise and concise: no restating obvious code, no filler.
+2. **Names:** unambiguous and descriptive of the role. No single-letter or vague names (`i`, `s`, `tmp`, `x`), loop indices included: `row_index`, not `i`.
+3. **Values:** every number is computed, measured or derived from config/data, never hardcoded or guessed. When a hardcoded value is truly unavoidable, a comment justifies it.
+4. **Bash:** simple single or `&&`/`;`-chained commands rather than `for`/`while`/`if` constructs when an equivalent simpler form exists.
+5. **Personal information:** never put an email, name, account ID, cluster username, password or token into repo files or outbound requests (headers, URLs, query strings, bodies). Each user's Slurm login stays on their own machine (see "GPU training on Slurm", step 2). `tests/test_no_personal_info.py` scans tracked files for the running user's own identifiers.
+
+## Project rules
 1. Every conversion/calibration function is decorated `@transform("T<n>", "<description>")` (see `src/viking_splatad/registry.py`).
 2. Every registered transform has at least one unit test marked `@pytest.mark.covers("T<n>")`. `tests/test_traceability.py` enforces this statically.
 3. Unit tests use synthetic known-answer input; expected values are computed in the test from first principles.
@@ -33,7 +42,7 @@ Plan: `docs/PLAN.md`. SplatAD internals: `docs/research/splatad_extension_points
 Only for SplatAD (CUDA-only). Other GPU work uses the Mac's GPU.
 Source: https://support.cs.toronto.edu/systems/slurmresource.html
 1. **Mac first:** `uv run pytest` and `scripts/06_validate_contract.py` both pass (`submit_run.py gates`), and the CPU preflight in the image shows sane lidar-on-image overlays.
-2. **Log in:** `ssh comps0.cs.toronto.edu` (comps0–3). Submit jobs from there. Never compute there.
+2. **Log in:** `ssh comps0.cs.toronto.edu` (comps0–3). Submit jobs from there. Never compute there. Each user logs in with their own CS account. The username lives only in that user's `~/.ssh/config` (`User`) or in the `VIKING_SLURM_USER` environment variable, and never in repo files. Passwords are never stored anywhere (no repo files, env files, scripts or `sshpass`): use an ssh key or a ControlMaster connection. The one-time setup is in the `running-splatad-render-jobs` skill.
 3. **Check nodes:** `slurm_report -g`, `sinfo -p gpunodes -O NodeHost,Memory,CPUs`. One GPU per node, so request all of its CPUs and most of its RAM. Read the sizes from `sinfo`. Never guess them.
 4. **Stage data:** `submit_run.py stage --session <s>` copies data and code into the stage root on the MSCAC workdisk: `<workdisk_root>/<user>/<stage_root>` (`configs/slurm.yaml`), currently `/w/20262/<user>/viking-splatad`. Code, data, the environment (`envs/`) and run outputs (`runs/<run_id>/`) all live there. The workdisk is persistent (no expiry) and as fast as scratch (same file servers). **Never put project files in home or scratch.** Home has a 10 GB quota (MSCAC), and a full home made job writes fail with no error (jobs 222534 and 222633, explained by CS Lab support on 2026-10-26). Scratch expires every 15 days.
 5. **Submit with `sbatch`** (via `submit_run.py submit`): always `--partition=gpunodes --gres=gpu:rtx_a6000:1 -c <C> --mem=<M>G -t <≤5-0>`; the environment is compiled for sm_86 (A6000). The defaults (1 core, 1 GB, 12 h) are too small. A limit over 5 days never schedules. Never use `--get-user-env`, and never `--export=...,K=V`: on this cluster both make Slurm fetch the login environment, which fails, and the job is held (`user_env_retrieval_failed_requeued_held`). Pass job variables by exporting them inside the batch script, as CS Lab support recommends (2026-10-26): `submit_run.py` writes a per-job `job.sbatch` with `export K=V` lines that then runs the committed script. Checkpoint often: jobs are killed at the time or memory limit.
@@ -59,3 +68,4 @@ Source: https://support.cs.toronto.edu/systems/slurmresource.html
 - **Tests are the spec; the burden is on the module.** When a test fails, the main agent fixes the module. An existing test may be modified only when the main agent is absolutely convinced the test itself is wrong (e.g. its expected value contradicts first-principles math or the documented SplatAD contract), and then the reason must be stated explicitly in the commit message and to the user. Never loosen a tolerance, drop an assertion, skip, or delete an existing test to get green. Adding new tests is always fine.
 - The test agent audits this: `scripts/affected_tests.py` prints "existing tests modified" (git M/D status vs HEAD, removed assertion lines, changed tolerance lines) and the agent flags every hit as SUSPICIOUS. Subagents that build modules are told the same rule: add tests, never edit existing ones.
 - The test agent itself never edits tests or modules; it reports and the main agent acts.
+- **Agents without the `transform-test-runner` subagent (e.g. Codex):** run `uv run python scripts/affected_tests.py --run` yourself, read its "existing tests modified" audit the same way, and follow the same rules (tests are the spec; add tests, never weaken existing ones).

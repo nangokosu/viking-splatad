@@ -10,3 +10,10 @@ runs/*
 
 # macOS Finder metadata
 .DS_Store
+
+# Local agent/editor state and secrets: never committed (collaborators lack the owner's global ignores)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.codex/
+.env
+.env.*

@@ -1,29 +1,44 @@
 ---
 name: running-splatad-render-jobs
-description: Use when training SplatAD and rendering camera images or lidar point clouds on the CS Lab Slurm cluster - submitting a smoke or full run, checking whether a running job is stuck or failed, or fetching its camera/lidar renders back to the Mac for evaluation.
+description: Use when training SplatAD and rendering camera images or lidar point clouds on the CS Lab Slurm cluster - setting up your own cluster login, submitting a smoke or full run, checking whether a running job is stuck or failed, or fetching its camera/lidar renders back to your machine for evaluation.
 ---
 
 # Running SplatAD train+render jobs on Slurm
 
 ## Overview
-`scripts/slurm/submit_run.py` drives everything from the Mac. `splatad_run.sbatch` does four things, writing everything to `<stage root>/runs/<run_id>/` on the MSCAC workdisk (currently `/w/20262/<user>/viking-splatad`):
+`scripts/slurm/submit_run.py` drives everything from your local machine (the submit host: macOS or Linux, repo root, `uv sync --extra dev` done). `splatad_run.sbatch` does four things, writing everything to `<stage root>/runs/<run_id>/` on the MSCAC workdisk (currently `/w/20262/<user>/viking-splatad`):
 1. **Trains** with `ns-train splatad ... viking-data`, passing `--machine.seed` = the profile's `seed`.
 2. **Renders camera images** with `ns-render dataset`: rgb + gt-rgb jpg.
 3. **Renders lidar** with `scripts/08_render_lidar_pointcloud.py`, which calls SplatAD's `get_lidar_outputs` and then `filter_lidar_pred_and_gt(output_point_cloud=True)`.
 4. Both renders cover **every input pose** of the profile's `render_pose_source` (train+test).
 
-Jobs run the **committed** code at HEAD. They need a built env: if `submit` says it is missing, use REQUIRED SUB-SKILL building-splatad-cluster-env.
+Jobs run the **committed** code at HEAD. They need a built env: if `submit` says it is missing, follow the `building-splatad-cluster-env` skill.
 
-## Submit (Mac, repo root)
+## One-time setup (each user, on your own machine)
+Everyone uses their **own** CS Lab account. Your username and password never go into repo files, commits, env files or scripts. The repo stores only the host (`ssh_host` in `configs/slurm.yaml`).
+
+1. **Tell ssh who you are.** In `~/.ssh/config` (local, never committed):
+   ```
+   Host comps0.cs.toronto.edu
+     User <your CS username>
+     ControlMaster auto
+     ControlPath ~/.ssh/cm-%r@%h:%p
+     ControlPersist 30m
+   ```
+   `submit_run.py` sshes to the bare host, so ssh takes `User` from this block. Alternatively, `export VIKING_SLURM_USER=<your CS username>` in your shell profile (`submit_run.py` then uses `<user>@host`). In the commands below, `<user>` means your own username.
+2. **Avoid password prompts.** `submit_run.py` opens many ssh/rsync connections per command. Either install an ssh key (`ssh-keygen -t ed25519`, then `ssh-copy-id comps0.cs.toronto.edu`, typing your password once), or rely on the ControlMaster block above: run `ssh comps0.cs.toronto.edu` once, type the password, and keep that session open. Never use `sshpass` or store the password in a file.
+3. **Check your workdisk directory.** `ssh comps0.cs.toronto.edu 'ls -d /w/*/$USER'`. The code expects `<workdisk_root>/<user>/` with `workdisk_root: /w/20262` in `configs/slurm.yaml`, and it creates `viking-splatad/` inside it. If your directory is on a different disk, tell the team before changing the shared config. If you have none, ask CS Lab support.
+4. **Your stage root is your own.** Code, data, the environment (`envs/`) and runs live under *your* workdisk directory, so each user stages data and builds the env once (`building-splatad-cluster-env`). `runs/submitted.tsv` is your local, gitignored ledger.
+
+## Submit (local machine, repo root)
 ```bash
 git status                                   # commit first; untracked .DS_Store/reports are allowed
-export VIKING_SLURM_USER=<cluster user>      # never write it into repo files
 uv run python scripts/slurm/submit_run.py stage  --session <session>     # code/<sha> + data to the workdisk
 uv run python scripts/slurm/submit_run.py submit --session <session> --profile smoke
 ```
 - `submit` re-runs the gates (pytest, contract, clean tree) and prints `submitted job <job> run <run_id>`. The run is also logged in `runs/submitted.tsv`.
 - If sbatch says `Unable to open file .../code/<sha>/...`, you forgot `stage` after committing.
-- A `src/` change follows the CLAUDE.md test workflow (new tests, transform-test-runner) before you commit.
+- A `src/` change follows the test workflow in `CLAUDE.md`/`AGENTS.md` before you commit: new tests only; Claude Code runs the `transform-test-runner` subagent, other agents run `uv run python scripts/affected_tests.py --run`.
 - Every profile in `configs/slurm.yaml` needs an integer `seed`, or `submit` refuses.
 
 Re-run the CPU preflight whenever the dataparser, extraction or window changes:
@@ -67,7 +82,7 @@ Wait for `end_utc` in `job_info.txt` (or the job to leave `squeue`, if it failed
 ```bash
 uv run python scripts/slurm/submit_run.py fetch <run_id>
 ```
-Result on the Mac in `runs/<run_id>/`. Every file and key of every run folder is described once, in `runs/RUN_FOLDER_GLOSSARY.md` (committed; the rest of `runs/` is gitignored). Update it whenever the job's outputs change; a test checks that it documents every lidar npz key.
+Result on your machine in `runs/<run_id>/`. Every file and key of every run folder is described once, in `runs/RUN_FOLDER_GLOSSARY.md` (committed; the rest of `runs/` is gitignored). Update it whenever the job's outputs change; a test checks that it documents every lidar npz key.
 - `renders/{train,test}/{rgb,gt-rgb}/*.jpg`: one per camera pose; file names are frame index + timestamp.
 - `renders/{train,test}/lidar/<idx>_<ts_ns>.npz`: one per lidar pose, named exactly like the input sweep `data/intermediate/<session>/lidar/<sensor>/<idx>_<ts_ns>.npy`.
 - `renders/{train,test}/lidar_metrics.json`: SplatAD's built-in per-scan lidar metrics, with `mean` and `per_scan` (depth_median_l2, intensity_rmse, ray_drop_accuracy, chamfer_distance, ...).
