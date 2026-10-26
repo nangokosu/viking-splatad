@@ -6,6 +6,8 @@ it in the image; job 222810 failed because runs/RUN_FOLDER_GLOSSARY.md was in ne
 
 import re
 
+import pytest
+
 from tests.unit.test_slurm_submit import PROJECT_ROOT, load_submit_module
 
 # Files outside the always-shipped trees (src, tests, configs, scripts) that tests read by path.
@@ -14,6 +16,11 @@ FILES_READ_BY_TESTS = ("runs/RUN_FOLDER_GLOSSARY.md", ".claude/hooks/readonly_ba
 
 def test_every_file_read_by_tests_is_staged_copied_and_not_docker_ignored():
     """Each such file is in STAGED_REPO_PATHS, COPYed by the Dockerfile and whitelisted in .dockerignore."""
+    # Repo-consistency check: the snapshot and the image ship neither .dockerignore nor (image) the
+    # Dockerfile, so it runs only on a full checkout.
+    repo_only_files = (PROJECT_ROOT / ".dockerignore", PROJECT_ROOT / "docker" / "Dockerfile.splatad")
+    if not all(path.is_file() for path in repo_only_files):
+        pytest.skip("needs the full repo checkout (.dockerignore, Dockerfile)")
     staged_paths = load_submit_module().STAGED_REPO_PATHS
     dockerfile_text = (PROJECT_ROOT / "docker" / "Dockerfile.splatad").read_text()
     copied_sources = re.findall(r"^COPY\s+(\S+)\s", dockerfile_text, flags=re.MULTILINE)
