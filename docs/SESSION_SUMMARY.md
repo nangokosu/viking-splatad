@@ -11,7 +11,12 @@
   - The repo-local `user.email` is the noreply address.
   - A pre-rewrite mirror is at `../viking-splatad-prerewrite-backup.git`. It is local only: never push it.
   - Old → new SHA map: `.git/filter-repo/commit-map`.
-- Full suite before the rewrite: 300 passed, 3 skipped (all pre-existing). Only new tests were added.
+- **Split record per run** (`88fdbfd`): `scripts/09_extract_run_split.py` (T58 window, T59 split) writes `<run dir>/split.json` + `split_frames.csv`. They hold the exact train/test frames, the seed, the window, the train fraction and its source, dataset hashes, `membership_sha256` and a render-name check.
+  - The job runs it before training and after rendering (`split_render_check` in `job_info.txt`).
+  - Verified against the real dataparser in the image: identical frames on the smoke window (135/15 camera and lidar).
+  - `config.yml`'s `train_split_fraction` (0.5) is wrong: nerfstudio saves it before the dataparser runs. The real value is the manifest's 0.9.
+- **Your cluster login is configured locally:** `~/.ssh/config` has a `comps0.cs.toronto.edu` block (User + ControlMaster), and key auth works non-interactively. Nothing about it is in the repo.
+- Full suite: 312 passed, 3 skipped (all pre-existing). Only new tests were added.
 
 ## Current state
 - **No remote yet.** The repo has not been pushed or made public.
@@ -33,7 +38,7 @@
 2. Each collaborator does the one-time setup in `running-splatad-render-jobs`, then stages the data and builds the env under their own workdisk directory.
 3. Smoke run on `may_chunks0_1_smoke` with `add_missing_points` on (only when the user asks).
    - Run `stage --session may_chunks0_1_smoke` first.
-   - Check that `ray_drop_accuracy` falls below 1 and that `job_info.txt` shows `ADD_MISSING_POINTS: True`.
+   - Check that `ray_drop_accuracy` falls below 1 and that `job_info.txt` shows `ADD_MISSING_POINTS: True` and `split_render_check: match`. This is the first check of script 09 against real renders.
    - Compare times with job 222633 (train 538 s, lidar render 73 s, without no-returns).
 4. Decide on the T16 elevation mapping (median vs. far-field fit) before the full runs.
 5. Full May Scene A run, then June B and R, all with the same seed and with `add_missing_points` on.
