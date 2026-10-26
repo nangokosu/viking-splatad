@@ -163,6 +163,7 @@ Two extra runs: the same as core B and R with camera training on (`train-lidar-o
 - A render shows only the first surface, so an occupancy grid from **Gaussian density** is compared with the same GT grid as well.
 - Detection is broken down per GT cell into "seen", "blocked" (an earlier return) and "no return" (the no-return files of the eval poses).
 - Rationale: `docs/research/no_return_impact.md`.
+- Open caveats: renders show only the first surface, so radar trunks behind grass Gaussians stay hidden at training-like poses. The split decides what a render can reveal. There is a proposed Gaussian-based occupancy grid. See `docs/research/evaluation_caveats.md` (not yet adopted here).
 
 **Ground truth:** June cuboids of Tree_trunk, Bush_or_small_tree (young trees) and Rock. No grass and no canopy.
 - Cuboids are kept only if they lie within lidar range and FOV of at least one eval pose (T32).

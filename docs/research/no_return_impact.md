@@ -1,6 +1,6 @@
 # Ouster no-returns (`add_missing_points`): impact on the radar losses and the evaluation
 
-Status: no-returns are **on** for every run from 2026-10-26 on (`splatad.add_missing_points: true` in both session configs; commits `fab47e1`, `cbe6bfd`). May, B, R and R+depth all use the same setting. This note records what that changes for the radar work and for the judged output, and what to check. Code: `extract/no_return.py` (T51–T54), `splatad/viking_conversions.py` (T55). SplatAD internals: `splatad_extension_points.md` §2.
+Status: no-returns are **on** for every run from 2026-10-26 on (`splatad.add_missing_points: true` in both session configs; commits `fab47e1`, `cbe6bfd`). May, B, R and R+depth all use the same setting. This note records what that changes for the radar work and for the judged output, and what to check. Wider evaluation caveats (occlusion, split, Gaussian occupancy): `evaluation_caveats.md`. Code: `extract/no_return.py` (T51–T54), `splatad/viking_conversions.py` (T55). SplatAD internals: `splatad_extension_points.md` §2.
 
 ## 1. What enters training
 - **Source:** every Ouster cell with range 0, from the sensor itself. Ring, column and time come from the cloud. The direction is fitted from the same cell's returns in other sweeps, because the bags carry no beam-angle metadata (median residual 0.0005–0.005°, column 0.35°).
