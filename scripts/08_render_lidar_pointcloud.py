@@ -25,7 +25,9 @@ of the input ``.npy`` sweeps):
     pred_points          [M, 5] rendered points (x, y, z, intensity, t), lidar frame; rays with
                          ray-drop probability <= 0.5 and a valid GT ray only (SplatAD's rule).
     pred_points_median   [M, 5] same rays, median depth instead of expected depth.
-    gt_points            [N, 5] input points that returned (x, y, z, intensity, t), lidar frame.
+    gt_points            [N, 5|6] input points that returned (x, y, z, intensity, t[, channel]),
+                         lidar frame: the input sweep's own rows, so channel (laser ring id) is
+                         present iff the sweep has it (it does for the current sessions).
     raster_pts           [C, H, W, 5] GT ray raster (azimuth deg, elevation deg, depth m, t,
                          intensity) as built before rendering; depth 0 = no GT ray in the cell.
     pred_depth, pred_median_depth, pred_intensity, pred_ray_drop_prob
@@ -64,6 +66,11 @@ LIDAR_NPZ_KEYS = (
     "pred_depth", "pred_median_depth", "pred_intensity", "pred_ray_drop_prob",
     "lidar_to_map", "lidar_to_world", "dataparser_transform", "absolute_time_s", "sweep_index",
 )
+# Columns of pred_points / pred_points_median, in order (built in render_scan, Step 3).
+RENDERED_POINT_COLUMNS = ("x", "y", "z", "intensity", "t")
+# Columns of gt_points, in order: the input sweep layout (dataset/schema.py SensorStream);
+# the trailing "channel" column exists only when the sweep stores it.
+INPUT_SWEEP_COLUMNS = ("x", "y", "z", "intensity", "t", "channel")
 
 
 def parse_pose_source(pose_source: str) -> List[str]:
@@ -182,8 +189,11 @@ def render_scan(model: Any, scan_lidar: Any, batch: Dict[str, Any]) -> Tuple[Dic
         pred_points_median = torch.cat(
             [prediction["median_point_cloud"], kept_intensity[:, None], kept_time[:, None]], dim=-1
         )
+        # Whole input rows (INPUT_SWEEP_COLUMNS), so channel is kept when the sweep has it.
         gt_points = batch["lidar"][batch["lidar_pts_did_return"]]
         # Step 4: built-in metrics (depth L2, intensity RMSE, ray-drop accuracy, Chamfer).
+        # Ray-drop accuracy is trivially ~1 while the input has no no-return rays (converter
+        # drops range-0 points; add_missing_points not implemented): see RUN_FOLDER_GLOSSARY.md.
         metrics, _ = model.get_image_metrics_and_images(outputs, batch)
 
     def to_float32(tensor: Any) -> np.ndarray:

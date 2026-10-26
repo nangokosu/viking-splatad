@@ -70,7 +70,7 @@ runs/<run_id>/
 |---|---|---|
 | `pred_points` | float32 [M, 5] | rendered point cloud: x, y, z (lidar frame, m), intensity (0–1), t (s within the sweep). Keeps rays with ray-drop probability ≤ 0.5 and a valid real ray. xyz = expected depth × ray direction + velocity × t (rolling shutter). |
 | `pred_points_median` | float32 [M, 5] | same rays, using the **median** depth along the ray (sharper surfaces) instead of the expected depth |
-| `gt_points` | float32 [N, 5] | the real points that returned (x, y, z, intensity, t), lidar frame, after the ego-vehicle filter |
+| `gt_points` | float32 [N, 5 or 6] | the real points that returned (x, y, z, intensity, t, channel), lidar frame, after the ego-vehicle filter. These are the input sweep's own rows: channel (laser ring id, 0 to beams−1) is there only if the sweep stores it, which the current sessions do, so N × 6. The rows are in input order, not row-aligned with `pred_points` (raster order) even when M = N, so pair them by nearest neighbour or through the raster, never by row index. |
 | `raster_pts` | float32 [C, H, W, 5] | the real scan on SplatAD's ray grid: azimuth (deg), elevation (deg), depth (m), t (s), intensity. H = beams, W = azimuth bins, C > 1 only when a cell holds several points. depth 0 = no ray in that cell. Rays with depth above the return threshold are non-returns. |
 | `pred_depth` | float32 [C, H, W, 1] | rendered expected depth (m) per ray of `raster_pts` |
 | `pred_median_depth` | float32 [C, H, W, 1] | rendered median depth (m) per ray |
@@ -93,7 +93,7 @@ runs/<run_id>/
 | `depth_mean_rel_l2` | mean of ((pred − real) / real)², expected depth | unitless, lower |
 | `median_depth_median_l2`, `median_depth_mean_rel_l2` | same two, using the rendered median depth | as above |
 | `intensity_rmse` | √mean (pred intensity − real intensity)² over valid returned rays | intensity units (0–1), lower |
-| `ray_drop_accuracy` | fraction of valid rays where (ray-drop prob > 0.5) equals (the real ray did not return) | 0–1, higher |
+| `ray_drop_accuracy` | fraction of valid rays where (ray-drop prob > 0.5) equals (the real ray did not return). **Not informative for current runs:** the converter drops Ouster no-returns (range 0, `pipeline/bag_to_dataset.py` `lidar_sample_from_fields`), and `add_missing_points` (Phase B) is not implemented, so every ray is a return. That makes the score 1 whenever the model predicts no drop, and the ray-drop loss only ever sees "returned" labels. Ignore it until Phase B. | 0–1, higher |
 | `chamfer_distance` | (Σ over `pred_points` of the squared distance to the nearest real point + Σ over real points of the squared distance to the nearest `pred_points` point) / N_real. Note that SplatAD divides **both** sums by the real point count. Missing when either cloud is empty. | m², lower |
 | `median_chamfer_distance` | same, using `pred_points_median` | m², lower |
 

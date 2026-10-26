@@ -33,9 +33,9 @@ Re-run the CPU preflight whenever the dataparser, extraction or window changes:
 
 **Timing (smoke, 52–67 s, 3000 iters, A6000):**
 - train ~9 min
-- camera render of 150 frames ~72 s
+- camera render of 150 frames ~72–86 s
 - copy-back ~2 min (a 1.65 GB checkpoint at 20 MB/s)
-- lidar render: not measured yet. Read `lidar_render_elapsed_s` from the first run.
+- lidar render of 150 scans ~73 s (job 222633)
 
 ## Seed and reproducibility
 `seed` seeds Python, NumPy and torch (all CUDA devices) before setup (nerfstudio `train.py`). It covers Gaussian init, sensor sampling order, random background, and MCMC relocation and noise.
@@ -82,7 +82,7 @@ A complete smoke run has 135 train + 15 test frames per camera output. Lidar sca
 | key | shape | frame / meaning |
 |---|---|---|
 | `pred_points`, `pred_points_median` | [M,5] x,y,z,intensity,t | lidar frame; rays with ray-drop prob ≤ 0.5 |
-| `gt_points` | [N,5] | the input returns, lidar frame |
+| `gt_points` | [N,6] x,y,z,intensity,t,channel | the input returns, lidar frame, in input order (not row-aligned with `pred_points`). Width 5 if a sweep has no channel column |
 | `raster_pts` + `pred_depth`, `pred_median_depth`, `pred_intensity`, `pred_ray_drop_prob` | [C,H,W,·] | per-ray, to recompute metrics |
 | `lidar_to_map` | 4x4 | **map frame** (T50): `p_map = lidar_to_map @ [p;1]` |
 | `lidar_to_world`, `dataparser_transform` | 3x4 | SplatAD dataparser frame, and w2m |
@@ -93,6 +93,7 @@ To compare with GT cuboids or raw sweeps, take points to the map frame with the 
 Read the clouds with these limits in mind:
 - **Rays come only from the input returns.** SplatAD renders along the input scan's own rays (`raster_pts`), so `pred_points` has no point where the input lidar had no return. A rendered trunk behind grass shows up only as a different depth on an existing ray.
 - `pred_points` uses expected depth and `pred_points_median` uses median depth. SplatAD reports Chamfer for both.
+- **`ray_drop_accuracy` is always ~1.0. Ignore it.** No-returns are dropped at conversion and `add_missing_points` (Phase B) is not implemented, so every ray is a return. Job 222633 shows it: 2,392,058 valid raster rays = 2,392,058 GT points, and the max ray-drop prob is 0.05.
 - `<sensor>` is the manifest's only lidar (`ouster` for the current sessions).
 - `test` is every ~10th frame interleaved with training frames (open issue in the session summary), so it measures interpolation, not a held-out stretch.
 
