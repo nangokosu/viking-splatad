@@ -165,70 +165,172 @@ def test_render_comparison_reports_missing_and_unexpected_stems(tmp_path):
     assert report["camera/test"]["unexpected_in_renders"] == ["bogus"]
 
 
-def make_run_dir(tmp_path: Path, start_fraction: float, end_fraction: float) -> Path:
-    """Run folder with a job_info.txt in splatad_run.sbatch's format (incl. an indented block)."""
-    run_dir = tmp_path / "runs" / "run-a"
-    run_dir.mkdir(parents=True)
-    (run_dir / "job_info.txt").write_text(
-        "RUN_ID: run-a\nSESSION: synthetic\nGIT_SHA: abc\nTRAIN_SEED: 7\n"
-        f"DATASET_START_FRACTION: {start_fraction!r}\nDATASET_END_FRACTION: {end_fraction!r}\n"
-        "ADD_MISSING_POINTS: True\nenvironment build:\n  RUN_ID: not-this-one\n"
-    )
-    return run_dir
+def make_completed_run(tmp_path: Path, start_fraction: float, end_fraction: float, train_fraction: float,
+                       config_fields: str = "", record_train_fraction: bool = True) -> tuple:
+    """A successful run on a synthetic camera+lidar dataset, as splatad_run.sbatch leaves it.
 
+    Writes the dataset, a job_info.txt in the sbatch's format (indented block included, with the
+    lidar-render key appended last), config.yml, and correct renders for both splits (file names
+    from build_run_split, which the T58/T59 tests above pin from first principles).
 
-def test_script_writes_deterministic_record_and_checks_renders(tmp_path):
-    """End to end: record matches build_run_split, re-run is byte-identical, a bad render fails."""
-    extract_split = load_extract_split_module()
+    Args:
+        tmp_path: pytest temporary directory.
+        start_fraction, end_fraction: Time window of the run.
+        train_fraction: The dataset manifest's session.train_fraction.
+        config_fields: Extra config.yml lines (e.g. an override).
+        record_train_fraction: False builds a legacy run (no TRAIN_SPLIT_FRACTION; config.yml holds 0.5).
+
+    Returns:
+        (run_dir, dataset_dir, expected frames).
+    """
     dataset_dir = tmp_path / "data" / "synthetic"
     write_synthetic_dataset(
         dataset_dir,
         {("cam", "camera"): np.arange(11, dtype=np.float64), ("lidar", "lidar"): np.arange(10, dtype=np.float64) + 0.5},
-        0.75,
+        train_fraction,
     )
-    run_dir = make_run_dir(tmp_path, 0.2, 0.7)
-    arguments = ["--run-dir", str(run_dir), "--dataset-dir", str(dataset_dir)]
-
-    # No renders yet: success, and the record holds the provenance and the same frames.
-    assert extract_split.main(arguments) == 0
-    first_bytes = (run_dir / "split.json").read_bytes()
-    record = json.loads(first_bytes)
-    expected_frames, _ = build_run_split(open_dataset_view(dataset_dir), 0.2, 0.7, 0.75)
-    assert record["membership_sha256"] == split_digest(expected_frames)
-    assert record["run"]["train_seed"] == "7" and record["run"]["run_id"] == "run-a"
-    assert record["selection"]["train_fraction_source"] == "manifest.session.train_fraction"
-    assert len((run_dir / "split_frames.csv").read_text().splitlines()) == len(expected_frames) + 1
-    assert extract_split.main(arguments) == 0
-    assert (run_dir / "split.json").read_bytes() == first_bytes
-
-    # Correct camera renders for both splits -> match; then one extra file -> exit 1.
-    for frame in expected_frames:
-        if frame.kind == "camera":
-            render_folder = run_dir / "renders" / frame.split / "rgb"
-            render_folder.mkdir(parents=True, exist_ok=True)
-            (render_folder / f"{Path(frame.file).stem}.jpg").touch()
-    assert extract_split.main(arguments) == 0
-    (run_dir / "renders" / "test" / "rgb" / "000000_0.jpg").touch()
-    assert extract_split.main(arguments) == 1
-
-
-def test_script_uses_the_config_override_not_the_saved_default(tmp_path):
-    """config.yml's train_split_fraction (saved before the dataparser runs) is ignored; the override is used."""
-    extract_split = load_extract_split_module()
-    dataset_dir = tmp_path / "data" / "synthetic"
-    write_synthetic_dataset(dataset_dir, {("cam", "camera"): np.arange(10, dtype=np.float64)}, 0.9)
-    run_dir = make_run_dir(tmp_path, 0.0, 1.0)
+    run_dir = tmp_path / "runs" / "run-a"
+    run_dir.mkdir(parents=True)
+    fraction_line = f"TRAIN_SPLIT_FRACTION: {train_fraction!r}\n" if record_train_fraction else ""
+    (run_dir / "job_info.txt").write_text(
+        "RUN_ID: run-a\nSESSION: synthetic\nGIT_SHA: abc\nTRAIN_SEED: 7\nRENDER_POSE_SOURCE: train+test\n"
+        f"DATASET_START_FRACTION: {start_fraction!r}\nDATASET_END_FRACTION: {end_fraction!r}\n"
+        f"ADD_MISSING_POINTS: True\n{fraction_line}environment build:\n  RUN_ID: not-this-one\n"
+        "lidar_render_elapsed_s: 73\n"
+    )
     config_dir = run_dir / "train" / "synthetic" / "splatad" / "run-a"
     config_dir.mkdir(parents=True)
+    saved_fraction = train_fraction if record_train_fraction else 0.5
     (config_dir / "config.yml").write_text(
-        "  train_split_fraction: 0.5\n  train_split_fraction_override: 0.6\n  max_eval_frames: null\n"
+        f"  train_split_fraction: {saved_fraction}\n  max_eval_frames: null\n{config_fields}"
     )
-    assert extract_split.main(["--run-dir", str(run_dir), "--dataset-dir", str(dataset_dir)]) == 0
+    expected_frames, _ = build_run_split(open_dataset_view(dataset_dir), start_fraction, end_fraction, train_fraction)
+    write_renders(run_dir, expected_frames)
+    return run_dir, dataset_dir, expected_frames
+
+
+def write_renders(run_dir: Path, frames) -> None:
+    """Empty render files named like ns-render (rgb/*.jpg) and scripts/08 (lidar/*.npz) name them."""
+    for frame in frames:
+        folder_name, suffix = ("rgb", ".jpg") if frame.kind == "camera" else ("lidar", ".npz")
+        render_folder = run_dir / "renders" / frame.split / folder_name
+        render_folder.mkdir(parents=True, exist_ok=True)
+        (render_folder / f"{Path(frame.file).stem}{suffix}").touch()
+
+
+def run_script(run_dir: Path, dataset_dir: Path) -> int:
+    """Run scripts/09 on a run folder and return its exit code."""
+    return load_extract_split_module().main(["--run-dir", str(run_dir), "--dataset-dir", str(dataset_dir)])
+
+
+def test_script_documents_a_successful_run_deterministically(tmp_path):
+    """A complete run with matching renders: record written, same frames, byte-identical re-run.
+
+    Replaces the earlier "no renders -> record" test: by the user's requirement (2026-10-26) only
+    runs that returned their outputs are documented.
+    """
+    run_dir, dataset_dir, expected_frames = make_completed_run(tmp_path, 0.2, 0.7, 0.75)
+    assert run_script(run_dir, dataset_dir) == 0
+    first_bytes = (run_dir / "split.json").read_bytes()
+    record = json.loads(first_bytes)
+    assert record["membership_sha256"] == split_digest(expected_frames)
+    assert record["run"]["train_seed"] == "7" and record["run"]["run_id"] == "run-a"
+    assert record["selection"]["train_fraction"] == 0.75
+    assert record["selection"]["train_fraction_source"].startswith("manifest.session.train_fraction (= job_info")
+    assert all(check["match"] for check in record["render_check"].values())
+    assert set(record["render_check"]) == {"camera/train", "camera/test", "lidar/train", "lidar/test"}
+    assert len((run_dir / "split_frames.csv").read_text().splitlines()) == len(expected_frames) + 1
+    assert run_script(run_dir, dataset_dir) == 0
+    assert (run_dir / "split.json").read_bytes() == first_bytes
+
+
+@pytest.mark.parametrize("break_run", ["no_lidar_render_key", "no_config", "no_test_lidar_renders",
+                                       "no_train_camera_renders", "no_job_info", "no_session_key"])
+def test_script_never_documents_an_incomplete_run_and_removes_a_stale_record(tmp_path, break_run):
+    """Each way a run can fail before returning its outputs -> exit 2, no split.json / CSV left."""
+    run_dir, dataset_dir, _ = make_completed_run(tmp_path, 0.2, 0.7, 0.75)
+    assert run_script(run_dir, dataset_dir) == 0  # a record exists, then the run is broken
+    job_info_path = run_dir / "job_info.txt"
+    if break_run == "no_lidar_render_key":
+        job_info_path.write_text(job_info_path.read_text().replace("lidar_render_elapsed_s: 73\n", ""))
+    elif break_run == "no_config":
+        next(run_dir.glob("train/*/splatad/*/config.yml")).unlink()
+    elif break_run == "no_test_lidar_renders":
+        for rendered_file in (run_dir / "renders" / "test" / "lidar").iterdir():
+            rendered_file.unlink()
+    elif break_run == "no_train_camera_renders":
+        for rendered_file in (run_dir / "renders" / "train" / "rgb").iterdir():
+            rendered_file.unlink()
+    elif break_run == "no_session_key":
+        job_info_path.write_text(job_info_path.read_text().replace("SESSION: synthetic\n", ""))
+    else:
+        job_info_path.unlink()
+    assert run_script(run_dir, dataset_dir) == 2
+    assert not (run_dir / "split.json").exists() and not (run_dir / "split_frames.csv").exists()
+
+
+def test_script_refuses_renders_that_differ_from_the_split(tmp_path):
+    """One rendered file outside the rebuilt split -> exit 1 and no record."""
+    run_dir, dataset_dir, _ = make_completed_run(tmp_path, 0.2, 0.7, 0.75)
+    (run_dir / "renders" / "test" / "rgb" / "000000_0.jpg").touch()
+    assert run_script(run_dir, dataset_dir) == 1
+    assert not (run_dir / "split.json").exists()
+
+
+def test_script_refuses_disagreeing_train_fractions(tmp_path):
+    """config.yml saying 0.5 while job_info and the manifest say 0.75 -> exit 1 (inconsistent run)."""
+    run_dir, dataset_dir, _ = make_completed_run(tmp_path, 0.2, 0.7, 0.75)
+    config_path = next(run_dir.glob("train/*/splatad/*/config.yml"))
+    config_path.write_text(config_path.read_text().replace("train_split_fraction: 0.75", "train_split_fraction: 0.5"))
+    assert run_script(run_dir, dataset_dir) == 1
+    assert not (run_dir / "split.json").exists()
+
+
+def test_new_style_run_without_a_saved_fraction_is_inconsistent_and_loses_its_stale_record(tmp_path):
+    """TRAIN_SPLIT_FRACTION recorded but config.yml lacks train_split_fraction -> exit 1, old record deleted."""
+    run_dir, dataset_dir, _ = make_completed_run(tmp_path, 0.2, 0.7, 0.75)
+    assert run_script(run_dir, dataset_dir) == 0
+    config_path = next(run_dir.glob("train/*/splatad/*/config.yml"))
+    config_path.write_text(config_path.read_text().replace("  train_split_fraction: 0.75\n", ""))
+    assert run_script(run_dir, dataset_dir) == 1
+    assert not (run_dir / "split.json").exists() and not (run_dir / "split_frames.csv").exists()
+
+
+def test_legacy_run_uses_the_manifest_not_the_saved_default(tmp_path):
+    """A run from before TRAIN_SPLIT_FRACTION: config.yml's 0.5 is ignored, the manifest's 0.75 is used.
+
+    ceil(n * 0.75) differs from ceil(n * 0.5), so a wrong fraction would also break the render check.
+    """
+    run_dir, dataset_dir, _ = make_completed_run(tmp_path, 0.2, 0.7, 0.75, record_train_fraction=False)
+    assert run_script(run_dir, dataset_dir) == 0
+    record = json.loads((run_dir / "split.json").read_text())
+    assert record["selection"]["train_fraction"] == 0.75
+    assert "legacy run" in record["selection"]["train_fraction_source"]
+    # Window keeps camera frames 2..7 (6 frames): ceil(6 * 0.75) = 5 train.
+    assert record["counts"]["cam"]["train"] == 5
+
+
+def test_override_in_config_is_what_the_dataparser_used(tmp_path):
+    """train_split_fraction_override (0.6) wins over the manifest (0.9), as in T27 resolve_train_fraction.
+
+    The renders follow the 0.6 split; without the override the script would rebuild the 0.9 split,
+    which the renders contradict.
+    """
+    run_dir, dataset_dir, _ = make_completed_run(tmp_path, 0.0, 1.0, 0.6, record_train_fraction=False)
+    manifest_path = dataset_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["session"]["train_fraction"] = 0.9
+    manifest_path.write_text(json.dumps(manifest))
+    # Without the override: the manifest's 0.9 split disagrees with the 0.6 renders.
+    assert run_script(run_dir, dataset_dir) == 1
+    config_path = next(run_dir.glob("train/*/splatad/*/config.yml"))
+    config_path.write_text(config_path.read_text() + "  train_split_fraction_override: 0.6\n")
+    assert run_script(run_dir, dataset_dir) == 0
     record = json.loads((run_dir / "split.json").read_text())
     assert record["selection"]["train_fraction"] == 0.6
-    assert record["selection"]["train_fraction_source"] == "override"
-    # ceil(10 * 0.6) = 6 train frames.
-    assert record["counts"]["cam"]["train"] == 6
+    assert record["selection"]["train_fraction_source"].startswith("override")
+    # Camera has 11 frames in the whole recording: ceil(11 * 0.6) = 7 train.
+    assert record["counts"]["cam"]["train"] == 7
 
 
 @pytest.mark.covers("T58")

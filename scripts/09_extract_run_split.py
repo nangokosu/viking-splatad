@@ -1,9 +1,17 @@
-"""Write the exact train/test frames of one SplatAD run into its run folder (CPU, no torch).
+"""Write the exact train/test frames of one successful SplatAD run into its run folder (CPU, no torch).
 
 SplatAD's split is deterministic (time window + per-sensor LINSPACE, no RNG; see
 ``viking_splatad.dataset.run_split``), so it is rebuilt from the run's recorded settings
-(``job_info.txt``, ``config.yml``) and its dataset (``manifest.json``, ``poses.npz``, frame files).
-When the run has renders, their file names are checked against the rebuilt split.
+(``job_info.txt``, ``config.yml``) and its dataset (``manifest.json``, ``poses.npz``, frame files),
+then checked against the file names of the run's renders.
+
+Only successful runs are documented. Nothing is written (and a stale record is removed) unless:
+    * every render step finished (``lidar_render_elapsed_s`` in job_info.txt) and config.yml exists;
+    * every split of RENDER_POSE_SOURCE has camera (rgb/) and lidar (lidar/) renders;
+    * the train fraction agrees between job_info.txt (TRAIN_SPLIT_FRACTION), config.yml and the
+      manifest (runs submitted before TRAIN_SPLIT_FRACTION existed: manifest only, because their
+      config.yml holds the class default 0.5);
+    * the rendered file names equal the rebuilt split.
 
 Outputs, in ``<run dir>``:
     split.json        provenance (run, git SHA, seed, window, train fraction and its source,
@@ -15,10 +23,11 @@ Outputs, in ``<run dir>``:
 Usage:
     # Locally, after `submit_run.py fetch <run_id>` (dataset default: data/intermediate/<SESSION>):
     uv run python scripts/09_extract_run_split.py --run-dir runs/<run_id>
-    # On the cluster (splatad_run.sbatch runs this before training and after rendering):
+    # On the cluster (the last step of splatad_run.sbatch, after every render):
     python scripts/09_extract_run_split.py --run-dir <run dir> --dataset-dir <stage>/data/<session>
 
-Exit code 0 on success; 1 if the renders disagree with the rebuilt split.
+Exit code 0 when the record was written; 1 when the renders or the train fractions disagree with
+the rebuilt split; 2 when the run did not complete (failed runs are never documented).
 """
 
 import argparse
@@ -52,7 +61,13 @@ SPLIT_RECORD_SCHEMA = "viking-splatad/run-split/1"
 SPLIT_JSON_NAME = "split.json"
 SPLIT_CSV_NAME = "split_frames.csv"
 # job_info.txt keys this script needs (written by scripts/slurm/splatad_run.sbatch).
-REQUIRED_JOB_INFO_KEYS = ("RUN_ID", "SESSION", "DATASET_START_FRACTION", "DATASET_END_FRACTION")
+REQUIRED_JOB_INFO_KEYS = ("RUN_ID", "SESSION", "DATASET_START_FRACTION", "DATASET_END_FRACTION", "RENDER_POSE_SOURCE")
+# job_info.txt key appended only after the last render step (lidar) succeeded: proof of a complete run.
+RENDERS_COMPLETE_JOB_INFO_KEY = "lidar_render_elapsed_s"
+# Separator of the splits in RENDER_POSE_SOURCE (e.g. "train+test").
+POSE_SOURCE_SEPARATOR = "+"
+# Exit codes: written, inconsistent (renders or fractions disagree), run not complete.
+EXIT_WRITTEN, EXIT_INCONSISTENT, EXIT_INCOMPLETE = 0, 1, 2
 # Render folder per sensor kind and the file extension each renderer writes there.
 RENDER_FOLDER_BY_KIND = {"camera": ("rgb", ".jpg"), "lidar": ("lidar", ".npz")}
 # YAML literal nerfstudio writes for None.
@@ -126,71 +141,133 @@ def list_rendered_stems(run_dir: Path) -> Dict[Tuple[str, str], List[str]]:
     return rendered_stems
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    """CLI entry point.
+class RunNotDocumented(Exception):
+    """The run is not documented; ``exit_code`` says why (incomplete or inconsistent)."""
+
+    def __init__(self, message: str, exit_code: int):
+        """Store the reason.
+
+        Args:
+            message: Human-readable reason, printed to stderr.
+            exit_code: ``EXIT_INCOMPLETE`` or ``EXIT_INCONSISTENT``.
+        """
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+def resolve_checked_train_fraction(job_info: Dict[str, str], config_path: Path, manifest: dict) -> Tuple[float, str]:
+    """The run's train fraction, after checking that every place recording it agrees.
 
     Args:
-        argv: Argument list (default sys.argv[1:]).
+        job_info: Parsed job_info.txt.
+        config_path: The run's config.yml.
+        manifest: Parsed dataset manifest.
 
     Returns:
-        0 on success, 1 when renders disagree with the rebuilt split.
-    """
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--run-dir", type=Path, required=True, help="run folder holding job_info.txt")
-    parser.add_argument("--dataset-dir", type=Path, default=None,
-                        help="dataset the run trained on (default: data/intermediate/<SESSION>)")
-    arguments = parser.parse_args(argv)
-    run_dir: Path = arguments.run_dir
+        (fraction, source description) for split.json.
 
-    # Step 1: the run's recorded settings.
-    job_info = parse_job_info(run_dir / "job_info.txt")
+    Raises:
+        RunNotDocumented: (inconsistent) if job_info, config.yml and the dataparser's resolution disagree.
+    """
+    # Step 1: what the dataparser used (override, else the manifest; T27 resolve_train_fraction).
+    override_text = read_config_scalar(config_path, "train_split_fraction_override")
+    train_fraction, resolution_source = resolve_run_train_fraction(
+        manifest, None if override_text is None else float(override_text)
+    )
+    # Step 2: legacy runs did not export TRAIN_SPLIT_FRACTION; their config.yml holds the 0.5 default.
+    if "TRAIN_SPLIT_FRACTION" not in job_info:
+        return train_fraction, f"{resolution_source} (legacy run: config.yml train_split_fraction is the class default)"
+    # Step 3: newer runs record it twice more; all three values must be the same float.
+    recorded_fractions = {
+        "job_info.txt TRAIN_SPLIT_FRACTION": float(job_info["TRAIN_SPLIT_FRACTION"]),
+        "config.yml train_split_fraction": float(read_config_scalar(config_path, "train_split_fraction") or "nan"),
+        f"dataparser ({resolution_source})": train_fraction,
+    }
+    if len(set(recorded_fractions.values())) != 1:
+        raise RunNotDocumented(f"train fractions disagree: {recorded_fractions}", EXIT_INCONSISTENT)
+    return train_fraction, f"{resolution_source} (= job_info.txt TRAIN_SPLIT_FRACTION = config.yml)"
+
+
+def remove_stale_record(run_dir: Path) -> None:
+    """Delete split.json / split_frames.csv left from an earlier extraction, so no run keeps a wrong record.
+
+    Args:
+        run_dir: Run folder.
+    """
+    for record_name in (SPLIT_JSON_NAME, SPLIT_CSV_NAME):
+        (run_dir / record_name).unlink(missing_ok=True)
+
+
+def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> Tuple[dict, list]:
+    """Rebuild and verify the split of a completed run.
+
+    Args:
+        run_dir: Run folder.
+        dataset_dir_argument: ``--dataset-dir``, or None for data/intermediate/<SESSION>.
+
+    Returns:
+        (split.json content, frames).
+
+    Raises:
+        RunNotDocumented: When the run is incomplete or its renders/fractions disagree.
+    """
+    # Step 1: the run must have finished every render step.
+    job_info_path = run_dir / "job_info.txt"
+    if not job_info_path.is_file():
+        raise RunNotDocumented(f"{job_info_path} is missing", EXIT_INCOMPLETE)
+    job_info = parse_job_info(job_info_path)
     missing_keys = [info_key for info_key in REQUIRED_JOB_INFO_KEYS if info_key not in job_info]
     if missing_keys:
-        raise SystemExit(f"{run_dir / 'job_info.txt'} lacks {missing_keys}")
+        raise RunNotDocumented(f"{job_info_path} lacks {missing_keys}", EXIT_INCOMPLETE)
+    if RENDERS_COMPLETE_JOB_INFO_KEY not in job_info:
+        raise RunNotDocumented(f"run did not finish rendering (no {RENDERS_COMPLETE_JOB_INFO_KEY})", EXIT_INCOMPLETE)
     session = job_info["SESSION"]
+    config_path = run_dir / "train" / session / "splatad" / job_info["RUN_ID"] / "config.yml"
+    if not config_path.is_file():
+        raise RunNotDocumented(f"{config_path} is missing", EXIT_INCOMPLETE)
+    # Step 2: every rendered split must have camera and lidar outputs.
+    rendered_splits = job_info["RENDER_POSE_SOURCE"].split(POSE_SOURCE_SEPARATOR)
+    rendered_stems = list_rendered_stems(run_dir)
+    empty_outputs = [f"renders/{split_name}/{RENDER_FOLDER_BY_KIND[sensor_kind][0]}"
+                     for split_name in rendered_splits for sensor_kind in SPLIT_SENSOR_KINDS
+                     if not rendered_stems.get((sensor_kind, split_name))]
+    if empty_outputs:
+        raise RunNotDocumented(f"no rendered output in {empty_outputs}", EXIT_INCOMPLETE)
+
+    # Step 3: the dataset, read exactly as the dataparser reads it, and the checked fraction.
+    dataset_dir = dataset_dir_argument or (DEFAULT_DATASET_PARENT / session)
+    view = open_dataset_view(dataset_dir)
+    train_fraction, train_fraction_source = resolve_checked_train_fraction(job_info, config_path, view.manifest)
+    max_eval_text = read_config_scalar(config_path, "max_eval_frames")
     start_fraction = float(job_info["DATASET_START_FRACTION"])
     end_fraction = float(job_info["DATASET_END_FRACTION"])
-    # config.yml exists once ns-train started; before that, the dataparser defaults apply (None).
-    config_path = run_dir / "train" / session / "splatad" / job_info["RUN_ID"] / "config.yml"
-    override_text = read_config_scalar(config_path, "train_split_fraction_override")
-    max_eval_text = read_config_scalar(config_path, "max_eval_frames")
 
-    # Step 2: the dataset, read exactly as the dataparser reads it.
-    dataset_dir: Path = arguments.dataset_dir or (DEFAULT_DATASET_PARENT / session)
-    view = open_dataset_view(dataset_dir)
-    train_fraction, train_fraction_source = resolve_run_train_fraction(
-        view.manifest, None if override_text is None else float(override_text)
-    )
-
-    # Step 3: rebuild the split and fingerprint it.
+    # Step 4: rebuild the split; the renders must name exactly its frames.
     frames, window_bounds = build_run_split(
         view, start_fraction, end_fraction, train_fraction,
         max_eval_frames=None if max_eval_text is None else int(max_eval_text),
     )
-    membership_digest = split_digest(frames)
+    render_check = compare_with_rendered_stems(frames, rendered_stems)
+    mismatched = {check_name: check for check_name, check in render_check.items() if not check["match"]}
+    if mismatched:
+        raise RunNotDocumented(f"renders disagree with the rebuilt split: {mismatched}", EXIT_INCONSISTENT)
 
-    # Step 4: per-sensor counts (frames in the recording, in the window, per split).
+    # Step 5: per-sensor counts (frames in the recording, in the window, per split).
     sensor_counts = {}
     for sensor in view.manifest["sensors"]:
         if sensor["kind"] not in SPLIT_SENSOR_KINDS:
             continue
         sensor_frames = [frame for frame in frames if frame.sensor == sensor["name"]]
-        train_count = sum(frame.split == TRAIN_SPLIT_NAME for frame in sensor_frames)
-        test_count = sum(frame.split == TEST_SPLIT_NAME for frame in sensor_frames)
         sensor_counts[sensor["name"]] = {
             "kind": sensor["kind"],
             "frames_in_recording": len(view.sensor_times[sensor["name"]]),
-            # At fraction 1.0 every windowed frame is in both splits, so train alone is the window.
+            # At fraction 1.0 a frame is in both splits, so count distinct files.
             "frames_in_window": len({frame.file for frame in sensor_frames}),
-            TRAIN_SPLIT_NAME: train_count,
-            TEST_SPLIT_NAME: test_count,
+            TRAIN_SPLIT_NAME: sum(frame.split == TRAIN_SPLIT_NAME for frame in sensor_frames),
+            TEST_SPLIT_NAME: sum(frame.split == TEST_SPLIT_NAME for frame in sensor_frames),
         }
 
-    # Step 5: compare with the renders, when the run has any.
-    render_check = compare_with_rendered_stems(frames, list_rendered_stems(run_dir))
-    renders_agree = all(check["match"] for check in render_check.values())
-
-    # Step 6: write the deterministic record (sorted keys, no wall-clock values).
+    # Step 6: the record (sorted keys and no wall-clock values keep it byte-reproducible).
     split_record = {
         "schema": SPLIT_RECORD_SCHEMA,
         "run": {
@@ -216,27 +293,54 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "poses_sha256": file_sha256(dataset_dir / "poses.npz"),
         },
         "counts": sensor_counts,
-        "membership_sha256": membership_digest,
+        "membership_sha256": split_digest(frames),
         "render_check": render_check,
         "frames": [asdict(frame) for frame in frames],
     }
+    return split_record, frames
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry point.
+
+    Args:
+        argv: Argument list (default sys.argv[1:]).
+
+    Returns:
+        EXIT_WRITTEN, EXIT_INCONSISTENT or EXIT_INCOMPLETE (see the module docstring).
+    """
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--run-dir", type=Path, required=True, help="run folder holding job_info.txt")
+    parser.add_argument("--dataset-dir", type=Path, default=None,
+                        help="dataset the run trained on (default: data/intermediate/<SESSION>)")
+    arguments = parser.parse_args(argv)
+    run_dir: Path = arguments.run_dir
+
+    # Step 1: build and verify; an undocumentable run leaves no record behind.
+    try:
+        split_record, frames = build_split_record(run_dir, arguments.dataset_dir)
+    except RunNotDocumented as refusal:
+        remove_stale_record(run_dir)
+        print(f"not documented: {refusal}", file=sys.stderr)
+        return refusal.exit_code
+
+    # Step 2: write split.json and split_frames.csv.
     (run_dir / SPLIT_JSON_NAME).write_text(json.dumps(split_record, indent=1, sort_keys=True) + "\n")
     with open(run_dir / SPLIT_CSV_NAME, "w", newline="") as csv_handle:
-        csv_writer = csv.DictWriter(csv_handle, fieldnames=list(asdict(frames[0]).keys()) if frames else [],
-                                    lineterminator="\n")
+        csv_writer = csv.DictWriter(csv_handle, fieldnames=list(asdict(frames[0]).keys()), lineterminator="\n")
         csv_writer.writeheader()
         csv_writer.writerows(asdict(frame) for frame in frames)
 
-    # Step 7: human summary.
-    for sensor_name, counts in sensor_counts.items():
+    # Step 3: human summary.
+    for sensor_name, counts in split_record["counts"].items():
         print(f"{sensor_name}: {counts['frames_in_window']}/{counts['frames_in_recording']} frames in window, "
               f"train {counts[TRAIN_SPLIT_NAME]}, test {counts[TEST_SPLIT_NAME]}")
-    print(f"train fraction {train_fraction} ({train_fraction_source}); membership sha256 {membership_digest}")
-    for check_name, check in render_check.items():
-        print(f"renders {check_name}: {'match' if check['match'] else 'MISMATCH'}"
-              f" (missing {len(check['missing_from_renders'])}, unexpected {len(check['unexpected_in_renders'])})")
+    selection = split_record["selection"]
+    print(f"train fraction {selection['train_fraction']} ({selection['train_fraction_source']})")
+    print(f"membership sha256 {split_record['membership_sha256']}; renders match for "
+          f"{', '.join(split_record['render_check'])}")
     print(f"wrote {run_dir / SPLIT_JSON_NAME} and {run_dir / SPLIT_CSV_NAME}")
-    return 0 if renders_agree else 1
+    return EXIT_WRITTEN
 
 
 if __name__ == "__main__":

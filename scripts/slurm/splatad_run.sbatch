@@ -19,6 +19,8 @@
 #   DATASET_START_FRACTION DATASET_END_FRACTION  (time window; 0 and 1 = whole recording)
 #   ADD_MISSING_POINTS  (True/False: the session config's splatad.add_missing_points; True appends
 #                        the dataset's recorded no-returns, lidar_no_return/, as 2000 m rays)
+#   TRAIN_SPLIT_FRACTION  (the dataset manifest's session.train_fraction, passed to viking-data so
+#                          config.yml records the fraction the dataparser actually uses)
 #
 # Stage layout ($STAGE_ROOT): data/<session>/, code/<sha>/ (committed repo snapshot),
 # envs/splatad-<recipe hash>/ (environment), runs/<run_id>/.
@@ -29,7 +31,7 @@ set -euo pipefail
 # ---- check the required variables (set -u alone would give a less clear message) ----------
 for required_variable in RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX \
     MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
-    DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS; do
+    DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION; do
   if [ -z "${!required_variable:-}" ]; then
     echo "ERROR: $required_variable is not set (submit with scripts/slurm/submit_run.py)" >&2
     exit 1
@@ -54,7 +56,7 @@ mkdir -p "$RUN_DIR"
   echo "slurm_mem_per_node_mb: ${SLURM_MEM_PER_NODE:-unset}"
   for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX \
       MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
-      DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS; do
+      DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION; do
     echo "$exported_variable: ${!exported_variable:-}"
   done
   echo "environment build:"; sed 's/^/  /' "$ENV_PREFIX/.build-complete"
@@ -80,11 +82,6 @@ assert torch.cuda.is_available(), 'CUDA not available'; \
 print('gpu_check:', torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0)); \
 print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 
-# ---- (c2) record the exact train/test frames ------------------------------------------------
-# The split is deterministic (time window + per-sensor LINSPACE, no RNG), so it is rebuilt on the
-# CPU from job_info.txt and the dataset: $RUN_DIR/split.json + split_frames.csv. Written before
-# training so a run that dies still documents its frames; step (f) re-checks it against the renders.
-python "$CODE_DIR/scripts/09_extract_run_split.py" --run-dir "$RUN_DIR" --dataset-dir "$STAGE_ROOT/data/$SESSION"
 
 # ---- (d) train --------------------------------------------------------------------------
 # --machine.seed seeds python/numpy/torch (all CUDA devices) before setup (nerfstudio train.py).
@@ -104,7 +101,8 @@ ns-train splatad \
   --machine.seed "$TRAIN_SEED" \
   viking-data --data "$STAGE_ROOT/data" --session-name "$SESSION" \
   --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION" \
-  --add-missing-points "$ADD_MISSING_POINTS"
+  --add-missing-points "$ADD_MISSING_POINTS" \
+  --train-split-fraction "$TRAIN_SPLIT_FRACTION"
 TRAIN_END_SECONDS=$(date +%s)
 {
   echo "train_end_epoch_s: $TRAIN_END_SECONDS"
@@ -153,17 +151,22 @@ python "$CODE_DIR/scripts/08_render_lidar_pointcloud.py" \
   --dataset-dir "$STAGE_ROOT/data/$SESSION"
 LIDAR_RENDER_END_SECONDS=$(date +%s)
 
-# ---- (f) done -------------------------------------------------------------------------------
-# Re-run the split extraction now that renders exist: it compares the rendered file names with the
-# rebuilt split (split.json render_check). A mismatch is recorded, not fatal: the renders are done.
-if python "$CODE_DIR/scripts/09_extract_run_split.py" --run-dir "$RUN_DIR" --dataset-dir "$STAGE_ROOT/data/$SESSION"; then
-  echo "split_render_check: match" >> "$JOB_INFO"
-else
-  echo "split_render_check: MISMATCH (see split.json render_check)" >> "$JOB_INFO"
-fi
+# ---- (f) split record, then done ------------------------------------------------------------
 {
   echo "lidar_render_end_epoch_s: $LIDAR_RENDER_END_SECONDS"
   echo "lidar_render_elapsed_s: $((LIDAR_RENDER_END_SECONDS - LIDAR_RENDER_START_SECONDS))"
-  echo "end_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >> "$JOB_INFO"
+# Only a run that produced its renders is documented: split.json + split_frames.csv are written
+# here, after every render step succeeded, and only if the rendered file names equal the rebuilt
+# split (scripts/09_extract_run_split.py writes nothing otherwise). A mismatch fails the job, so
+# end_utc is written only for a complete, consistent run.
+if python "$CODE_DIR/scripts/09_extract_run_split.py" --run-dir "$RUN_DIR" --dataset-dir "$STAGE_ROOT/data/$SESSION"; then
+  echo "split_render_check: match" >> "$JOB_INFO"
+else
+  # $? here is the script's exit code: 1 = renders or train fractions disagree, 2 = outputs missing.
+  SPLIT_EXIT_CODE=$?
+  echo "split_render_check: FAILED (exit $SPLIT_EXIT_CODE; no split record written; reason in the Slurm log)" >> "$JOB_INFO"
+  exit 1
+fi
+echo "end_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$JOB_INFO"
 echo "done: run $RUN_ID, train $((TRAIN_END_SECONDS - TRAIN_START_SECONDS)) s, render $((RENDER_END_SECONDS - RENDER_START_SECONDS)) s, lidar render $((LIDAR_RENDER_END_SECONDS - LIDAR_RENDER_START_SECONDS)) s"

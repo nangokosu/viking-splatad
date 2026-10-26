@@ -496,6 +496,32 @@ def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDI
     return flag
 
 
+def dataset_train_fraction(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT) -> float:
+    """``session.train_fraction`` of the local dataset's manifest, the fraction the dataparser uses.
+
+    Passed to ns-train as ``--train-split-fraction`` so ``config.yml`` records the real value:
+    nerfstudio saves config.yml before the dataparser runs, so without the flag it holds the class
+    default (0.5) even though the dataparser then splits with the manifest's value.
+
+    Args:
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+
+    Returns:
+        The fraction in (0, 1].
+
+    Raises:
+        FileNotFoundError: If the dataset's ``manifest.json`` is missing.
+        ValueError: If the fraction is not a number in (0, 1].
+    """
+    manifest_path = Path(intermediate_root) / session / "manifest.json"
+    train_fraction = json.loads(manifest_path.read_text())["session"]["train_fraction"]
+    # bool is an int subclass; refuse it like any other non-number.
+    if isinstance(train_fraction, bool) or not isinstance(train_fraction, (int, float)) or not 0 < train_fraction <= 1:
+        raise ValueError(f"{manifest_path}: session.train_fraction must be a number in (0, 1], got {train_fraction!r}")
+    return float(train_fraction)
+
+
 def require_no_return_sidecar(dataset_dir: Path, add_missing_points: bool) -> None:
     """Refuse a dataset that lacks the no-return sidecar when the run needs it.
 
@@ -518,7 +544,8 @@ def require_no_return_sidecar(dataset_dir: Path, add_missing_points: bool) -> No
 def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id: str,
                           git_sha: str, absolute_stage_root: str,
                           env_marker: Dict[str, str],
-                          add_missing_points: Optional[bool] = None) -> Dict[str, str]:
+                          add_missing_points: Optional[bool] = None,
+                          train_split_fraction: Optional[float] = None) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
 
     Args:
@@ -531,6 +558,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         add_missing_points: The session's flag (``session_add_missing_points``), exported as
             ADD_MISSING_POINTS. ``submit_run`` always passes it; None leaves it out, and then
             splatad_run.sbatch refuses to start.
+        train_split_fraction: The dataset's train fraction (``dataset_train_fraction``), exported
+            as TRAIN_SPLIT_FRACTION. Same rule as ``add_missing_points``: None leaves it out.
 
     Returns:
         Mapping variable name -> string value.
@@ -563,6 +592,9 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
     # tyro (ns-train) parses booleans as True/False, which is what str(bool) gives.
     if add_missing_points is not None:
         job_environment["ADD_MISSING_POINTS"] = str(bool(add_missing_points))
+    # repr keeps every digit, so config.yml, job_info.txt and the manifest hold the same float.
+    if train_split_fraction is not None:
+        job_environment["TRAIN_SPLIT_FRACTION"] = repr(float(train_split_fraction))
     return job_environment
 
 
@@ -979,7 +1011,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     job_script_path = f"{remote_run_dir}/job.sbatch"
     write_remote_file(ssh_target, job_script_path, build_job_script(
         build_job_environment(profile_settings, session, run_id, git_sha, absolute_stage_root, env_marker,
-                              add_missing_points=session_add_missing_points(session)),
+                              add_missing_points=session_add_missing_points(session),
+                              train_split_fraction=dataset_train_fraction(session)),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,

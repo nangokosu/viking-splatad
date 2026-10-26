@@ -11,12 +11,13 @@
   - The repo-local `user.email` is the noreply address.
   - A pre-rewrite mirror is at `../viking-splatad-prerewrite-backup.git`. It is local only: never push it.
   - Old → new SHA map: `.git/filter-repo/commit-map`.
-- **Split record per run** (`88fdbfd`): `scripts/09_extract_run_split.py` (T58 window, T59 split) writes `<run dir>/split.json` + `split_frames.csv`. They hold the exact train/test frames, the seed, the window, the train fraction and its source, dataset hashes, `membership_sha256` and a render-name check.
-  - The job runs it before training and after rendering (`split_render_check` in `job_info.txt`).
+- **Split record per successful run** (`88fdbfd`, then the follow-up commit): `scripts/09_extract_run_split.py` (T58 window, T59 split) writes `<run dir>/split.json` + `split_frames.csv`. They hold the exact train/test frames, the seed, the window, the train fraction and its source, dataset hashes, `membership_sha256` and a render-name check.
+  - Only successful runs are documented: the job runs it once, as its last step after every render, before `end_utc`. Incomplete runs get exit 2, inconsistent ones exit 1; in both cases nothing is written and a stale record is deleted.
+  - `config.yml` is still needed (it loads the model). It now records the real train fraction: `submit_run.py` exports `TRAIN_SPLIT_FRACTION` from the manifest, and the job passes it as `--train-split-fraction`. Older runs say 0.5.
   - Verified against the real dataparser in the image: identical frames on the smoke window (135/15 camera and lidar).
   - `config.yml`'s `train_split_fraction` (0.5) is wrong: nerfstudio saves it before the dataparser runs. The real value is the manifest's 0.9.
 - **Your cluster login is configured locally:** `~/.ssh/config` has a `comps0.cs.toronto.edu` block (User + ControlMaster), and key auth works non-interactively. Nothing about it is in the repo.
-- Full suite: 312 passed, 3 skipped (all pre-existing). Only new tests were added.
+- Full suite: 333 passed, 3 skipped (all pre-existing). One test file was changed on purpose: `tests/unit/test_run_split.py` (added earlier in this session); the follow-up commit message explains why.
 
 ## Current state
 - **No remote yet.** The repo has not been pushed or made public.
