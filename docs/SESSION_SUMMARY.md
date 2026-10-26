@@ -53,7 +53,7 @@
 1. Smoke run on `may_chunks0_1_smoke` with `add_missing_points` on (only when the user asks).
    - First run `stage --session may_chunks0_1_smoke`: submit uses HEAD's code, and later commits are not staged yet.
    - Check that `ray_drop_accuracy` falls below 1 and means something, and that `job_info.txt` shows `ADD_MISSING_POINTS: True`.
-   - Record the lidar step time against job 222633 (~75% more rays per sweep).
+   - Compare times with job 222633 (train 538 s, lidar render 73 s, without no-returns), since there are ~75% more lidar rays per sweep now.
 2. Decide on the T16 elevation mapping (median vs. far-field fit) before the full runs.
 3. Full May Scene A run, then June B and R, all with the same seed and with `add_missing_points` on.
 4. Evaluation per PLAN §5:
