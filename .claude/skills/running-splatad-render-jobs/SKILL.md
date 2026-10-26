@@ -37,6 +37,7 @@ uv run python scripts/slurm/submit_run.py stage  --session <session>     # code/
 uv run python scripts/slurm/submit_run.py submit --session <session> --profile smoke
 ```
 - `submit` re-runs the gates (pytest, contract, clean tree) and prints `submitted job <job> run <run_id>`. The run is also logged in `runs/submitted.tsv`.
+- Then wait for the job, and fetch it automatically if it succeeded (see "Fetch").
 - If sbatch says `Unable to open file .../code/<sha>/...`, you forgot `stage` after committing.
 - A `src/` change follows the test workflow in `CLAUDE.md`/`AGENTS.md` before you commit: new tests only; Claude Code runs the `transform-test-runner` subagent, other agents run `uv run python scripts/affected_tests.py --run`.
 - Every profile in `configs/slurm.yaml` needs an integer `seed`, or `submit` refuses.
@@ -109,11 +110,14 @@ ssh <user>@comps0.cs.toronto.edu "srun --jobid=<job> --overlap -n1 -c1 bash -c \
 - Truly stuck: the GPU is idle and nothing advances for >10 min.
 - Held with `user_env_retrieval_failed_requeued_held`, or a silent death in seconds: see the building-splatad-cluster-env table.
 
-## Fetch
-Wait for `end_utc` in `job_info.txt` (or the job to leave `squeue`, if it failed), then:
-```bash
-uv run python scripts/slurm/submit_run.py fetch <run_id>
-```
+## Fetch (automatic after every successful run)
+**Fetching is part of every run: don't ask first.** Right after `submit`, start a background wait for the job to leave `squeue`. Then read `job_info.txt`:
+- **`split_render_check: match` and `end_utc` present (success):** fetch right away, then report the results.
+  ```bash
+  uv run python scripts/slurm/submit_run.py fetch <run_id>
+  ```
+  Use a background command, since a smoke run is ~2.7 GB.
+- **Either line missing (failed run):** don't fetch. Read the Slurm log over ssh, diagnose, and report. Fetch a failed run only if the user asks.
 Result on your machine in `runs/<run_id>/`. Every file and key of every run folder is described once, in `runs/RUN_FOLDER_GLOSSARY.md` (committed; the rest of `runs/` is gitignored). Update it whenever the job's outputs change; a test checks that it documents every lidar npz key.
 - `renders/{train,test}/{rgb,gt-rgb}/*.jpg`: one per camera pose; file names are frame index + timestamp.
 - `renders/{train,test}/lidar/<idx>_<ts_ns>.npz`: one per lidar pose, named exactly like the input sweep `data/intermediate/<session>/lidar/<sensor>/<idx>_<ts_ns>.npy`.
