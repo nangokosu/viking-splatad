@@ -92,15 +92,25 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 - Pair the two by file name. `scripts/slurm/compare_renders.py <run dir>` gives per-split PSNR and comparison sheets.
 
 ## Lidar renders (`renders/<split>/lidar/<idx>_<ts_ns>.npz`)
-- There is one compressed npz per input lidar scan, made by `scripts/08_render_lidar_pointcloud.py`.
+- There is one compressed npz per input lidar scan, made by `scripts/08_render_lidar_pointcloud.py`. The file name equals the input sweep's, `data/intermediate/<session>/lidar/<sensor>/<idx>_<ts_ns>.npy`.
+- **Each file holds both the prediction and the ground truth for that pose**, so you can evaluate a scan from the file alone:
+
+  | | keys |
+  |---|---|
+  | prediction (SplatAD's render) | `pred_points`, `pred_points_median`; per ray: `pred_depth`, `pred_median_depth`, `pred_intensity`, `pred_ray_drop_prob`, `pred_accumulation` |
+  | ground truth (the real scan) | `gt_points`, a copy of the input `.npy` sweep's rows; per ray: `raster_pts` |
+  | pose and identity | `lidar_to_map`, `lidar_to_world`, `dataparser_transform`, `absolute_time_s`, `sweep_index` |
+
+  In `test/` the model never trained on the ground truth. In `train/` it did.
 - SplatAD renders along the **rays of the real scan** (each real point's azimuth and elevation). So a rendered point exists only where the real lidar got a return; there are no new points in directions where the input had none.
+- **No-returns are not in the rendered rays (open issue, job 222869).** Run `may_chunks0_1_smoke-smoke-20261026-210818-f4f6972` trained with `add_missing_points: true`, and its sidecar holds ~15k no-returns per sweep (`lidar_no_return/`). Yet its rasters still hold exactly one ray per real return (train: 2,152,148 rays = 2,152,148 `gt_points`) and no 2000 m rays. Whether training saw them, and why 08's rasters drop them, is not yet known.
 - Load a scan with `np.load(path)`.
 
 | key | dtype, shape | meaning |
 |---|---|---|
-| `pred_points` | float32 [M, 5] | rendered point cloud: x, y, z (lidar frame, m), intensity (0–1), t (s within the sweep). Keeps rays with ray-drop probability ≤ 0.5 and a valid real ray. xyz = expected depth × ray direction + velocity × t (rolling shutter). |
+| `pred_points` | float32 [M, 5] | **prediction**: rendered point cloud: x, y, z (lidar frame, m), intensity (0–1), t (s within the sweep). Keeps rays with ray-drop probability ≤ 0.5 and a valid real ray. xyz = expected depth × ray direction + velocity × t (rolling shutter). |
 | `pred_points_median` | float32 [M, 5] | same rays, using the **median** depth along the ray (sharper surfaces) instead of the expected depth |
-| `gt_points` | float32 [N, 5 or 6] | the real points that returned (x, y, z, intensity, t, channel), lidar frame, after the ego-vehicle filter. These are the input sweep's own rows: channel (laser ring id, 0 to beams−1) is there only if the sweep stores it, which the current sessions do, so N × 6. The rows are in input order, not row-aligned with `pred_points` (raster order) even when M = N, so pair them by nearest neighbour or through the raster, never by row index. |
+| `gt_points` | float32 [N, 5 or 6] | **ground truth**: the real points that returned (x, y, z, intensity, t, channel), lidar frame, after the ego-vehicle filter. These are the input sweep's own rows (in job 222869 they are identical to the input `.npy`): channel (laser ring id, 0 to beams−1) is there only if the sweep stores it, which the current sessions do, so N × 6. The rows are in input order, not row-aligned with `pred_points` (raster order) even when M = N, so pair them by nearest neighbour or through the raster, never by row index. |
 | `raster_pts` | float32 [C, H, W, 5] | the real scan on SplatAD's ray grid: azimuth (deg), elevation (deg), depth (m), t (s), intensity. H = beams, W = azimuth bins, C > 1 only when a cell holds several points. depth 0 = no ray in that cell. Rays with depth above the return threshold are non-returns. |
 | `pred_depth` | float32 [C, H, W, 1] | rendered expected depth (m) per ray of `raster_pts` |
 | `pred_median_depth` | float32 [C, H, W, 1] | rendered median depth (m) per ray |
@@ -115,7 +125,11 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 
 ## Gaussians (`renders/gaussians.npz`)
 - Every Gaussian of the model at the latest checkpoint (the one the renders use), made by `scripts/10_export_gaussians.py` (T56) from the checkpoint and `dataparser_transforms.json` (written by `08_render_lidar_pointcloud.py`; ns-train skips it for SplatAD). There is no rendering, so a Gaussian counts whether or not a sensor could see it (PLAN §5 P2, `docs/research/evaluation_caveats.md` §5).
+- It runs as a job step after the lidar render and before the split record (`gaussian_export_elapsed_s` in `job_info.txt`, 16 s in job 222869). If it fails, the job stops and there is no `split.json`.
 - All Gaussians are static (no actors); the export fails if any belong to an actor.
+- **N is the MCMC cap, not a scene measurement.** SplatAD's MCMC strategy keeps the count at `mcmc_cap_max` (`config.yml`, 5,000,000), and relocates low-opacity Gaussians rather than pruning them. So N is the same for every run with the same cap.
+  - In job 222869 the median opacity is 0.078 and only 15.7 % exceed 0.5, so threshold or weight by `opacities` before counting occupancy.
+  - The file is ~256 MB at 5 M Gaussians.
 - Gaussian k's 3-D alpha at a map-frame point x is `opacities[k] · exp(−½ (x − μ)ᵀ Σ⁻¹ (x − μ))`, with μ = `means[k]`, Σ = `covariances[k]`.
 - To export a fetched run on the Mac, run the script inside the Docker image; it needs torch, not a GPU.
 
@@ -139,7 +153,7 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 | `depth_mean_rel_l2` | mean of ((pred − real) / real)², expected depth | unitless, lower |
 | `median_depth_median_l2`, `median_depth_mean_rel_l2` | same two, using the rendered median depth | as above |
 | `intensity_rmse` | √mean (pred intensity − real intensity)² over valid returned rays | intensity units (0–1), lower |
-| `ray_drop_accuracy` | fraction of valid rays where (ray-drop prob > 0.5) equals (the real ray did not return). **Informative only when the run's `config.yml` has `add_missing_points: true`** (Phase B). That needs a dataset extracted after 2026-10-26: the converter keeps no-returns out of the returns files and writes them to `lidar_no_return/` (T51–T54), and the dataparser adds them as 2000 m rays (T55). Without that, every ray is a return. The score is then 1 whenever the model predicts no drop, and the ray-drop loss only ever sees "returned" labels, so ignore it (all runs up to job 222633). | 0–1, higher |
+| `ray_drop_accuracy` | fraction of valid rays where (ray-drop prob > 0.5) equals (the real ray did not return). **Not yet informative, even with `add_missing_points: true`.** Job 222869 had it on, but its rendered rays hold no no-returns (see "Lidar renders"). Its score therefore equals `len(pred_points)` / `len(gt_points)` (train 0.969, test 0.947): the share of real returns the model predicts will return. In principle it needs `add_missing_points: true`, which in turn needs a dataset extracted after 2026-10-26: the converter keeps no-returns out of the returns files and writes them to `lidar_no_return/` (T51–T54), and the dataparser adds them as 2000 m rays (T55). Without that, every ray is a return. The score is then 1 whenever the model predicts no drop, and the ray-drop loss only ever sees "returned" labels, so ignore it (all runs up to job 222633). | 0–1, higher |
 | `chamfer_distance` | (Σ over `pred_points` of the squared distance to the nearest real point + Σ over real points of the squared distance to the nearest `pred_points` point) / N_real. Note that SplatAD divides **both** sums by the real point count. Missing when either cloud is empty. | m², lower |
 | `median_chamfer_distance` | same, using `pred_points_median` | m², lower |
 
