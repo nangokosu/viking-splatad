@@ -145,7 +145,7 @@ Read the clouds with these limits in mind:
 - `pred_points` uses expected depth and `pred_points_median` uses median depth. SplatAD reports Chamfer for both.
 - **`ray_drop_accuracy` is ~1.0 and meaningless unless the run trained and was rendered with `add_missing_points: true`** (renders up to job 222869 lack the no-return rays even when trained with it) (Phase B, check the run's `config.yml`). That needs a dataset extracted with the no-return sidecar (`lidar_no_return/`, T51–T55). Without it, every ray is a return. Job 222633 shows it: 2,392,058 valid raster rays = 2,392,058 GT points, and the max ray-drop prob is 0.05.
 - `<sensor>` is the manifest's only lidar (`ouster` for the current sessions).
-- `test` is every ~10th frame interleaved with training frames (open issue in the session summary), so it measures interpolation, not a held-out stretch.
+- `test` is two held-out stretches of the drive (T60 block split, runs with `TEST_BLOCK_COUNT`); in older runs it is every ~10th frame interleaved with training frames, which measures interpolation only.
 
 ## Known traps
 - Never pass `ns-render --downscale-factor` with viking-data: it asserts (render.py:929). The sbatch omits it when the factor is 1.
