@@ -14,10 +14,11 @@ runs/<run_id>/
 ├── compare/                           only if you ran scripts/slurm/compare_renders.py on the Mac
 ├── train/<session>/splatad/<run_id>/
 │   ├── config.yml                     full nerfstudio config (loads the model; holds the time window)
-│   ├── dataparser_transforms.json     w2m transform (dataparser frame) and time offset
+│   ├── dataparser_transforms.json     w2m transform (dataparser frame), scale and time offset
 │   ├── events.out.tfevents.*          tensorboard training curves
 │   └── nerfstudio_models/step-*.ckpt  latest checkpoint only
 └── renders/
+    ├── gaussians.npz                  every Gaussian of the latest checkpoint, map frame (P2)
     ├── train/                         poses the model was trained on
     │   ├── rgb/<idx>_<ts_ns>.jpg
     │   ├── gt-rgb/<idx>_<ts_ns>.jpg
@@ -80,7 +81,7 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 | `DATASET_START_FRACTION`, `DATASET_END_FRACTION` | time window as fractions of the recording's span (from the profile's `window_*` seconds) |
 | `ADD_MISSING_POINTS` | `True`/`False`, the session config's `splatad.add_missing_points` (session named by the dataset's manifest), passed to `ns-train` as `--add-missing-points`. `True` adds the recorded no-returns (`lidar_no_return/`) as 2000 m rays. Absent in runs before 2026-10-26, which all ran with `False`. |
 | `gpu (...)`, `gpu_check`, `viking_splatad_from` | GPU model, compute capability, driver; proof that CUDA and the right code were loaded |
-| `train_elapsed_s`, `render_elapsed_s`, `lidar_render_elapsed_s` | wall time of training, camera render and lidar render (also `*_start_epoch_s` and `*_end_epoch_s`) |
+| `train_elapsed_s`, `render_elapsed_s`, `lidar_render_elapsed_s`, `gaussian_export_elapsed_s` | wall time of training, camera render, lidar render and Gaussian export (also `*_start_epoch_s` and `*_end_epoch_s`) |
 | `TRAIN_SPLIT_FRACTION` | the dataset manifest's `session.train_fraction`, passed to `ns-train` as `--train-split-fraction`, so `config.yml` records it. Absent in older runs, whose `config.yml` says 0.5. |
 | `split_render_check` | `match` when `split.json` was written; `FAILED (exit N)` when the job stopped instead (1 = renders or fractions disagree, 2 = outputs missing). Then there is no `end_utc` and no `split.json`. |
 
@@ -105,11 +106,27 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 | `pred_median_depth` | float32 [C, H, W, 1] | rendered median depth (m) per ray |
 | `pred_intensity` | float32 [C, H, W, 1] | rendered intensity per ray (0–1) |
 | `pred_ray_drop_prob` | float32 [C, H, W, 1] | predicted probability that the ray returns nothing |
+| `pred_accumulation` | float32 [C, H, W, 1] | accumulated opacity along the ray, Σ wᵢ = 1 − ∏(1 − αᵢ), in [0, 1]. The ungated point rule (PLAN §5 P1) keeps rays where it is above `eval.render_accumulation_threshold`, ignoring `pred_ray_drop_prob`. |
 | `lidar_to_map` | float64 [4, 4] | scan pose in the **map frame** (T50). `xyz_map = (lidar_to_map @ np.c_[xyz, ones].T).T[:, :3]`, using only the first 3 columns of the point arrays |
 | `lidar_to_world` | float32 [3, 4] | scan pose in the dataparser frame. Don't use it for cross-run analysis. |
 | `dataparser_transform` | float32 [3, 4] | `w2m`: map frame → dataparser frame |
 | `absolute_time_s` | float64 scalar | scan time in the `poses.npz` time base |
 | `sweep_index` | int64 scalar | row of this scan in `poses.npz` `<sensor>__times` / `__poses_world_sensor` |
+
+## Gaussians (`renders/gaussians.npz`)
+- Every Gaussian of the model at the latest checkpoint (the one the renders use), made by `scripts/10_export_gaussians.py` (T56) from the checkpoint and `dataparser_transforms.json`. There is no rendering, so a Gaussian counts whether or not a sensor could see it (PLAN §5 P2, `docs/research/evaluation_caveats.md` §5).
+- All Gaussians are static (no actors); the export fails if any belong to an actor.
+- Gaussian k's 3-D alpha at a map-frame point x is `opacities[k] · exp(−½ (x − μ)ᵀ Σ⁻¹ (x − μ))`, with μ = `means[k]`, Σ = `covariances[k]`.
+- To export a fetched run on the Mac, run the script inside the Docker image; it needs torch, not a GPU.
+
+| key | dtype, shape | meaning |
+|---|---|---|
+| `means` | float32 [N, 3] | centre μ (m), **map frame** |
+| `covariances` | float32 [N, 3, 3] | Σ = R·diag(std)²·Rᵀ (m²), map frame |
+| `axis_std` | float32 [N, 3] | std along each principal axis (m), exp of the stored log-scale; the 3σ ellipsoid fits in a sphere of radius 3·max(`axis_std`) |
+| `opacities` | float32 [N] | peak alpha, sigmoid of the stored logit, in (0, 1) |
+| `dataparser_transform` | float32 [3, 4] | the `w2m` used to reach the map frame (same as in the lidar npz files) |
+| `checkpoint_step` | int64 scalar | training step of the checkpoint |
 
 ## Lidar metrics (`renders/<split>/lidar_metrics.json`)
 `{"mean": {metric: value}, "per_scan": {"<idx>_<ts_ns>": {metric: value}}}`. These are SplatAD's built-in metrics, computed per scan. `mean` averages each metric over the scans that report it.
@@ -129,3 +146,4 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 ## Version notes
 - Runs before commit `a7202f7` (e.g. `may_chunks0_1_smoke-smoke-20261025-182824-b8104e1`) have camera renders only. They have no `lidar/`, no `lidar_metrics.json`, no `TRAIN_SEED` (their seed was nerfstudio's default, 42).
 - Runs submitted before `09_extract_run_split.py` existed have no `split.json`, `split_render_check` or `TRAIN_SPLIT_FRACTION`. If such a run succeeded, write the file afterwards with the script. It uses the manifest's fraction and ignores `config.yml`'s 0.5. Failed runs stay undocumented.
+- Runs rendered before 2026-10-26 have no `pred_accumulation` in their lidar npz files and no `renders/gaussians.npz`. Export the Gaussians afterwards with `scripts/10_export_gaussians.py` on the fetched checkpoint.

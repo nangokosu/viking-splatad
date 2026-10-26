@@ -30,8 +30,9 @@ of the input ``.npy`` sweeps):
                          present iff the sweep has it (it does for the current sessions).
     raster_pts           [C, H, W, 5] GT ray raster (azimuth deg, elevation deg, depth m, t,
                          intensity) as built before rendering; depth 0 = no GT ray in the cell.
-    pred_depth, pred_median_depth, pred_intensity, pred_ray_drop_prob
-                         [C, H, W, 1] rendered values on the same raster.
+    pred_depth, pred_median_depth, pred_intensity, pred_ray_drop_prob, pred_accumulation
+                         [C, H, W, 1] rendered values on the same raster; accumulation =
+                         Σ w_i = 1 − ∏(1 − α_i) along the ray (ungated extraction, PLAN §5 P1).
     lidar_to_world       [3, 4] scan pose in the dataparser frame.
     dataparser_transform [3, 4] w2m (map frame -> dataparser frame).
     lidar_to_map         [4, 4] float64 scan pose in the map frame (T50): p_map = lidar_to_map @ p.
@@ -63,7 +64,7 @@ POSES_TIMES_SUFFIX = "__times"
 # keeps the two in sync), and render_split refuses to write a file with any other key set.
 LIDAR_NPZ_KEYS = (
     "pred_points", "pred_points_median", "gt_points", "raster_pts",
-    "pred_depth", "pred_median_depth", "pred_intensity", "pred_ray_drop_prob",
+    "pred_depth", "pred_median_depth", "pred_intensity", "pred_ray_drop_prob", "pred_accumulation",
     "lidar_to_map", "lidar_to_world", "dataparser_transform", "absolute_time_s", "sweep_index",
 )
 # Columns of pred_points / pred_points_median, in order (built in render_scan, Step 3).
@@ -210,6 +211,8 @@ def render_scan(model: Any, scan_lidar: Any, batch: Dict[str, Any]) -> Tuple[Dic
         "pred_median_depth": to_float32(outputs["median_depth"]),
         "pred_intensity": to_float32(outputs["intensity"]),
         "pred_ray_drop_prob": to_float32(outputs["ray_drop_prob"]),
+        # Σ w_i per ray (splatad.py:1214): the ungated extraction rule of PLAN §5 P1 thresholds it.
+        "pred_accumulation": to_float32(outputs["accumulation"]),
     }
     return arrays, {metric_name: float(value) for metric_name, value in metrics.items()}
 

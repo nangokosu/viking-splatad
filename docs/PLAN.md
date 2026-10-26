@@ -172,7 +172,7 @@ R must beat B on at least one of them on blocked and no-return cells (below), an
   - Σ = R(q̂)·diag(exp(s))²·R(q̂)ᵀ;
   - o = sigmoid(opacities);
   - means and Σ to the map frame with the same `inv(w2m)` as P1.
-  - Write `gaussians.npz` next to the lidar renders.
+  - Write `gaussians.npz` next to the lidar renders (`scripts/10_export_gaussians.py`, a job step after `08`).
 - **T57, grid:** Gaussian k's 3-D alpha is α_k(x) = o_k·exp(−½(x−μ_k)ᵀΣ_k⁻¹(x−μ_k)), the 3-D form of the alpha the rasteriser uses.
   - Voxel occupancy = 1 − ∏_k(1 − α_k(x)) at the voxel centre, visiting only voxels inside each Gaussian's 3σ ellipsoid.
   - A voxel is occupied if occupancy ≥ `eval.render_accumulation_threshold`, the same value as P1. So the two grids differ only by visibility.
@@ -244,7 +244,7 @@ The radar claim concerns blocked and no-return cells. B and R should agree on se
 | T53 | no-return cells of an organized cloud | known range-0 cells give their exact ring, column, time; an unorganized cloud raises |
 | T54 | no-return directions to the reference pose → sidecar rows | a known yaw rate rotates each direction by rate × time; t = capture − reference |
 | T55 | sidecar rows → 2000 m placeholders (dataparser, `add_missing_points`) | xyz = 2000·d, depth beyond SplatAD's return threshold, layout matches the sweep |
-| T56 | checkpoint Gaussians → map-frame means, covariances, opacities (P2) | a hand-made state dict: log-scales, an unnormalised quaternion and logit opacity give the exact Σ = R·diag(e^s)²·Rᵀ and sigmoid; `inv(w2m)` moves μ and rotates Σ |
+| T56 (done) | checkpoint Gaussians → map-frame means, covariances, opacities (P2) | a hand-made state dict: log-scales, an unnormalised quaternion and logit opacity give the exact Σ = R·diag(e^s)²·Rᵀ and sigmoid; `inv(w2m)` moves μ and rotates Σ |
 | T57 | Gaussian occupancy grid (P2) | one Gaussian gives occupancy σ(o) at its centre and visits exactly its 3σ voxels; two overlapping Gaussians give 1 − (1−α₁)(1−α₂) |
 
 ## 7. File structure (new items marked +)

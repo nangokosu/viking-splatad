@@ -150,12 +150,26 @@ python "$CODE_DIR/scripts/08_render_lidar_pointcloud.py" \
   --pose-source "$RENDER_POSE_SOURCE" \
   --dataset-dir "$STAGE_ROOT/data/$SESSION"
 LIDAR_RENDER_END_SECONDS=$(date +%s)
-
-# ---- (f) split record, then done ------------------------------------------------------------
 {
   echo "lidar_render_end_epoch_s: $LIDAR_RENDER_END_SECONDS"
   echo "lidar_render_elapsed_s: $((LIDAR_RENDER_END_SECONDS - LIDAR_RENDER_START_SECONDS))"
 } >> "$JOB_INFO"
+
+# ---- (e3) export Gaussians ----------------------------------------------------------------
+# Every Gaussian of the latest checkpoint (the one the renders used), in the map frame, for the
+# P2 occupancy grid (T56): renders/gaussians.npz. CPU only.
+GAUSSIAN_EXPORT_START_SECONDS=$(date +%s)
+echo "gaussian_export_start_epoch_s: $GAUSSIAN_EXPORT_START_SECONDS" >> "$JOB_INFO"
+python "$CODE_DIR/scripts/10_export_gaussians.py" \
+  --train-dir "$(dirname "$TRAIN_CONFIG")" \
+  --output-path "$RUN_DIR/renders/gaussians.npz"
+GAUSSIAN_EXPORT_END_SECONDS=$(date +%s)
+{
+  echo "gaussian_export_end_epoch_s: $GAUSSIAN_EXPORT_END_SECONDS"
+  echo "gaussian_export_elapsed_s: $((GAUSSIAN_EXPORT_END_SECONDS - GAUSSIAN_EXPORT_START_SECONDS))"
+} >> "$JOB_INFO"
+
+# ---- (f) split record, then done ------------------------------------------------------------
 # Only a run that produced its renders is documented: split.json + split_frames.csv are written
 # here, after every render step succeeded, and only if the rendered file names equal the rebuilt
 # split (scripts/09_extract_run_split.py writes nothing otherwise). A mismatch fails the job, so
