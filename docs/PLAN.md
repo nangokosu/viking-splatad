@@ -127,6 +127,12 @@ No second rasteriser pass: it would overwrite `self.info` and corrupt the MCMC d
 - **Risk:** real June grass stands in front of the trunks. A term that clears everything in front of the seed would delete grass that the lidar saw correctly. So it is applied one-sided only (the trunk is not missing).
 - An R + depth run is a third June run and needs approval.
 
+**Ouster no-returns (`add_missing_points`, on for every run) and the radar losses.**
+- They enter only the ray-drop loss (λ 0.1, indirect via the lidar decoder).
+- They can push down a radar Gaussian only where a no-return ray crosses it.
+- They never enter T44.
+- R logs the fraction of no-return rays crossing gated radar Gaussians. Details: `docs/research/no_return_impact.md`.
+
 ### 4.3 Extension: photometric loss for June (B+cam and R+cam, after the core runs)
 Two extra runs: the same as core B and R with camera training on (`train-lidar-only False`). They need your approval before running.
 - **Why it can help:** the June contact sheets show that the low, upward-looking camera sees over the grass. Upper trunks, canopy and far trunks are clearly visible; the grass hides only the trunk bases and the near field. So the RGB loss can supervise real trunk geometry and colour above the grass.
@@ -150,6 +156,13 @@ Two extra runs: the same as core B and R with camera training on (`train-lidar-o
 1. call `filter_lidar_pred_and_gt(output_point_cloud=True)`;
 2. go lidar → world, then apply `inv(w2m)` to reach the map frame;
 3. accumulate over the eval poses.
+
+**Point extraction (binding).** The ray-drop gate (`sigmoid(ray_drop) ≤ 0.5`) is primary for no metric.
+- With no-returns on, the gate replays the neighbouring frames' lidar drop-outs on the interleaved split. It would remove radar-recovered trunks in exactly the directions the lidar missed.
+- T45, T46 and the occupancy comparison use **ungated** extraction: accumulation above a config threshold, the same for May, B, R and R+depth. Gated numbers are reported beside them.
+- A render shows only the first surface, so an occupancy grid from **Gaussian density** is compared with the same GT grid as well.
+- Detection is broken down per GT cell into "seen", "blocked" (an earlier return) and "no return" (the no-return files of the eval poses).
+- Rationale: `docs/research/no_return_impact.md`.
 
 **Ground truth:** June cuboids of Tree_trunk, Bush_or_small_tree (young trees) and Rock. No grass and no canopy.
 - Cuboids are kept only if they lie within lidar range and FOV of at least one eval pose (T32).
