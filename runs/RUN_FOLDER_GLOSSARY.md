@@ -44,10 +44,10 @@ runs/<run_id>/
 | key | meaning |
 |---|---|
 | `hostname`, `slurm_job_id`, `slurm_cpus_per_task`, `slurm_mem_per_node_mb` | where and with what resources it ran |
-| `start_utc`, `end_utc`, `copied_back_utc` | job start, end of rendering, end of the copy back to home |
-| `scratch_run_dir` | scratch folder where the outputs were written first. It is deleted when the scratch dir expires. |
+| `start_utc`, `end_utc` | job start, end of rendering |
+| `copied_back_utc`, `scratch_run_dir` | runs before 2026-10-26 only: end of the copy back to home, and the scratch folder the outputs were written to first (deleted when that scratch dir expires). Newer runs write straight to the run dir on the workdisk. |
 | `RUN_ID`, `SESSION`, `GIT_SHA`, `CODE_DIR` | run id, dataset, and the exact committed code |
-| `ENV_PREFIX`, `ENV_EXPIRES_EPOCH`, `environment build:` | native SplatAD environment (named by recipe hash) and its build record |
+| `ENV_PREFIX`, `environment build:` | native SplatAD environment (named by recipe hash) and its build record. Runs before 2026-10-26 also have `ENV_EXPIRES_EPOCH`, the expiry of the scratch dir the env lived on. |
 | `MAX_NUM_ITERATIONS`, `STEPS_PER_SAVE` | training length and checkpoint interval |
 | `TRAIN_SEED` | `ns-train --machine.seed`. It seeds python/numpy/torch. Runs are **not** bit-identical even with the same seed (float-atomic gradient sums on the GPU). |
 | `RENDER_POSE_SOURCE`, `RENDER_DOWNSCALE_FACTOR` | rendered splits (`train+test`) and camera resolution factor (1 = native) |

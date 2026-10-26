@@ -27,7 +27,6 @@ import shlex
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -49,9 +48,8 @@ STAGED_REPO_PATHS = ("pyproject.toml", "src", "tests", "configs", "scripts",
 # Hex digits of the recipe hash used in environment names: 12 hex = 48 bits, so two different
 # recipes collide with probability ~2**-48, negligible for the handful of envs ever built.
 RECIPE_HASH_LENGTH = 12
-# build_env.sbatch writes <stage_root>/envs/<env name>.marker in home as its last step; it names
-# the env's scratch path and the scratch expiry (the env itself lives on scratch, because fast
-# writes to home kill compute jobs).
+# build_env.sbatch writes <stage_root>/envs/<env name>.marker as its last step; it names the
+# env's path, so a marker means a complete build.
 ENV_MARKER_SUFFIX = ".marker"
 # Local ledger of submitted jobs (runs/ is git-ignored).
 SUBMITTED_LEDGER_PATH = PROJECT_ROOT / "runs" / "submitted.tsv"
@@ -112,17 +110,16 @@ def load_slurm_config(config_path: Path = DEFAULT_SLURM_CONFIG_PATH) -> Dict[str
     if not isinstance(config, dict):
         raise ValueError(f"{config_path}: top level must be a mapping")
     # Step 2: check the keys every subcommand relies on (stage_root may be null until probed).
-    for required_key in ("ssh_host", "partition", "gres", "mem_fraction", "stage_root",
-                         "micromamba_version", "micromamba_sha256", "environment_recipe_files",
-                         "copy_back_bwlimit_kib",
-                         "env_build", "profiles"):
+    for required_key in ("ssh_host", "partition", "gres", "mem_fraction", "workdisk_root",
+                         "stage_root", "micromamba_version", "micromamba_sha256",
+                         "environment_recipe_files", "env_build", "profiles"):
         if required_key not in config:
             raise ValueError(f"{config_path}: missing required key {required_key!r}")
     return config
 
 
 def require_stage_root(config: Dict[str, Any]) -> str:
-    """Return the configured stage root (relative to the remote home), or fail when unset.
+    """Return the configured stage root (relative to the user's workdisk dir), or fail when unset.
 
     Args:
         config: Parsed Slurm config.
@@ -140,26 +137,34 @@ def require_stage_root(config: Dict[str, Any]) -> str:
 
 
 def resolve_remote_stage_root(config: Dict[str, Any], ssh_target: str) -> str:
-    """Create the stage root on the cluster and return its absolute path.
+    """Create the stage root on the cluster workdisk and return its absolute path.
 
-    The config holds a path relative to the remote home so no username or home directory is
-    stored in the repo; the absolute path is only needed in exported job variables.
+    The stage root is ``<workdisk_root>/<cluster username>/<stage_root>``. The username is read
+    on the cluster (``id -un``), so neither it nor a home path is stored in the repo; the
+    absolute path is only needed in exported job variables.
 
     Args:
-        config: Parsed Slurm config.
+        config: Parsed Slurm config (``workdisk_root``, ``stage_root``).
         ssh_target: ``host`` or ``user@host``.
 
     Returns:
         Absolute stage root path on the cluster.
 
     Raises:
-        RuntimeError: If the remote command fails or prints a non-absolute path.
+        ValueError: If ``stage_root`` is unset or ``workdisk_root`` is not absolute.
+        RuntimeError: If the remote command fails (e.g. the per-user workdisk dir does not
+            exist) or prints a non-absolute path.
     """
     stage_root = require_stage_root(config)
-    quoted_root = shlex.quote(stage_root)
-    # ssh starts in the remote home, so a relative path resolves against it.
+    workdisk_root = str(config["workdisk_root"]).rstrip("/")
+    if not workdisk_root.startswith("/"):
+        raise ValueError(f"configs/slurm.yaml: workdisk_root {workdisk_root!r} must be absolute")
+    # Paths go in as positional parameters ($1, $2), so the script text needs no quoting of them.
+    # `cd` into the per-user dir first (created by the admins; never created here), so a wrong
+    # workdisk_root fails instead of silently making a new tree.
+    stage_script = 'cd "$1/$(id -un)" && mkdir -p "$2" && cd "$2" && pwd -P'
     completed = run_checked(ssh_command(ssh_target, [
-        "sh", "-c", f"mkdir -p {quoted_root} && cd {quoted_root} && pwd -P"]), "resolve stage root")
+        "sh", "-c", stage_script, "sh", workdisk_root, stage_root]), "resolve stage root")
     absolute_root = completed.stdout.strip()
     if not absolute_root.startswith("/"):
         raise RuntimeError(f"remote stage root resolved to a non-absolute path: {absolute_root!r}")
@@ -232,32 +237,17 @@ def parse_environment_marker(marker_text: str) -> Dict[str, str]:
         Mapping key -> value.
 
     Raises:
-        ValueError: If ``env_prefix`` or ``expires_epoch`` is missing, or the expiry is not an
-            integer (a marker is only written after a complete build, so this means corruption).
+        ValueError: If ``env_prefix`` is missing (a marker is only written after a complete
+            build, so this means corruption).
     """
     marker = {}
     for line_text in marker_text.splitlines():
         key_text, separator, value_text = line_text.partition("=")
         if separator:
             marker[key_text.strip()] = value_text.strip()
-    if "env_prefix" not in marker or "expires_epoch" not in marker:
-        raise ValueError(f"environment marker lacks env_prefix/expires_epoch: {marker_text!r}")
-    int(marker["expires_epoch"])
+    if "env_prefix" not in marker:
+        raise ValueError(f"environment marker lacks env_prefix: {marker_text!r}")
     return marker
-
-
-def environment_outlives(marker: Dict[str, str], now_epoch: float, time_limit_seconds: int) -> bool:
-    """True when the env's scratch dir expires after a job started now would hit its time limit.
-
-    Args:
-        marker: Parsed environment marker.
-        now_epoch: Current UNIX time [s].
-        time_limit_seconds: The job's Slurm time limit [s].
-
-    Returns:
-        expires_epoch > now + time_limit (the job must finish before scratch expires).
-    """
-    return int(marker["expires_epoch"]) > now_epoch + time_limit_seconds
 
 
 def resolve_ssh_target(ssh_host: str) -> str:
@@ -467,8 +457,8 @@ def profile_window_fractions(profile_settings: Dict[str, Any], session: str) -> 
 
 
 def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id: str,
-                          git_sha: str, absolute_stage_root: str, env_marker: Dict[str, str],
-                          copy_back_bwlimit_kib: int) -> Dict[str, str]:
+                          git_sha: str, absolute_stage_root: str,
+                          env_marker: Dict[str, str]) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
 
     Args:
@@ -477,8 +467,7 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         run_id: Run id.
         git_sha: Full commit SHA.
         absolute_stage_root: Resolved stage root on the cluster.
-        env_marker: Parsed marker of the environment the run activates (scratch path, expiry).
-        copy_back_bwlimit_kib: rsync --bwlimit [KiB/s] for copying results back to home.
+        env_marker: Parsed marker of the environment the run activates (its path).
 
     Returns:
         Mapping variable name -> string value.
@@ -498,8 +487,6 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         "GIT_SHA": git_sha,
         "CODE_DIR": f"{absolute_stage_root}/code/{git_sha}",
         "ENV_PREFIX": env_marker["env_prefix"],
-        "ENV_EXPIRES_EPOCH": env_marker["expires_epoch"],
-        "COPY_BACK_BWLIMIT_KIB": str(copy_back_bwlimit_kib),
         "MAX_NUM_ITERATIONS": str(profile_settings["max_num_iterations"]),
         "STEPS_PER_SAVE": str(profile_settings["steps_per_save"]),
         # ns-train --machine.seed: seeds python/numpy/torch RNGs (not bit-exact, see the sbatch).
@@ -512,16 +499,66 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
     }
 
 
-def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, time_limit: str,
-                         job_name: str, output_path: str, job_environment: Dict[str, str],
-                         script_path: str) -> List[str]:
-    """Build the submission command: ``env K=V ... sbatch <resources> <script>``.
+def build_job_script(job_environment: Dict[str, str], script_path: str) -> str:
+    """Build the per-job batch script: ``export`` every job variable, then run the committed script.
 
-    Job variables are set in the submitting environment, which plain ``sbatch`` propagates
-    (its default is ``--export=ALL``). Passing them with ``--export=ALL,K=V`` instead makes
-    this cluster's Slurm retrieve the user's login environment on the node; that fails and the
-    job is requeued and held (``user_env_retrieval_failed_requeued_held``; jobs 222519 and
-    222526, while the same test job submitted as ``env FOO=bar sbatch`` ran, 2026-10-25).
+    CS Lab support (2026-10-26): shells on the compute nodes are locked to Slurm jobs, so the
+    submitting environment is not a supported way to pass variables, and ``--export=ALL,K=V`` /
+    ``--get-user-env`` make Slurm fetch the login environment, which fails and holds the job
+    (``user_env_retrieval_failed_requeued_held``; jobs 222519, 222526). Their recommendation is to
+    ``export`` the variables inside the batch script, which this generated script does. It is
+    written into the job's own directory, so it also records exactly what the job was given.
+
+    Args:
+        job_environment: Variables the job needs (name -> value), in export order.
+        script_path: Remote path of the committed batch script to run with those variables.
+
+    Returns:
+        Script text: shebang, one ``export NAME=<shell-quoted value>`` per variable, then
+        ``exec bash <script>`` (exec: the committed script replaces this shell, so its exit
+        code is the job's).
+
+    Raises:
+        ValueError: If a variable name is not a valid shell identifier (``export`` would
+            misparse it).
+    """
+    # Step 1: names must be identifiers; values may contain anything, because shlex.quote makes
+    # each one a single literal word for bash (no expansion of $, spaces or quotes).
+    for variable_name in job_environment:
+        if not variable_name.isidentifier():
+            raise ValueError(f"job variable name {variable_name!r} is not a valid identifier")
+    # Step 2: assemble the lines.
+    script_lines = ["#!/bin/bash",
+                    "# Generated by scripts/slurm/submit_run.py: the job's variables, exported in the",
+                    "# batch script itself (CS Lab support's recommended way), then the committed script."]
+    script_lines += [f"export {variable_name}={shlex.quote(variable_value)}"
+                     for variable_name, variable_value in job_environment.items()]
+    script_lines.append(f"exec bash {shlex.quote(script_path)}")
+    return "\n".join(script_lines) + "\n"
+
+
+def write_remote_file(ssh_target: str, remote_path: str, file_text: str) -> None:
+    """Write a text file on the cluster over ssh (contents sent on stdin, path as ``$1``).
+
+    Args:
+        ssh_target: ``host`` or ``user@host``.
+        remote_path: Absolute destination path; its directory must exist.
+        file_text: File contents.
+
+    Raises:
+        RuntimeError: If the remote write fails.
+    """
+    run_checked(ssh_command(ssh_target, ["sh", "-c", 'cat > "$1"', "sh", remote_path]),
+                f"write {remote_path}", input_text=file_text)
+
+
+def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, time_limit: str,
+                         job_name: str, output_path: str, job_script_path: str) -> List[str]:
+    """Build the submission command: ``sbatch <resources> <generated job script>``.
+
+    Job variables are not on this command: they are exported inside the job script
+    (``build_job_script``). Never uses ``--export`` or ``--get-user-env`` (both hold the job on
+    this cluster).
 
     Args:
         partition: Slurm partition.
@@ -531,32 +568,21 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
         time_limit: ``D-HH:MM:SS``; must be at most 5 days.
         job_name: --job-name value.
         output_path: --output path (may contain %j).
-        job_environment: Variables the job needs, set via ``env`` before ``sbatch``.
-        script_path: Remote path of the batch script.
+        job_script_path: Remote path of the generated job script (``build_job_script``).
 
     Returns:
-        Argument list ``["env", "K=V", ..., "sbatch", ...]``. Never contains ``--get-user-env``
-        or ``--export``.
+        Argument list ``["sbatch", <resources>..., job_script_path]``.
 
     Raises:
-        ValueError: If the time limit exceeds 5 days, resources are non-positive, or a variable
-            name is not a valid shell identifier (``env`` would misparse it).
+        ValueError: If the time limit exceeds 5 days or resources are non-positive.
     """
     # Step 1: validate the cluster rules.
     if parse_slurm_time_limit_seconds(time_limit) > MAXIMUM_TIME_LIMIT_SECONDS:
         raise ValueError(f"time limit {time_limit} exceeds the 5-day cluster maximum")
     if cpus <= 0 or memory_gb <= 0:
         raise ValueError(f"cpus ({cpus}) and memory_gb ({memory_gb}) must be positive")
-    # Step 2: `env` splits each assignment at the first "=", so names must be identifiers;
-    # values may contain anything (ssh_command quotes every argument for the remote shell).
-    for variable_name in job_environment:
-        if not variable_name.isidentifier():
-            raise ValueError(f"job variable name {variable_name!r} is not a valid identifier")
-    environment_assignments = [f"{variable_name}={variable_value}"
-                               for variable_name, variable_value in job_environment.items()]
-    # Step 3: assemble the arguments.
+    # Step 2: assemble the arguments.
     return [
-        "env", *environment_assignments,
         "sbatch",
         f"--partition={partition}",
         f"--gres={gres}",
@@ -565,7 +591,7 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
         "-t", time_limit,
         f"--job-name={job_name}",
         f"--output={output_path}",
-        script_path,
+        job_script_path,
     ]
 
 
@@ -645,14 +671,15 @@ def run_gates(session: str) -> None:
     print("gates: PASS")
 
 
-def run_checked(command: Sequence[str], description: str, capture_output: bool = True
-                ) -> subprocess.CompletedProcess:
+def run_checked(command: Sequence[str], description: str, capture_output: bool = True,
+                input_text: Optional[str] = None) -> subprocess.CompletedProcess:
     """Run a command and raise when it fails.
 
     Args:
         command: Argument list.
         description: Short label for the error message.
         capture_output: Passed to run_command.
+        input_text: Optional stdin text, passed to run_command.
 
     Returns:
         The CompletedProcess.
@@ -660,7 +687,7 @@ def run_checked(command: Sequence[str], description: str, capture_output: bool =
     Raises:
         RuntimeError: On a nonzero exit.
     """
-    completed = run_command(command, capture_output=capture_output)
+    completed = run_command(command, capture_output=capture_output, input_text=input_text)
     if completed.returncode != 0:
         raise RuntimeError(f"{description} failed (exit {completed.returncode}): {completed.stderr}")
     return completed
@@ -735,11 +762,11 @@ def stage_session(config: Dict[str, Any], session: str) -> str:
 
 def read_environment_marker(ssh_target: str, absolute_stage_root: str,
                             env_name: str) -> Optional[Dict[str, str]]:
-    """Read and parse the home marker of an environment, or None if it was never completed.
+    """Read and parse the marker of an environment, or None if it was never completed.
 
     Args:
         ssh_target: ``host`` or ``user@host``.
-        absolute_stage_root: Resolved stage root in home.
+        absolute_stage_root: Resolved stage root on the workdisk.
         env_name: ``splatad-<recipe hash>``.
 
     Returns:
@@ -804,11 +831,9 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
     absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
     git_sha = get_head_sha()
     env_name = environment_name(config, git_sha)
-    # Reuse a built env only if it outlives the longest job any profile may submit.
-    longest_time_limit_seconds = max(parse_slurm_time_limit_seconds(str(profile["time_limit"]))
-                                     for profile in config["profiles"].values())
+    # Reuse a built env: it lives on the non-expiring workdisk, so a marker stays valid.
     env_marker = read_environment_marker(ssh_target, absolute_stage_root, env_name)
-    if env_marker and environment_outlives(env_marker, time.time(), longest_time_limit_seconds):
+    if env_marker:
         print(f"environment already built: {env_marker['env_prefix']}")
         return None
     # Step 2: stage the code the build installs and tests.
@@ -817,20 +842,24 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
     run_checked(ssh_command(ssh_target, ["mkdir", "-p", log_dir]), "remote log mkdir")
     # Step 3: full-node resources from sinfo (the compile is parallel, MAX_JOBS = CPUs).
     cpus, memory_gb = query_node_resources(config, ssh_target)
-    sbatch_arguments = build_sbatch_command(
-        partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
-        time_limit=str(config["env_build"]["time_limit"]), job_name="splatad-build-env",
-        output_path=f"{log_dir}/{env_name}-%j.out",
-        job_environment={
+    # Step 4: job script exporting the build's variables, next to the build logs.
+    job_script_path = f"{log_dir}/{env_name}-job.sbatch"
+    write_remote_file(ssh_target, job_script_path, build_job_script(
+        {
             "STAGE_ROOT": absolute_stage_root,
             "CODE_DIR": remote_code_dir,
             "ENV_NAME": env_name,
             "MICROMAMBA_VERSION": str(config["micromamba_version"]),
             "MICROMAMBA_SHA256": str(config["micromamba_sha256"]),
         },
-        script_path=f"{remote_code_dir}/{BUILD_SCRIPT_RELATIVE_PATH}")
+        f"{remote_code_dir}/{BUILD_SCRIPT_RELATIVE_PATH}"))
+    # Step 5: submit.
+    sbatch_arguments = build_sbatch_command(
+        partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
+        time_limit=str(config["env_build"]["time_limit"]), job_name="splatad-build-env",
+        output_path=f"{log_dir}/{env_name}-%j.out", job_script_path=job_script_path)
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
-    print(f"submitted environment build job {job_id} -> {env_name} on scratch ({cpus} CPUs, {memory_gb}G)\n"
+    print(f"submitted environment build job {job_id} -> {env_name} ({cpus} CPUs, {memory_gb}G)\n"
           f"log: {log_dir}/{env_name}-{job_id}.out")
     return job_id
 
@@ -872,23 +901,20 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     env_marker = read_environment_marker(ssh_target, absolute_stage_root, env_name)
     if env_marker is None:
         raise RuntimeError(f"environment {env_name} is not built; run `build-env` first")
-    time_limit_seconds = parse_slurm_time_limit_seconds(str(profile_settings["time_limit"]))
-    if not environment_outlives(env_marker, now_utc.timestamp(), time_limit_seconds):
-        raise RuntimeError(f"environment {env_name} lives on scratch that expires before this job "
-                           f"could finish; run `build-env` to rebuild it on newer scratch")
-    # Step 3: node sizes from sinfo, then the sbatch arguments.
+    # Step 3: node sizes from sinfo.
     cpus, memory_gb = query_node_resources(config, ssh_target)
+    # Step 4: run dir first (it holds the job script, and Slurm cannot write the --output log
+    # into a missing directory), then the job script exporting the run's variables.
     remote_run_dir = f"{absolute_stage_root}/runs/{run_id}"
+    run_checked(ssh_command(ssh_target, ["mkdir", "-p", remote_run_dir]), "remote run dir mkdir")
+    job_script_path = f"{remote_run_dir}/job.sbatch"
+    write_remote_file(ssh_target, job_script_path, build_job_script(
+        build_job_environment(profile_settings, session, run_id, git_sha, absolute_stage_root, env_marker),
+        f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
         time_limit=str(profile_settings["time_limit"]), job_name=f"splatad-{session}",
-        output_path=f"{remote_run_dir}/slurm-%j.out",
-        job_environment=build_job_environment(profile_settings, session, run_id, git_sha,
-                                              absolute_stage_root, env_marker,
-                                              int(config["copy_back_bwlimit_kib"])),
-        script_path=f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}")
-    # Step 4: the --output directory must exist before sbatch, or Slurm cannot write the log.
-    run_checked(ssh_command(ssh_target, ["mkdir", "-p", remote_run_dir]), "remote run dir mkdir")
+        output_path=f"{remote_run_dir}/slurm-%j.out", job_script_path=job_script_path)
     # Step 5: submit.
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
     print(f"submitted job {job_id}  run {run_id}  ({cpus} CPUs, {memory_gb}G)")

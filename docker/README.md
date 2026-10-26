@@ -28,20 +28,6 @@ docker run --rm viking-splatad:cu118 \
 
 Commit the result. Later builds then resolve to the same versions.
 
-## Run on the CS Lab Slurm cluster (Apptainer)
-
-Shared Slurm nodes run containers through Apptainer, not Docker. Convert the image to a single `.sif` file:
-
-```bash
-docker save viking-splatad:cu118 -o viking-splatad-cu118.tar          # on the Mac
-rsync -P viking-splatad-cu118.tar comps0.cs.toronto.edu:/scratch/scratch-space/<latest-expiring>/
-# inside an sbatch/srun job (not on comps0–3):
-apptainer build viking-splatad-cu118.sif docker-archive://viking-splatad-cu118.tar
-apptainer exec --nv --bind <data_dir>:/data viking-splatad-cu118.sif ns-train splatad viking-data --data /data/...
-```
-
-`--nv` passes the host NVIDIA driver into the container. Only the driver comes from the host. Everything else is in the image.
-
 ## Built images
 
 | Tag | Image ID | Built from commit | `CUDA_ARCHITECTURES` | Notes |
@@ -54,13 +40,12 @@ the neurad-studio and splatad CUDA builds, so changing either one recompiles eve
 
 ## The CS Lab cluster runs a native build of this recipe, not the image
 
-The CS Lab GPU nodes have no Apptainer, Singularity, Docker or Podman, and unprivileged user namespaces are disabled
+The CS Lab GPU nodes have no container runtime, and unprivileged user namespaces are disabled
 (probe jobs, 2026-10-25), so neither this image nor a rootless container can run there. `scripts/slurm/build_env.sbatch`
 replays this Dockerfile in user space on a GPU node, with micromamba providing Python 3.10.12, gcc 11.4.0 and CUDA
 11.8 (`scripts/slurm/cluster_env.yaml`). It reads the git SHAs and the dataparser registration from this
 Dockerfile and the pip pins from `constraints.txt`, so this file stays the single recipe. The image is still the
-reference build, and it is used on the Mac for CPU checks such as `scripts/slurm/preflight_dataparser.py`. The
-Apptainer section above applies only to clusters that provide Apptainer.
+reference build, and it is used on the Mac for CPU checks such as `scripts/slurm/preflight_dataparser.py`.
 
 `constraints.txt` does not pin `pytest` globally: neurad-studio's `[dev]` extra pins `pytest==7.1.2` for its own
 install step, while this repo's `[dev]` extra upgrades it. Only the final install step applies the

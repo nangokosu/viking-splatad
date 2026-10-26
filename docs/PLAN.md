@@ -146,7 +146,7 @@ Two extra runs: the same as core B and R with camera training on (`train-lidar-o
   - Radar seeds come from the train split only (CLAUDE.md rule 5), so in this split they come from chunks 20+21.
   - May has a similar return section (the chunk-8 loop and chunk 9), if May needs the same split.
 
-**Rendered lidar point cloud** (`08_render_lidar_pointcloud.py`, inside the SplatAD container). For each eval lidar pose:
+**Rendered lidar point cloud** (`08_render_lidar_pointcloud.py`, in the SplatAD job on Slurm). For each eval lidar pose:
 1. call `filter_lidar_pred_and_gt(output_point_cloud=True)`;
 2. go lidar → world, then apply `inv(w2m)` to reach the map frame;
 3. accumulate over the eval poses.

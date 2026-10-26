@@ -11,7 +11,7 @@ import math
 import shlex
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pytest
@@ -58,7 +58,7 @@ def build_example_sbatch(submit_module, time_limit: str) -> List[str]:
     return submit_module.build_sbatch_command(
         partition="gpunodes", gres="gpu:rtx_a6000:1", cpus=A6000_NODE_CPUS, memory_gb=EXAMPLE_MEMORY_GB,
         time_limit=time_limit, job_name="splatad-example", output_path="/stage/runs/r/slurm-%j.out",
-        job_environment={"RUN_ID": "r", "SESSION": "example"}, script_path="/stage/code/sha/run.sbatch")
+        job_script_path="/stage/runs/r/job.sbatch")
 
 
 def test_derive_node_resources_picks_matching_gpu_nodes():
@@ -99,12 +99,12 @@ def test_parse_slurm_time_limit_seconds_known_values():
 
 
 def test_build_sbatch_command_contents():
-    """Resources are all on the command line; job variables go through `env`, never --export."""
+    """Resources are all on the command line; job variables are not (they live in the job script)."""
     submit_module = load_submit_module()
     sbatch_arguments = build_example_sbatch(submit_module, "0-06:00:00")
-    sbatch_position = sbatch_arguments.index("sbatch")
-    # `env K=V ... sbatch`: variables precede sbatch (the cluster holds --export=ALL,K=V jobs).
-    assert sbatch_arguments[:sbatch_position] == ["env", "RUN_ID=r", "SESSION=example"]
+    # Plain `sbatch ...`: no `env K=V` prefix (CS Lab support: export inside the batch script).
+    assert sbatch_arguments[0] == "sbatch"
+    assert not any("=" in argument and not argument.startswith("--") for argument in sbatch_arguments)
     assert "--partition=gpunodes" in sbatch_arguments
     assert "--gres=gpu:rtx_a6000:1" in sbatch_arguments
     assert sbatch_arguments[sbatch_arguments.index("-c") + 1] == str(A6000_NODE_CPUS)
@@ -112,7 +112,7 @@ def test_build_sbatch_command_contents():
     assert sbatch_arguments[sbatch_arguments.index("-t") + 1] == "0-06:00:00"
     assert not any(argument.startswith("--export") for argument in sbatch_arguments)
     assert not any("get-user-env" in argument for argument in sbatch_arguments)
-    assert sbatch_arguments[-1] == "/stage/code/sha/run.sbatch"
+    assert sbatch_arguments[-1] == "/stage/runs/r/job.sbatch"
 
 
 def test_build_sbatch_command_accepts_exactly_five_days_and_rejects_more():
@@ -203,7 +203,7 @@ def test_compute_recipe_hash_known_value_order_independence_and_sensitivity():
 
 
 def make_fake_cluster(full_sha: str, absolute_stage_root: str, environment_marker_text: Optional[str],
-                      issued_commands: List[List[str]]):
+                      issued_commands: List[List[str]], written_files: Optional[Dict[str, str]] = None):
     """Build a run_command stand-in answering git, stage-root resolution, the env marker, sinfo, sbatch.
 
     Args:
@@ -211,13 +211,17 @@ def make_fake_cluster(full_sha: str, absolute_stage_root: str, environment_marke
         absolute_stage_root: Path printed by the remote ``pwd -P``.
         environment_marker_text: Contents served for ``cat <...>.marker``; None = no marker (cat fails).
         issued_commands: List that records every command.
+        written_files: Optional dict filled with remote path -> stdin text for every remote
+            ``cat > "$1"`` write (the path is the command's last argument).
 
     Returns:
         The fake ``run_command`` function.
     """
     def fake_run_command(command, capture_output=True, input_text=None):
-        """Record the command and return a canned CompletedProcess."""
+        """Record the command (and any remote file write) and return a canned CompletedProcess."""
         issued_commands.append(list(command))
+        if written_files is not None and command[0] == "ssh" and input_text is not None:
+            written_files[shlex.split(command[-1])[-1]] = input_text
         remote_text = command[-1] if command[0] == "ssh" else ""
         if command[:2] == ["git", "rev-parse"]:
             return subprocess.CompletedProcess(command, 0, stdout=full_sha + "\n", stderr="")
@@ -239,15 +243,16 @@ def test_submit_run_issues_expected_remote_commands(monkeypatch, tmp_path):
     """End-to-end submit with mocked ssh: sinfo-derived resources, env and code paths reach sbatch."""
     submit_module = load_submit_module()
     full_sha = "fedcba9876543210fedcba9876543210fedcba98"
-    absolute_stage_root = "/h/example/viking-splatad"
+    absolute_stage_root = "/w/example/user/viking-splatad"
     issued_commands: List[List[str]] = []
     moment = datetime.datetime(2026, 10, 25, 1, 2, 3, tzinfo=datetime.timezone.utc)
-    # Env on scratch that expires 10 days after submission: outlives the smoke time limit.
-    scratch_env_prefix = "/scratch/scratch-space/expires-2026-Nov-04/viking-splatad-user/envs/splatad-x"
-    expires_epoch = int(moment.timestamp()) + 10 * 86400
-    marker_text = f"env_prefix={scratch_env_prefix}\nexpires_epoch={expires_epoch}\nbuilt_utc=t\n"
+    # Env on the workdisk, inside the stage root (no expiry: the workdisk is persistent).
+    env_prefix = f"{absolute_stage_root}/envs/splatad-x"
+    marker_text = f"env_prefix={env_prefix}\nbuilt_utc=t\n"
+    written_files: Dict[str, str] = {}
     monkeypatch.setattr(submit_module, "run_command",
-                        make_fake_cluster(full_sha, absolute_stage_root, marker_text, issued_commands))
+                        make_fake_cluster(full_sha, absolute_stage_root, marker_text, issued_commands,
+                                          written_files))
     # Committed recipe files replaced by fixed bytes so the expected env name is computable here.
     monkeypatch.setattr(submit_module, "read_committed_file",
                         lambda git_sha, relative_path: relative_path.encode())
@@ -266,25 +271,32 @@ def test_submit_run_issues_expected_remote_commands(monkeypatch, tmp_path):
     expected_memory_gb = math.floor(config["mem_fraction"] * A6000_NODE_MEMORY_MB / 1024)
     assert f"--mem={expected_memory_gb}G" in sbatch_remote_text
     assert f"-c {A6000_NODE_CPUS}" in sbatch_remote_text
+    # sbatch runs the generated job script in the run dir, which was written before submission.
+    expected_job_script_path = f"{absolute_stage_root}/runs/{run_id}/job.sbatch"
+    assert sbatch_remote_text.endswith(expected_job_script_path)
+    job_script_text = written_files[expected_job_script_path]
     # Window fractions exported exactly as s / D and (s + w) / D of the synthetic span.
     smoke_profile = config["profiles"]["smoke"]
     span_duration = synthetic_span[1] - synthetic_span[0]
     expected_start_fraction = smoke_profile["window_start_seconds"] / span_duration
     expected_end_fraction = (smoke_profile["window_start_seconds"] + smoke_profile["window_seconds"]) / span_duration
-    assert f"DATASET_START_FRACTION={expected_start_fraction!r}" in sbatch_remote_text
-    assert f"DATASET_END_FRACTION={expected_end_fraction!r}" in sbatch_remote_text
+    assert f"export DATASET_START_FRACTION={expected_start_fraction!r}" in job_script_text
+    assert f"export DATASET_END_FRACTION={expected_end_fraction!r}" in job_script_text
     expected_recipe_hash = submit_module.compute_recipe_hash(
         {relative_path: relative_path.encode() for relative_path in config["environment_recipe_files"]})
-    # The marker read is the one named by the recipe hash; the env path and expiry come from it.
+    # The marker read is the one named by the recipe hash; the env path comes from it.
     marker_reads = [command[-1] for command in issued_commands
                     if command[0] == "ssh" and command[-1].startswith("cat ")]
     assert marker_reads == [f"cat {absolute_stage_root}/envs/splatad-{expected_recipe_hash}.marker"]
-    assert f"ENV_PREFIX={scratch_env_prefix}" in sbatch_remote_text
-    assert f"ENV_EXPIRES_EPOCH={expires_epoch}" in sbatch_remote_text
-    assert f"COPY_BACK_BWLIMIT_KIB={config['copy_back_bwlimit_kib']}" in sbatch_remote_text
-    assert f"CODE_DIR={absolute_stage_root}/code/{full_sha}" in sbatch_remote_text
-    assert sbatch_remote_text.endswith(f"{absolute_stage_root}/code/{full_sha}/scripts/slurm/splatad_run.sbatch")
+    assert f"export ENV_PREFIX={env_prefix}" in job_script_text
+    assert f"export RUN_ID={run_id}" in job_script_text.splitlines()
+    assert f"export STAGE_ROOT={absolute_stage_root}" in job_script_text.splitlines()
+    assert f"export CODE_DIR={absolute_stage_root}/code/{full_sha}" in job_script_text
+    # The job script ends by running the committed run script of this SHA.
+    assert job_script_text.rstrip("\n").endswith(
+        f"exec bash {absolute_stage_root}/code/{full_sha}/scripts/slurm/splatad_run.sbatch")
     assert "get-user-env" not in sbatch_remote_text
+    assert "--export" not in sbatch_remote_text
     ledger_lines = (tmp_path / "submitted.tsv").read_text().splitlines()
     assert ledger_lines[1].split("\t")[:2] == [run_id, "4242"]
 
@@ -294,7 +306,7 @@ def test_submit_run_refuses_when_environment_not_built(monkeypatch, tmp_path):
     submit_module = load_submit_module()
     issued_commands: List[List[str]] = []
     monkeypatch.setattr(submit_module, "run_command",
-                        make_fake_cluster("a" * 40, "/h/example/viking-splatad", None, issued_commands))
+                        make_fake_cluster("a" * 40, "/w/example/user/viking-splatad", None, issued_commands))
     monkeypatch.setattr(submit_module, "read_committed_file", lambda git_sha, relative_path: b"x")
     monkeypatch.setattr(submit_module, "SUBMITTED_LEDGER_PATH", tmp_path / "submitted.tsv")
     with pytest.raises(RuntimeError, match="build-env"):
@@ -374,52 +386,127 @@ def test_submit_sbatch_puts_parsable_right_after_the_sbatch_token(monkeypatch):
     assert remote_arguments[:sbatch_position + 1] + remote_arguments[sbatch_position + 2:] == sbatch_arguments
 
 
-def test_build_sbatch_command_rejects_non_identifier_variable_names():
-    """`env` splits at the first '=', so a name like 'A=B' or 'A B' must be refused."""
+def test_build_job_script_rejects_non_identifier_variable_names():
+    """`export` needs a shell identifier, so a name like 'A=B' or 'A B' must be refused."""
     submit_module = load_submit_module()
     for bad_name in ("A=B", "A B", "1ABC"):
         with pytest.raises(ValueError, match="identifier"):
-            submit_module.build_sbatch_command(
-                partition="gpunodes", gres="gpu:rtx_a6000:1", cpus=1, memory_gb=1,
-                time_limit="0-00:10:00", job_name="job", output_path="out",
-                job_environment={bad_name: "value"}, script_path="script")
+            submit_module.build_job_script({bad_name: "value"}, "/stage/code/sha/run.sbatch")
+
+
+def test_build_job_script_exports_values_verbatim_to_the_committed_script(tmp_path):
+    """Run the generated script with bash: the target script sees every value byte-for-byte.
+
+    Values with spaces, quotes, $ and a trailing newline-free float repr must not be expanded or
+    split, because shlex.quote makes each a single literal word.
+    """
+    submit_module = load_submit_module()
+    job_environment = {"PLAIN": "abc", "WITH_SPACE": "a b", "WITH_QUOTES": "it's \"q\"",
+                       "WITH_DOLLAR": "$HOME and $(echo no)", "FLOAT_REPR": repr(0.1 + 0.2)}
+    # Target script: print each variable as NAME=<value> on its own line.
+    target_script_path = tmp_path / "target.sbatch"
+    target_script_path.write_text("".join(f'printf "%s\\n" "{variable_name}=${variable_name}"\n'
+                                          for variable_name in job_environment))
+    job_script_path = tmp_path / "job.sbatch"
+    job_script_path.write_text(submit_module.build_job_script(job_environment, str(target_script_path)))
+    completed = subprocess.run(["bash", str(job_script_path)], capture_output=True, text=True, check=True)
+    assert completed.stdout.splitlines() == [f"{variable_name}={variable_value}"
+                                            for variable_name, variable_value in job_environment.items()]
+
+
+def test_build_job_script_layout():
+    """Shebang first, one export per variable in order, exec of the committed script last."""
+    submit_module = load_submit_module()
+    script_lines = submit_module.build_job_script({"RUN_ID": "r", "SESSION": "s"},
+                                                  "/stage/code/sha/run.sbatch").splitlines()
+    assert script_lines[0] == "#!/bin/bash"
+    export_lines = [line_text for line_text in script_lines if line_text.startswith("export ")]
+    assert export_lines == ["export RUN_ID=r", "export SESSION=s"]
+    assert script_lines[-1] == "exec bash /stage/code/sha/run.sbatch"
+
+
+def test_build_environment_submits_a_job_script_with_the_build_variables(monkeypatch):
+    """build-env writes <envs/logs>/<env>-job.sbatch exporting the build's variables and sbatches it."""
+    submit_module = load_submit_module()
+    full_sha = "0" * 40
+    absolute_stage_root = "/w/example/user/viking-splatad"
+    issued_commands: List[List[str]] = []
+    written_files: Dict[str, str] = {}
+    monkeypatch.setattr(submit_module, "run_command",
+                        make_fake_cluster(full_sha, absolute_stage_root, None, issued_commands, written_files))
+    monkeypatch.setattr(submit_module, "read_committed_file", lambda git_sha, relative_path: b"x")
+    # Staging the code needs git archive and rsync; replace it with the path it would return.
+    monkeypatch.setattr(submit_module, "stage_code",
+                        lambda ssh_target, stage_root, git_sha: f"{stage_root}/code/{git_sha}")
+    monkeypatch.setattr(submit_module, "check_clean_tree", lambda: [])
+    config = submit_module.load_slurm_config()
+    assert submit_module.build_environment(config) == "4242"
+    env_name = submit_module.environment_name(config, full_sha)
+    job_script_path = f"{absolute_stage_root}/envs/logs/{env_name}-job.sbatch"
+    job_script_text = written_files[job_script_path]
+    for expected_line in (f"export STAGE_ROOT={absolute_stage_root}", f"export ENV_NAME={env_name}",
+                          f"export MICROMAMBA_SHA256={config['micromamba_sha256']}",
+                          f"exec bash {absolute_stage_root}/code/{full_sha}/scripts/slurm/build_env.sbatch"):
+        assert expected_line in job_script_text.splitlines()
+    sbatch_remote_text = next(command[-1] for command in issued_commands
+                              if command[0] == "ssh" and " sbatch " in f" {command[-1]} ")
+    assert sbatch_remote_text.startswith("sbatch ")
+    assert sbatch_remote_text.endswith(job_script_path)
 
 
 def test_parse_environment_marker_reads_key_values_and_rejects_incomplete():
-    """key=value lines are parsed; a marker without env_prefix or expiry is an error."""
+    """key=value lines are parsed; a marker without env_prefix is an error."""
     submit_module = load_submit_module()
-    marker = submit_module.parse_environment_marker("env_prefix=/s/env\nexpires_epoch=1700000000\nbuild_job=7\n")
-    assert marker == {"env_prefix": "/s/env", "expires_epoch": "1700000000", "build_job": "7"}
+    marker = submit_module.parse_environment_marker("env_prefix=/s/env\nbuilt_utc=t\nbuild_job=7\n")
+    assert marker == {"env_prefix": "/s/env", "built_utc": "t", "build_job": "7"}
     with pytest.raises(ValueError):
-        submit_module.parse_environment_marker("env_prefix=/s/env\n")
-    with pytest.raises(ValueError):
-        submit_module.parse_environment_marker("env_prefix=/s/env\nexpires_epoch=soon\n")
+        submit_module.parse_environment_marker("built_utc=t\nbuild_job=7\n")
 
 
-def test_environment_outlives_is_strict_against_job_end():
-    """Usable iff expiry > now + time limit (finishing exactly at expiry is not enough)."""
-    submit_module = load_submit_module()
-    now_epoch, time_limit_seconds = 1_000_000.0, 7200
-    job_end_epoch = int(now_epoch) + time_limit_seconds
-    assert submit_module.environment_outlives({"expires_epoch": str(job_end_epoch + 1)}, now_epoch, time_limit_seconds)
-    assert not submit_module.environment_outlives({"expires_epoch": str(job_end_epoch)}, now_epoch, time_limit_seconds)
-
-
-def test_submit_run_refuses_env_on_expiring_scratch(monkeypatch, tmp_path):
-    """A built env whose scratch expires before the job could finish is refused; no sbatch."""
+def test_resolve_remote_stage_root_is_under_the_users_workdisk_dir(monkeypatch):
+    """The remote script enters <workdisk_root>/<id -un>/ and makes <stage_root> there; no username in it."""
     submit_module = load_submit_module()
     issued_commands: List[List[str]] = []
-    moment = datetime.datetime(2026, 10, 25, 1, 2, 3, tzinfo=datetime.timezone.utc)
-    # Expires one second after submission: shorter than any profile's time limit.
-    marker_text = f"env_prefix=/scratch/x/envs/splatad-y\nexpires_epoch={int(moment.timestamp()) + 1}\n"
+    resolved_path = "/w/example/user/viking-splatad"
+
+    def fake_run_command(command, capture_output=True, input_text=None):
+        """Record the command; reply with the path a remote `pwd -P` would print."""
+        issued_commands.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout=resolved_path + "\n", stderr="")
+
+    monkeypatch.setattr(submit_module, "run_command", fake_run_command)
+    config = {"workdisk_root": "/w/example/", "stage_root": "viking-splatad"}
+    assert submit_module.resolve_remote_stage_root(config, "login.example") == resolved_path
+    remote_arguments = shlex.split(issued_commands[0][-1])
+    # sh -c <script> <$0> <$1 = workdisk root, trailing slash stripped> <$2 = stage root>.
+    assert remote_arguments[:2] == ["sh", "-c"]
+    assert remote_arguments[3:] == ["sh", "/w/example", "viking-splatad"]
+    stage_script = remote_arguments[2]
+    # The per-user dir is entered (never created) before the stage root is made inside it.
+    assert stage_script.index('cd "$1/$(id -un)"') < stage_script.index('mkdir -p "$2"')
+
+
+def test_resolve_remote_stage_root_rejects_relative_workdisk_root(monkeypatch):
+    """A relative workdisk_root would resolve against the remote home; refused before any ssh."""
+    submit_module = load_submit_module()
+    issued_commands: List[List[str]] = []
     monkeypatch.setattr(submit_module, "run_command",
-                        make_fake_cluster("b" * 40, "/h/example/viking-splatad", marker_text, issued_commands))
-    monkeypatch.setattr(submit_module, "read_committed_file", lambda git_sha, relative_path: b"x")
-    monkeypatch.setattr(submit_module, "SUBMITTED_LEDGER_PATH", tmp_path / "submitted.tsv")
-    with pytest.raises(RuntimeError, match="expires"):
-        submit_module.submit_run(submit_module.load_slurm_config(), "may_short_grass", "smoke",
-                                 skip_gates=True, now_utc=moment)
-    assert not any(command[0] == "ssh" and " sbatch " in f" {command[-1]} " for command in issued_commands)
+                        lambda command, capture_output=True, input_text=None: issued_commands.append(command))
+    with pytest.raises(ValueError, match="workdisk_root"):
+        submit_module.resolve_remote_stage_root({"workdisk_root": "w/example", "stage_root": "s"}, "host")
+    assert issued_commands == []
+
+
+def test_cluster_jobs_never_use_scratch_or_copy_back():
+    """Static check: the jobs write only under $STAGE_ROOT (workdisk), with no scratch or copy-back."""
+    for script_name in ("splatad_run.sbatch", "build_env.sbatch"):
+        script_text = (PROJECT_ROOT / "scripts" / "slurm" / script_name).read_text()
+        for forbidden_text in ("/scratch", "scratch_lib.sh", "--bwlimit", "COPY_BACK", "EXPIRES_EPOCH"):
+            assert forbidden_text not in script_text, f"{script_name} still references {forbidden_text}"
+    build_text = (PROJECT_ROOT / "scripts" / "slurm" / "build_env.sbatch").read_text()
+    assert 'ENV_PREFIX="$STAGE_ROOT/envs/$ENV_NAME"' in build_text
+    run_text = (PROJECT_ROOT / "scripts" / "slurm" / "splatad_run.sbatch").read_text()
+    assert 'RUN_DIR="$STAGE_ROOT/runs/$RUN_ID"' in run_text
 
 
 def build_example_job_environment(submit_module, profile_settings):
@@ -432,9 +519,9 @@ def build_example_job_environment(submit_module, profile_settings):
     Returns:
         The exported variable mapping.
     """
-    env_marker = {"env_prefix": "/scratch/envs/splatad-x", "expires_epoch": "1"}
-    return submit_module.build_job_environment(profile_settings, "s", "run", "a" * 40, "/h/stage",
-                                               env_marker, 1)
+    env_marker = {"env_prefix": "/w/stage/envs/splatad-x"}
+    return submit_module.build_job_environment(profile_settings, "s", "run", "a" * 40, "/w/stage",
+                                               env_marker)
 
 
 def test_job_environment_exports_the_profile_seed():

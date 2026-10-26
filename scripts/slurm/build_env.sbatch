@@ -9,18 +9,19 @@
 #   * git SHAs, dataparser registration         <- parsed from docker/Dockerfile.splatad itself
 # so the Dockerfile stays the single source of truth for every upstream pin.
 #
-# Storage: compute jobs are killed for fast writes to NFS home (scratch_lib.sh), so the
-# environment, package caches and build trees live on the scratch dir that expires last. Only
-# small files go to home: a marker naming the env path and its expiry, and the lock files.
+# Storage: everything (environment, package caches, build trees, marker, lock files) goes under
+# $STAGE_ROOT on the MSCAC workdisk (configs/slurm.yaml workdisk_root): persistent, so the env
+# never expires. Nothing goes to $HOME, which has a 10 GB quota.
 #
 # Submitted by `scripts/slurm/submit_run.py build-env`, which passes resources on the sbatch
-# command line and sets (via `env K=V sbatch`):
-#   STAGE_ROOT          absolute stage dir in home (code/, data/, runs/, envs/<name>.marker)
+# command line and exports these in the generated job script that runs this file
+# (submit_run.py build_job_script; CS Lab support's recommended way to pass variables):
+#   STAGE_ROOT          absolute stage dir on the workdisk (code/, data/, runs/, envs/)
 #   CODE_DIR            committed repo snapshot to build from (git archive of HEAD)
-#   ENV_NAME            splatad-<recipe hash>; the env goes to <scratch>/viking-splatad-$USER/envs/
+#   ENV_NAME            splatad-<recipe hash>; the env goes to $STAGE_ROOT/envs/$ENV_NAME
 #   MICROMAMBA_VERSION  pinned micromamba release tag
 #   MICROMAMBA_SHA256   its published sha256 (verified before use)
-# A partial env from an earlier attempt is rebuilt; the home marker is written only at the end.
+# A partial env from an earlier attempt is rebuilt; the marker is written only at the end.
 
 set -euo pipefail
 
@@ -28,32 +29,26 @@ set -euo pipefail
 : "${STAGE_ROOT:?}" "${CODE_DIR:?}" "${ENV_NAME:?}" "${MICROMAMBA_VERSION:?}" "${MICROMAMBA_SHA256:?}"
 DOCKERFILE="$CODE_DIR/docker/Dockerfile.splatad"
 CONSTRAINTS_FILE="$CODE_DIR/docker/constraints.txt"
-# shellcheck disable=SC1091
-source "$CODE_DIR/scripts/slurm/scratch_lib.sh"
-# Scratch dir that expires last; it must outlive this job.
-read -r SCRATCH_EXPIRY_EPOCH SCRATCH_DIR <<< "$(latest_expiring_scratch)"
-require_scratch_outlives_job "$SCRATCH_EXPIRY_EPOCH"
-SCRATCH_ROOT="$SCRATCH_DIR/viking-splatad-$USER"
-ENV_PREFIX="$SCRATCH_ROOT/envs/$ENV_NAME"
+ENV_PREFIX="$STAGE_ROOT/envs/$ENV_NAME"
 MARKER_PATH="$STAGE_ROOT/envs/$ENV_NAME.marker"
 echo "== build_env on $(hostname) at $(date -u +%FT%TZ), job ${SLURM_JOB_ID:-none}"
-echo "   ENV_PREFIX=$ENV_PREFIX (scratch expires $(date -u -d "@$SCRATCH_EXPIRY_EPOCH" +%F))"
+echo "   ENV_PREFIX=$ENV_PREFIX"
 echo "   CODE_DIR=$CODE_DIR"
-mkdir -p "$SCRATCH_ROOT/envs" "$STAGE_ROOT/envs"
+mkdir -p "$STAGE_ROOT/envs"
 rm -rf "$ENV_PREFIX"
 
 # ---- 1. micromamba (static binary), checksum-verified -----------------------------------------
-MICROMAMBA="$SCRATCH_ROOT/bin/micromamba-$MICROMAMBA_VERSION"
+MICROMAMBA="$STAGE_ROOT/bin/micromamba-$MICROMAMBA_VERSION"
 if [[ ! -x "$MICROMAMBA" ]]; then
-    mkdir -p "$SCRATCH_ROOT/bin"
+    mkdir -p "$STAGE_ROOT/bin"
     # Anonymous user agent (project rule 8: no personal info in network requests).
     curl -fsSL -A "viking-splatad/0.1" -o "$MICROMAMBA.download" \
         "https://github.com/mamba-org/micromamba-releases/releases/download/$MICROMAMBA_VERSION/micromamba-linux-64"
     echo "$MICROMAMBA_SHA256  $MICROMAMBA.download" | sha256sum -c -
     chmod +x "$MICROMAMBA.download" && mv "$MICROMAMBA.download" "$MICROMAMBA"
 fi
-# Package cache on scratch (not $HOME/.cache: home writes kill the job).
-export MAMBA_ROOT_PREFIX="$SCRATCH_ROOT/mamba"
+# Package cache on the workdisk (not $HOME/.cache: the 10 GB home quota cannot hold it).
+export MAMBA_ROOT_PREFIX="$STAGE_ROOT/mamba"
 
 # ---- 2. Conda layer (replaces the base image + apt) ---------------------------------------------
 "$MICROMAMBA" create -y -p "$ENV_PREFIX" -f "$CODE_DIR/scripts/slurm/cluster_env.yaml"
@@ -87,7 +82,7 @@ export LIBRARY_PATH="$ENV_PREFIX/lib/stubs${LIBRARY_PATH:+:$LIBRARY_PATH}"
 export PIP_CONSTRAINT="$CONSTRAINTS_FILE"
 export PIP_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cu118"
 export PIP_DISABLE_PIP_VERSION_CHECK=1
-export PIP_CACHE_DIR="$SCRATCH_ROOT/pip-cache"
+export PIP_CACHE_DIR="$STAGE_ROOT/pip-cache"
 export PYTHONDONTWRITEBYTECODE=1
 # Parallel compile jobs = the CPUs Slurm granted (sized from sinfo by submit_run.py).
 export MAX_JOBS="${SLURM_CPUS_PER_TASK:-1}"
@@ -161,12 +156,12 @@ diff <(grep -E '^[A-Za-z0-9_.-]+==' "$CONSTRAINTS_FILE" | sort) \
 printf 'built %s on %s job %s\ncompute capability %s\ncode %s\n' \
     "$(date -u +%FT%TZ)" "$(hostname)" "${SLURM_JOB_ID:-none}" "$COMPUTE_CAPABILITY" "$CODE_DIR" \
     > "$ENV_PREFIX/.build-complete"
-# Small files back to home: lock files (to commit) and the marker submit_run.py reads.
+# Lock files (to commit) next to the marker, so they can be fetched without knowing the env layout.
 mkdir -p "$STAGE_ROOT/envs/$ENV_NAME-locks"
 cp "$ENV_PREFIX/viking-pip-freeze.txt" "$ENV_PREFIX/viking-conda-explicit.txt" "$STAGE_ROOT/envs/$ENV_NAME-locks/"
 # key=value lines; written last, via a temp file + rename, so a marker always means a whole env.
-printf 'env_prefix=%s\nexpires_epoch=%s\nbuilt_utc=%s\nbuild_job=%s\ncompute_capability=%s\n' \
-    "$ENV_PREFIX" "$SCRATCH_EXPIRY_EPOCH" "$(date -u +%FT%TZ)" "${SLURM_JOB_ID:-none}" "$COMPUTE_CAPABILITY" \
+printf 'env_prefix=%s\nbuilt_utc=%s\nbuild_job=%s\ncompute_capability=%s\n' \
+    "$ENV_PREFIX" "$(date -u +%FT%TZ)" "${SLURM_JOB_ID:-none}" "$COMPUTE_CAPABILITY" \
     > "$MARKER_PATH.partial"
 mv "$MARKER_PATH.partial" "$MARKER_PATH"
 echo "== environment complete: $ENV_PREFIX (marker $MARKER_PATH)"

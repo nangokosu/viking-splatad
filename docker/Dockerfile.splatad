@@ -25,11 +25,12 @@
 #   docker build --platform linux/amd64 -f docker/Dockerfile.splatad \
 #       --build-arg CUDA_ARCHITECTURES="<from cluster nvidia-smi>" \
 #       -t viking-splatad:cu118 .
-# On the Slurm cluster, run it through Apptainer (docker/README.md).
+# The Slurm cluster cannot run containers; it builds this recipe natively
+# (scripts/slurm/build_env.sbatch, docker/README.md).
 # =============================================================================
 
 # Base image: CUDA 11.8 devel on Ubuntu 22.04, the version neurad-studio's own
-# Dockerfile and Apptainer recipe target (torch 2.0.1+cu118 wheels match it).
+# Dockerfile targets (torch 2.0.1+cu118 wheels match it).
 # Digest = linux/amd64 manifest of nvidia/cuda:11.8.0-devel-ubuntu22.04.
 FROM --platform=linux/amd64 nvidia/cuda:11.8.0-devel-ubuntu22.04@sha256:60eda04ab6790aa76d73bf0df245b361eabc6d8f7b6f6cf9846c70f399b9a1eb
 
@@ -62,7 +63,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # --- System packages ----------------------------------------------------------
-# Same package set as neurad-studio's Dockerfile/Apptainer recipe (build tools,
+# Same package set as neurad-studio's Dockerfile (build tools,
 # COLMAP-style libs, ffmpeg for rendering videos, python3.10 headers).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -116,7 +117,7 @@ COPY src/viking_splatad/splatad/patches/ /opt/viking/patcher/src/viking_splatad/
 # Step 2: apply T28 (OUSTER_OS0_32 lidar type) via our idempotent installer.
 # Step 3: editable install with [dev] extras (as upstream's recipes do).
 # dataclass-wizard<0.23: nerfstudio imports JSONSerializable, removed later
-# (fix taken from neurad-studio's Apptainer recipe).
+# (fix taken from neurad-studio's upstream install recipe).
 RUN git init neurad-studio && cd neurad-studio && \
     git remote add origin https://github.com/georghess/neurad-studio.git && \
     git fetch --depth 1 origin "${NEURAD_STUDIO_COMMIT}" && \
