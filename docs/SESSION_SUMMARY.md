@@ -24,14 +24,20 @@
   - Same frame counts as before, and the contract passes.
   - Every sweep has its no-return file: ~13.6k per sweep in May, ~9.6k in June.
   - In the Docker image, the dataparser with the flag on adds ~13k placeholders per sweep, all at 2000 m, and leaves the returned rows identical to a flag-off run.
+- **Build fix** (`b83ec4b`, `1ec2a91`): the run-folder glossary is shipped in the cluster code snapshot and the image; env rebuilt (job 222829).
+- **Evaluation docs** (`ddbf295`, `e863b48`, `961cf5e`):
+  - `docs/research/no_return_impact.md` and `docs/research/evaluation_caveats.md`;
+  - PLAN §5 now has two primary tests, P1 (rendered lidar, ungated) and P2 (occupancy from the checkpoint's Gaussians, T56–T57);
+  - PLAN §5 adds a seen / blocked / no-return breakdown and names the ground-truth files explicitly.
 - New tests only, no existing test modified. Full suite: 296 passed, 3 skipped. The real-bag pipeline test passes.
 
 ## Current state
 - **Cluster (`/w/20262/<user>/viking-splatad`):** code `cbe6bfd` and `595582b` and all three datasets (with the sidecar) are staged. Remote file counts equal the local ones (11,467 / 10,309 / 8,701). No smoke run has been submitted yet.
-- **Open issue: environment build 222810 failed its final pytest step**, so `envs/splatad-c80e445ccb11` (17 GB) has no `.build-complete` marker or `.marker` file, and `submit` will refuse to run.
-  - Two failures: `test_render_lidar_script.py::test_glossary_*`. They read `runs/RUN_FOLDER_GLOSSARY.md`, which is in neither `STAGED_REPO_PATHS` (`submit_run.py`) nor the Dockerfile's COPYs.
-  - Fix: ship the glossary in both. This changes the recipe hash, so a rebuild follows.
-  - Left on the workdisk: the stale `splatad-a1e9255584ab.marker` points at the old scratch env, and `splatad-5e2b8f64f32e` is a 1.5 KB empty leftover. Both can be deleted.
+- **Environment: `envs/splatad-3f478d42f203` is built and marked complete** (job 222829, after the glossary fix `b83ec4b`/`1ec2a91`).
+  - GPU import check OK on an A6000; pytest 295 passed.
+  - Pip drift: only the expected `pytest` pin and `packaging`.
+  - The locks are byte-identical to the committed ones (README note).
+  - Workdisk leftovers to delete when convenient: the failed `splatad-c80e445ccb11` (17 GB, no marker), the empty `splatad-5e2b8f64f32e`, and the stale `splatad-a1e9255584ab.marker` and `-locks/` (old scratch env).
 - **The job-222633 checkpoint exists only on scratch**, which expires 2026-11-07. Not rescued, by the user's choice for now.
 - **Elevation-mapping bias (not fixed):** T16's per-ring median includes near-return parallax. For example, ring 31 is −38.1° in the map but −44.5° in the fitted beam model. This affects SplatAD's lidar model. Consider using the T51 far-field elevations.
 - Home: `~/.cache/yarn` (cluster) is left as is, pending a decision.
@@ -41,9 +47,13 @@
   - The Mac image predates `c713a02`, so bind-mount `src/` for CPU checks.
 
 ## Next steps
-1. Fix the build: add `runs/RUN_FOLDER_GLOSSARY.md` to `STAGED_REPO_PATHS` and the Dockerfile COPYs. Then commit, run `build-env`, check that the log ends with `== environment complete`, fetch the locks into `docker/cluster-locks/`, and commit them.
-2. Smoke run on `may_chunks0_1_smoke` with `add_missing_points` on (only when the user asks). Check that `ray_drop_accuracy` falls below 1 and means something, and that `job_info.txt` shows `ADD_MISSING_POINTS: True`.
-3. Decide on the T16 elevation mapping (median vs. far-field fit) before the full runs.
-4. Full May Scene A run, then June B and R, all with the same seed and with `add_missing_points` on.
-5. Evaluation (T45–T47): ungated extraction (accumulation threshold), the same rule for every run, plus a Gaussian-density occupancy grid, against the GT occupancy grid. Report the gated variant as secondary.
-6. Recover the 222633 checkpoint before 2026-11-07, if it is still wanted.
+1. Smoke run on `may_chunks0_1_smoke` with `add_missing_points` on (only when the user asks).
+   - First run `stage --session may_chunks0_1_smoke`: submit uses HEAD's code, and later commits are not staged yet.
+   - Check that `ray_drop_accuracy` falls below 1 and means something, and that `job_info.txt` shows `ADD_MISSING_POINTS: True`.
+   - Record the lidar step time against job 222633 (~75% more rays per sweep).
+2. Decide on the T16 elevation mapping (median vs. far-field fit) before the full runs.
+3. Full May Scene A run, then June B and R, all with the same seed and with `add_missing_points` on.
+4. Evaluation per PLAN §5:
+   - first the §1 June frame check and `05_extract_cuboids.py` for `june_tall_grass` (June GT not generated yet);
+   - then P1 (T45–T47 on ungated rendered points) and P2 (T56–T57 Gaussian occupancy), with the seen / blocked / no-return breakdown.
+5. Recover the 222633 checkpoint before 2026-11-07, if it is still wanted.

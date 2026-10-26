@@ -54,7 +54,11 @@ install step, while this repo's `[dev]` extra upgrades it. Only the final instal
 ### Cluster locks (`docker/cluster-locks/`)
 
 Each native build exports what it actually installed. The copy in this repo comes from build job 222558
-(env `splatad-a1e9255584ab`, gpunode2, 2026-10-25):
+(env `splatad-a1e9255584ab`, gpunode2, 2026-10-25). The current env, build job 222829
+(`splatad-3f478d42f203`, gpunode2, 2026-10-26, on the MSCAC workdisk), exported **byte-identical** locks. Its recipe
+differs only by the glossary COPY in the Dockerfile. So the pins reproduce the same environment.
+- Build 222829: GPU import check OK on an RTX A6000 (8.6); pytest 295 passed, 5 skipped.
+- The locks contain no username or home/workdisk path.
 - `viking-pip-freeze.txt`: pip packages. It differs from `constraints.txt` only by the `pytest` final-step pin,
   and by `packaging`, which conda installed, so pip lists it as a `file://` path.
 - `viking-conda-explicit.txt`: exact conda URLs and hashes, including the toolchain versions that
