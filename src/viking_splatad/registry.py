@@ -31,6 +31,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # A run's exact train/test frames rebuilt without torch (dataset/run_split.py,
         # scripts/09_extract_run_split.py): neurad's time window and per-sensor LINSPACE split.
         "T58", "T59",
+        # Middle-block test split shared by every sensor (dataset/run_split.py, used by
+        # VikingHillDataParser's test_block_count and scripts/09).
+        "T60",
     }
 )
 

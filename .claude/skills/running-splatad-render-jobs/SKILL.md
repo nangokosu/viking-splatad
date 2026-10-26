@@ -63,23 +63,23 @@ It does **not** make runs bit-identical:
 Same seed means statistically similar runs, not identical ones. Compare B vs R with the same seed, and don't read small metric gaps as signal without repeats.
 
 ## Train/test split record (successful runs only)
-**The split has no randomness, and the seed does not affect it.** SplatAD keeps the frames inside the time window (`DATASET_START/END_FRACTION`, over camera and lidar times together, inclusive), then picks, per sensor, ceil(n·f) evenly spaced train frames; the rest are test. f is the manifest's `session.train_fraction` (0.9) unless overridden.
+**The split has no randomness, and the seed does not affect it.** SplatAD keeps the frames inside the time window (`DATASET_START/END_FRACTION`, over camera and lidar times together, inclusive). Then the test set is K contiguous time blocks, the same for camera and lidar, centred at k/(K+1) of the window, each (1−f)/K of it long (T60, `VikingHillDataParser.test_block_count`). K is the session config's `split.test_block_count` (2), exported as `TEST_BLOCK_COUNT`. f is the manifest's `session.train_fraction` (0.9) unless overridden. Runs from before T60 used neurad's per-sensor linspace split instead (every ~10th frame).
 
 `scripts/09_extract_run_split.py` rebuilds it on the CPU, without torch, and writes `<run dir>/split.json` and `split_frames.csv`:
 - every frame with its split, index, ns stamp and time;
-- the seed, git SHA, window, train fraction and its source;
+- the seed, git SHA, window, train fraction and its source, test block count and block bounds;
 - SHA-256 hashes of the dataset's `manifest.json` and `poses.npz`;
 - `membership_sha256`, a fingerprint of the split, and `render_check`.
 
 **Only document runs that successfully returned their outputs. Never write, keep or cite a split record for a failed, killed or incomplete run.** The script enforces this. It writes nothing, and deletes any earlier record, unless:
 - every render step finished and `config.yml` exists;
 - camera and lidar renders exist for every rendered split;
-- the train fractions agree (`job_info.txt`, `config.yml`, manifest);
+- the train fractions agree (`job_info.txt`, `config.yml`, manifest), and so do the test block counts (`job_info.txt`, `config.yml`);
 - the render file names equal the rebuilt split.
 
 Exit codes: 0 written, 1 inconsistent, 2 incomplete. `splatad_run.sbatch` runs it once, as the job's last step after the lidar render. It records `split_render_check: match`, or `FAILED (exit N)` and fails the job, before `end_utc`. So a run with `end_utc` has a verified `split.json`, and a run without one has none.
 
-It was verified against the real dataparser on `may_chunks0_1_smoke`'s smoke window: 135/15 camera and 135/15 lidar, identical frames.
+It was verified against the real dataparser on `may_chunks0_1_smoke`'s smoke window: 135/15 camera and 135/15 lidar, identical frames, both for the linspace split and for the block split (blocks 56.71–57.46 s and 61.69–62.44 s).
 
 - **For a fetched run without the file** (older runs), or to check one:
   ```bash

@@ -465,6 +465,60 @@ def profile_window_fractions(profile_settings: Dict[str, Any], session: str) -> 
                             float(profile_settings["window_seconds"]))
 
 
+def load_dataset_session_config(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                                session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> Tuple[str, Dict[str, Any]]:
+    """The session config a dataset was extracted with, and that session's name.
+
+    The session name comes from the dataset's ``manifest.json`` (a dataset directory may be named
+    differently, e.g. ``may_chunks0_1_smoke`` was extracted with ``may_short_grass``). Without a
+    local manifest the dataset name itself is taken as the session name.
+
+    Args:
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        (session name, parsed session config).
+
+    Raises:
+        FileNotFoundError: If the session config does not exist.
+    """
+    manifest_path = Path(intermediate_root) / session / "manifest.json"
+    session_name = json.loads(manifest_path.read_text())["session"]["name"] if manifest_path.is_file() else session
+    session_config = yaml.safe_load((Path(session_config_directory) / f"{session_name}.yaml").read_text())
+    return session_name, session_config
+
+
+def session_test_block_count(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                             session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> int:
+    """``split.test_block_count`` of the session config a dataset was extracted with.
+
+    Passed to viking-data as ``--test-block-count``: the test set is that many contiguous time
+    blocks shared by every sensor (T60), and config.yml records the value for ns-render, scripts/08
+    and scripts/09.
+
+    Args:
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        The block count K >= 1.
+
+    Raises:
+        FileNotFoundError: If the session config does not exist.
+        ValueError: If the value is missing or not a positive YAML integer.
+    """
+    session_name, session_config = load_dataset_session_config(session, intermediate_root, session_config_directory)
+    block_count = session_config.get("split", {}).get("test_block_count")
+    # bool is an int subclass; refuse it (and floats/strings) instead of coercing.
+    if isinstance(block_count, bool) or not isinstance(block_count, int) or block_count < 1:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: split.test_block_count must be a positive "
+                         f"integer, got {block_count!r}")
+    return block_count
+
+
 def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
                                session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> bool:
     """``splatad.add_missing_points`` of the session config a dataset was extracted with.
@@ -485,11 +539,9 @@ def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDI
         FileNotFoundError: If the session config does not exist.
         ValueError: If the flag is missing or not a YAML boolean.
     """
-    # Step 1: session name, from the manifest when the dataset is present.
-    manifest_path = Path(intermediate_root) / session / "manifest.json"
-    session_name = json.loads(manifest_path.read_text())["session"]["name"] if manifest_path.is_file() else session
-    # Step 2: the flag from that session's config; only a real boolean is accepted (no "yes"/1).
-    session_config = yaml.safe_load((Path(session_config_directory) / f"{session_name}.yaml").read_text())
+    # Step 1: the session config the dataset was extracted with.
+    session_name, session_config = load_dataset_session_config(session, intermediate_root, session_config_directory)
+    # Step 2: the flag from that config; only a real boolean is accepted (no "yes"/1).
     flag = session_config.get("splatad", {}).get("add_missing_points")
     if not isinstance(flag, bool):
         raise ValueError(f"configs/sessions/{session_name}.yaml: splatad.add_missing_points must be true/false, got {flag!r}")
@@ -545,7 +597,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
                           git_sha: str, absolute_stage_root: str,
                           env_marker: Dict[str, str],
                           add_missing_points: Optional[bool] = None,
-                          train_split_fraction: Optional[float] = None) -> Dict[str, str]:
+                          train_split_fraction: Optional[float] = None,
+                          test_block_count: Optional[int] = None) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
 
     Args:
@@ -560,6 +613,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
             splatad_run.sbatch refuses to start.
         train_split_fraction: The dataset's train fraction (``dataset_train_fraction``), exported
             as TRAIN_SPLIT_FRACTION. Same rule as ``add_missing_points``: None leaves it out.
+        test_block_count: The session's test block count (``session_test_block_count``), exported
+            as TEST_BLOCK_COUNT. Same rule as ``add_missing_points``: None leaves it out.
 
     Returns:
         Mapping variable name -> string value.
@@ -595,6 +650,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
     # repr keeps every digit, so config.yml, job_info.txt and the manifest hold the same float.
     if train_split_fraction is not None:
         job_environment["TRAIN_SPLIT_FRACTION"] = repr(float(train_split_fraction))
+    if test_block_count is not None:
+        job_environment["TEST_BLOCK_COUNT"] = str(int(test_block_count))
     return job_environment
 
 
@@ -1012,7 +1069,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     write_remote_file(ssh_target, job_script_path, build_job_script(
         build_job_environment(profile_settings, session, run_id, git_sha, absolute_stage_root, env_marker,
                               add_missing_points=session_add_missing_points(session),
-                              train_split_fraction=dataset_train_fraction(session)),
+                              train_split_fraction=dataset_train_fraction(session),
+                              test_block_count=session_test_block_count(session)),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,

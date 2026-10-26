@@ -87,8 +87,15 @@ radar:
   fields: [x, y, z, power, doppler]
 
 split:
-  # Single-trajectory capture: use most frames for training, keep an interleaved eval set (T21).
+  # Fraction of the windowed frames used for training; the rest are test.
   train_fraction: 0.9
+  # Test set = this many contiguous time blocks, the same for camera and lidar, centred at
+  # k/(K+1) of the run's window (T60; user's choice 2026-10-26: two middle stretches). It
+  # replaces neurad's interleaved split, whose test frames sit 0.1 s from a train frame (an
+  # interpolation-only check). Each block holds (1 - train_fraction)/K of the window; blocks stay
+  # apart only if train_fraction > 1/(K+1). Read by scripts/slurm/submit_run.py
+  # (TEST_BLOCK_COUNT -> viking-data --test-block-count).
+  test_block_count: 2
 
 splatad:
   # Passed to the dataparser config; see plan contract table.

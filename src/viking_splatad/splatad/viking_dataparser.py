@@ -14,10 +14,11 @@ Register with ns-train without editing neurad's config files::
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Dict, List, Optional, Tuple, Type, Union
 
 import numpy as np
 
+from viking_splatad.dataset.run_split import middle_block_train_eval_indices
 from viking_splatad.splatad.viking_conversions import (
     OUSTER_LIDAR_TYPE_NAME,
     DatasetView,
@@ -67,6 +68,10 @@ if NERFSTUDIO_AVAILABLE:
         """Required > 0 by ADDataParserConfig but unused without cuboids; 0.1 s = OS0 sweep period."""
         train_split_fraction_override: Optional[float] = None
         """None = use the manifest's session train fraction; else this value."""
+        test_block_count: Optional[int] = None
+        """None = neurad's per-sensor LINSPACE split (every ~1/(1-f)-th frame is test). K = the test
+        set is K contiguous time blocks, the same for every sensor, centred at k/(K+1) of the
+        window (T60). Set from the session config's split.test_block_count by submit_run.py."""
         time_to_center_fraction_of_readout: float = 0.5
         """Centre row is exposed this fraction of the readout after the stamp: 0.5 if the stamp
         marks readout start (assumed; unverified), 0.0 if it marks mid-readout."""
@@ -94,6 +99,8 @@ if NERFSTUDIO_AVAILABLE:
             self._view: Optional[DatasetView] = None
             self._camera_arrays = None
             self._lidar_arrays = None
+            # T60 positions per sensor kind ("camera"/"lidar" -> (train, test)), set after the window.
+            self._block_split_positions: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None
 
         def _generate_dataparser_outputs(self, split="train"):
             """Open the dataset, register the lidar model, then run the base pipeline.
@@ -140,6 +147,50 @@ if NERFSTUDIO_AVAILABLE:
                 self.config.skip_elevation_channels = {
                     **(self.config.skip_elevation_channels or {}), lidar_name: ()}
             return super()._generate_dataparser_outputs(split)
+
+        def _filter_based_on_time(self, cameras, img_filenames, lidars, pc_filenames, trajectories):
+            """Base time window, then the T60 block split on the windowed float64 times.
+
+            The blocks are computed here, not in ``_get_train_eval_indices``: that runs after
+            ``_adjust_times`` has cast times to float32 and sees one sensor kind at a time, while
+            T60 needs every sensor's times together, unrounded (equal to poses.npz, which is what
+            scripts/09 rebuilds the split from).
+
+            Args:
+                cameras, img_filenames, lidars, pc_filenames, trajectories: As in ``ADDataParser``.
+
+            Returns:
+                The base class's filtered (cameras, img_filenames, lidars, pc_filenames, trajectories).
+            """
+            filtered = super()._filter_based_on_time(cameras, img_filenames, lidars, pc_filenames, trajectories)
+            self._block_split_positions = None
+            if self.config.test_block_count is not None:
+                windowed_cameras, windowed_lidars = filtered[0], filtered[2]
+                self._block_split_positions, _ = middle_block_train_eval_indices(
+                    {"camera": windowed_cameras.times.reshape(-1).double().numpy(),
+                     "lidar": windowed_lidars.times.reshape(-1).double().numpy()},
+                    self.config.train_split_fraction, self.config.test_block_count)
+            return filtered
+
+        def _get_train_eval_indices(self, sensors: Union["Cameras", "Lidars"]) -> Tuple["torch.Tensor", "torch.Tensor"]:
+            """neurad's LINSPACE split, or the T60 block positions when ``test_block_count`` is set.
+
+            Args:
+                sensors: The windowed cameras or lidars (same order as in ``_filter_based_on_time``).
+
+            Returns:
+                (train_indices, eval_indices) int64 tensors.
+
+            Raises:
+                ValueError: If ``max_eval_frames`` is set with blocks (it would subsample them randomly).
+            """
+            if self.config.test_block_count is None:
+                return super()._get_train_eval_indices(sensors)
+            if self.config.max_eval_frames is not None:
+                raise ValueError("max_eval_frames subsamples eval frames with an RNG; unset it for the block split")
+            sensor_kind = "camera" if isinstance(sensors, Cameras) else "lidar"
+            train_positions, test_positions = self._block_split_positions[sensor_kind]
+            return torch.from_numpy(train_positions), torch.from_numpy(test_positions)
 
         def _get_cameras(self) -> Tuple["Cameras", List[Path]]:
             """Build ``Cameras`` from the precomputed arrays (flip already applied).

@@ -1,4 +1,4 @@
-"""Exact train/test frame membership of one SplatAD run, rebuilt without torch (T58, T59).
+"""Exact train/test frame membership of one SplatAD run, rebuilt without torch (T58, T59, T60).
 
 SplatAD's frame selection has no randomness. ``ADDataParser._generate_dataparser_outputs``
 (neurad-studio ad_dataparser.py) does, in order:
@@ -7,6 +7,8 @@ SplatAD's frame selection has no randomness. ``ADDataParser._generate_dataparser
        the min and span of the camera and lidar times together (T58);
     2. ``_get_linspaced_indices``: per sensor, independently, train = ceil(n * fraction) evenly
        spaced frames of the n surviving ones; test ("eval") = the rest (T59).
+       ``VikingHillDataParser`` with ``test_block_count = K`` replaces step 2 by K contiguous test
+       time blocks shared by every sensor (T60); config.yml records K.
 The training seed (``--machine.seed``) only orders sampling during training; it never changes
 which frames are train or test. The only seeded step in split selection, ``max_eval_frames``
 (``torch.manual_seed(123)``), is None for ns-train and forced to None by ns-render and
@@ -141,6 +143,74 @@ def neurad_train_eval_indices(
     return train_positions.astype(np.int64), eval_positions.astype(np.int64)
 
 
+@transform("T60", "middle-block train/test split: K contiguous test time blocks shared by every sensor")
+def middle_block_train_eval_indices(
+    sensor_times: Dict[str, np.ndarray], train_fraction: float, test_block_count: int
+) -> Tuple[Dict[str, Tuple[np.ndarray, np.ndarray]], List[Tuple[float, float]]]:
+    """Train and test positions per sensor when the test set is K contiguous blocks of time.
+
+    Replaces neurad's per-sensor LINSPACE split (T59), whose test frames sit 0.1 s from a train
+    frame and are chosen independently per sensor. Here the blocks are the same time intervals
+    for every sensor, so a test camera image and the lidar sweep taken with it are both held out.
+
+    Geometry, over the windowed times of all sensors together (t_lo = min, D = max - min):
+        block length  L   = D * (1 - f) / K                      (K blocks hold the test fraction)
+        block centres c_k = t_lo + D * k / (K + 1),  k = 1..K    (evenly spaced, away from the ends)
+        block k            = [c_k - L/2, c_k + L/2)              (half-open: no frame in two blocks)
+    Train stretches: D / (K+1) - L/2 before the first and after the last block, D / (K+1) - L
+    between blocks (total D - K*L = D*f). Blocks are disjoint and separated by train frames iff
+    L < D / (K + 1), i.e. f > 1 / (K + 1). At a constant frame rate each sensor's test share is ~(1 - f).
+    f == 1.0 follows neurad's convention (train and test are both every frame; test is for viewing).
+    Cost O(N * K) for N frames in total.
+
+    Args:
+        sensor_times: sensor name -> float64 [N] times of that sensor's windowed frames.
+        train_fraction: f in (1 / (K + 1), 1].
+        test_block_count: K >= 1.
+
+    Returns:
+        (positions, blocks): sensor name -> (train_positions, test_positions), sorted int64 positions
+        into that sensor's array; and the K (start, end) block bounds in seconds ([] when f == 1.0
+        or there are no frames).
+
+    Raises:
+        ValueError: If K is not a positive int or f is outside (1 / (K + 1), 1].
+    """
+    # Step 1: validate (bool is an int subclass; refuse it like any non-integer).
+    if isinstance(test_block_count, bool) or not isinstance(test_block_count, int) or test_block_count < 1:
+        raise ValueError(f"test_block_count must be a positive int, got {test_block_count!r}")
+    minimum_fraction = 1.0 / (test_block_count + 1)
+    if not minimum_fraction < train_fraction <= ALL_FRAMES_TRAIN_FRACTION:
+        raise ValueError(f"train_fraction {train_fraction} must lie in ({minimum_fraction}, 1] for "
+                         f"{test_block_count} test blocks (blocks would touch or overlap)")
+    times_by_sensor = {name: np.asarray(times, dtype=np.float64) for name, times in sensor_times.items()}
+    all_times = np.concatenate(list(times_by_sensor.values())) if times_by_sensor else np.empty(0)
+    # Step 2: neurad's full-dataset case (every frame in both splits), and the no-frame case
+    # (every sensor empty, so "every frame" is the empty set): no blocks.
+    if train_fraction == ALL_FRAMES_TRAIN_FRACTION or all_times.size == 0:
+        positions = {}
+        for name, times in times_by_sensor.items():
+            all_positions = np.arange(len(times), dtype=np.int64)
+            positions[name] = (all_positions, all_positions.copy())
+        return positions, []
+    # Step 3: block bounds from the shared span (formulas in the docstring).
+    span_start = float(all_times.min())
+    span_duration = float(all_times.max()) - span_start
+    block_length = span_duration * (1.0 - train_fraction) / test_block_count
+    block_bounds = []
+    for block_number in range(1, test_block_count + 1):
+        block_centre = span_start + span_duration * block_number / (test_block_count + 1)
+        block_bounds.append((block_centre - block_length / 2.0, block_centre + block_length / 2.0))
+    # Step 4: a frame is test iff its time falls in any half-open block.
+    positions = {}
+    for name, times in times_by_sensor.items():
+        test_mask = np.zeros(len(times), dtype=bool)
+        for block_start, block_end in block_bounds:
+            test_mask |= (times >= block_start) & (times < block_end)
+        positions[name] = (np.flatnonzero(~test_mask).astype(np.int64), np.flatnonzero(test_mask).astype(np.int64))
+    return positions, block_bounds
+
+
 def resolve_run_train_fraction(manifest: dict, train_fraction_override: Optional[float]) -> Tuple[float, str]:
     """The fraction the dataparser actually used, and where it came from.
 
@@ -164,6 +234,7 @@ def build_run_split(
     end_fraction: float,
     train_fraction: float,
     max_eval_frames: Optional[int] = None,
+    test_block_count: Optional[int] = None,
 ) -> Tuple[List[SplitFrame], Optional[Tuple[float, float]]]:
     """Every camera/lidar frame of a run with its split, in the dataparser's order.
 
@@ -172,33 +243,80 @@ def build_run_split(
         start_fraction, end_fraction: The run's time window fractions.
         train_fraction: Resolved train fraction.
         max_eval_frames: Must be None (see ``neurad_train_eval_indices``).
+        test_block_count: None = neurad's per-sensor LINSPACE split (T59); K = K middle test
+            blocks shared by every sensor (T60, the dataparser's ``test_block_count``).
 
     Returns:
         (frames, bounds): frames sorted by (sensor order in the manifest, split, frame index); and
         the window bounds from ``time_window_masks``.
 
     Raises:
-        ValueError: If a sensor's frame files and times differ in count.
+        ValueError: If a sensor's frame files and times differ in count, or ``max_eval_frames``
+            is set.
+    """
+    frames, window_bounds, _ = build_run_split_with_blocks(
+        view, start_fraction, end_fraction, train_fraction, max_eval_frames, test_block_count)
+    return frames, window_bounds
+
+
+def build_run_split_with_blocks(
+    view: DatasetView,
+    start_fraction: float,
+    end_fraction: float,
+    train_fraction: float,
+    max_eval_frames: Optional[int] = None,
+    test_block_count: Optional[int] = None,
+) -> Tuple[List[SplitFrame], Optional[Tuple[float, float]], List[Tuple[float, float]]]:
+    """``build_run_split`` that also returns the T60 test blocks (for the run's split record).
+
+    Args:
+        view, start_fraction, end_fraction, train_fraction, max_eval_frames, test_block_count:
+            As in ``build_run_split``.
+
+    Returns:
+        (frames, window bounds, test blocks): test blocks are the (start, end) seconds of each
+        T60 block, [] for the LINSPACE split.
+
+    Raises:
+        ValueError: As in ``build_run_split``.
     """
     # Step 1: the SplatAD sensors, in manifest order (the dataparser's camera/lidar tuples).
     split_sensors = [sensor for sensor in view.manifest["sensors"] if sensor["kind"] in SPLIT_SENSOR_KINDS]
     sensor_times = {sensor["name"]: view.sensor_times[sensor["name"]] for sensor in split_sensors}
     # Step 2: time window over all of them together.
     window_masks, window_bounds = time_window_masks(sensor_times, start_fraction, end_fraction)
+    # Step 3: files pair positionally with times, as in build_sensor_arrays; keep the windowed ones.
+    kept_positions_by_sensor = {}
+    for sensor in split_sensors:
+        sensor_name = sensor["name"]
+        frame_count = len(view.sensor_frame_paths[sensor_name])
+        if frame_count != len(sensor_times[sensor_name]):
+            raise ValueError(f"{sensor_name}: {frame_count} frame files but {len(sensor_times[sensor_name])} times")
+        kept_positions_by_sensor[sensor_name] = np.flatnonzero(window_masks[sensor_name])
+    # Step 4: split positions, relative to each sensor's windowed frames.
+    test_blocks: List[Tuple[float, float]] = []
+    if test_block_count is None:
+        # T59: each sensor on its own (neurad's LINSPACE).
+        split_positions_by_sensor = {
+            sensor_name: neurad_train_eval_indices(len(kept_positions), train_fraction, max_eval_frames)
+            for sensor_name, kept_positions in kept_positions_by_sensor.items()
+        }
+    else:
+        # T60: one set of time blocks over all sensors' windowed times together.
+        if max_eval_frames is not None:
+            raise ValueError("max_eval_frames is set: the block split never subsamples its test frames")
+        split_positions_by_sensor, test_blocks = middle_block_train_eval_indices(
+            {sensor_name: sensor_times[sensor_name][kept_positions]
+             for sensor_name, kept_positions in kept_positions_by_sensor.items()},
+            train_fraction, test_block_count)
 
     frames: List[SplitFrame] = []
     for sensor in split_sensors:
         sensor_name, sensor_kind = sensor["name"], sensor["kind"]
         frame_paths = view.sensor_frame_paths[sensor_name]
         times = sensor_times[sensor_name]
-        # Step 3: files pair positionally with times, as in build_sensor_arrays.
-        if len(frame_paths) != len(times):
-            raise ValueError(f"{sensor_name}: {len(frame_paths)} frame files but {len(times)} times")
-        kept_positions = np.flatnonzero(window_masks[sensor_name])
-        # Step 4: split positions are relative to the windowed frames of this sensor only.
-        train_positions, eval_positions = neurad_train_eval_indices(
-            len(kept_positions), train_fraction, max_eval_frames
-        )
+        kept_positions = kept_positions_by_sensor[sensor_name]
+        train_positions, eval_positions = split_positions_by_sensor[sensor_name]
         for split_name, split_positions in ((TRAIN_SPLIT_NAME, train_positions), (TEST_SPLIT_NAME, eval_positions)):
             for windowed_position in split_positions:
                 recording_position = int(kept_positions[windowed_position])
@@ -215,7 +333,7 @@ def build_run_split(
                         file=frame_path.relative_to(view.root).as_posix(),
                     )
                 )
-    return frames, window_bounds
+    return frames, window_bounds, test_blocks
 
 
 def split_digest(frames: List[SplitFrame]) -> str:

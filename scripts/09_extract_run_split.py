@@ -1,6 +1,7 @@
 """Write the exact train/test frames of one successful SplatAD run into its run folder (CPU, no torch).
 
-SplatAD's split is deterministic (time window + per-sensor LINSPACE, no RNG; see
+SplatAD's split is deterministic (time window, then per-sensor LINSPACE or, with the dataparser's
+``test_block_count``, middle test blocks shared by every sensor; no RNG; see
 ``viking_splatad.dataset.run_split``), so it is rebuilt from the run's recorded settings
 (``job_info.txt``, ``config.yml``) and its dataset (``manifest.json``, ``poses.npz``, frame files),
 then checked against the file names of the run's renders.
@@ -11,11 +12,13 @@ Only successful runs are documented. Nothing is written (and a stale record is r
     * the train fraction agrees between job_info.txt (TRAIN_SPLIT_FRACTION), config.yml and the
       manifest (runs submitted before TRAIN_SPLIT_FRACTION existed: manifest only, because their
       config.yml holds the class default 0.5);
+    * the test block count agrees between job_info.txt (TEST_BLOCK_COUNT) and config.yml
+      (``test_block_count``; absent from both = the LINSPACE split of runs before T60);
     * the rendered file names equal the rebuilt split.
 
 Outputs, in ``<run dir>``:
     split.json        provenance (run, git SHA, seed, window, train fraction and its source,
-                      dataset hashes), per-sensor counts, every frame with its split, the
+                      test block count and block bounds, dataset hashes), per-sensor counts, every frame with its split, the
                       membership digest and the render check. Deterministic: re-running on the
                       same inputs writes the same bytes.
     split_frames.csv  one row per frame: sensor, kind, split, frame_index, timestamp_ns, time_s, file.
@@ -43,7 +46,7 @@ from viking_splatad.dataset.run_split import (
     SPLIT_SENSOR_KINDS,
     TEST_SPLIT_NAME,
     TRAIN_SPLIT_NAME,
-    build_run_split,
+    build_run_split_with_blocks,
     compare_with_rendered_stems,
     file_sha256,
     resolve_run_train_fraction,
@@ -56,7 +59,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Local dataset location used by the converter (README "Outputs": data/intermediate/<session>/).
 DEFAULT_DATASET_PARENT = PROJECT_ROOT / "data" / "intermediate"
 # Version of the split.json layout; bump when keys change (documented in runs/RUN_FOLDER_GLOSSARY.md).
-SPLIT_RECORD_SCHEMA = "viking-splatad/run-split/1"
+SPLIT_RECORD_SCHEMA = "viking-splatad/run-split/2"
 # Output file names inside the run folder.
 SPLIT_JSON_NAME = "split.json"
 SPLIT_CSV_NAME = "split_frames.csv"
@@ -75,7 +78,8 @@ YAML_NULL_LITERALS = ("null", "~", "None")
 # Why the seed is recorded even though it does not choose frames (copied into split.json).
 SEED_NOTE = (
     "TRAIN_SEED (--machine.seed) seeds training-time sampling only; train/test membership is "
-    "deterministic (time window + per-sensor LINSPACE, no RNG) and does not depend on it."
+    "deterministic (time window, then per-sensor LINSPACE or shared test blocks; no RNG) and does "
+    "not depend on it."
 )
 
 
@@ -188,6 +192,32 @@ def resolve_checked_train_fraction(job_info: Dict[str, str], config_path: Path, 
     return train_fraction, f"{resolution_source} (= job_info.txt TRAIN_SPLIT_FRACTION = config.yml)"
 
 
+def resolve_checked_test_block_count(job_info: Dict[str, str], config_path: Path) -> Optional[int]:
+    """The run's test block count (T60), after checking job_info.txt and config.yml agree.
+
+    config.yml holds what the dataparser used (``test_block_count``, saved with the CLI value).
+    job_info.txt records TEST_BLOCK_COUNT for runs submitted since T60; older runs have neither
+    and used the LINSPACE split.
+
+    Args:
+        job_info: Parsed job_info.txt.
+        config_path: The run's config.yml.
+
+    Returns:
+        K, or None for the LINSPACE split.
+
+    Raises:
+        RunNotDocumented: (inconsistent) if job_info.txt records a different value than config.yml.
+    """
+    config_text = read_config_scalar(config_path, "test_block_count")
+    config_block_count = None if config_text is None else int(config_text)
+    if "TEST_BLOCK_COUNT" in job_info and int(job_info["TEST_BLOCK_COUNT"]) != config_block_count:
+        raise RunNotDocumented(
+            f"test block counts disagree: job_info.txt TEST_BLOCK_COUNT {job_info['TEST_BLOCK_COUNT']}, "
+            f"config.yml test_block_count {config_block_count}", EXIT_INCONSISTENT)
+    return config_block_count
+
+
 def remove_stale_record(run_dir: Path) -> None:
     """Delete split.json / split_frames.csv left from an earlier extraction, so no run keeps a wrong record.
 
@@ -238,14 +268,16 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
     dataset_dir = dataset_dir_argument or (DEFAULT_DATASET_PARENT / session)
     view = open_dataset_view(dataset_dir)
     train_fraction, train_fraction_source = resolve_checked_train_fraction(job_info, config_path, view.manifest)
+    test_block_count = resolve_checked_test_block_count(job_info, config_path)
     max_eval_text = read_config_scalar(config_path, "max_eval_frames")
     start_fraction = float(job_info["DATASET_START_FRACTION"])
     end_fraction = float(job_info["DATASET_END_FRACTION"])
 
     # Step 4: rebuild the split; the renders must name exactly its frames.
-    frames, window_bounds = build_run_split(
+    frames, window_bounds, test_blocks = build_run_split_with_blocks(
         view, start_fraction, end_fraction, train_fraction,
         max_eval_frames=None if max_eval_text is None else int(max_eval_text),
+        test_block_count=test_block_count,
     )
     render_check = compare_with_rendered_stems(frames, rendered_stems)
     mismatched = {check_name: check for check_name, check in render_check.items() if not check["match"]}
@@ -279,7 +311,13 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
         },
         "seed_note": SEED_NOTE,
         "selection": {
-            "algorithm": "neurad-studio ADDataParser: time window (T58), then per-sensor LINSPACE (T59)",
+            "algorithm": (
+                "neurad-studio ADDataParser: time window (T58), then per-sensor LINSPACE (T59)"
+                if test_block_count is None else
+                "time window (T58), then middle test blocks shared by every sensor (T60, VikingHillDataParser)"
+            ),
+            "test_block_count": test_block_count,
+            "test_blocks_s": [list(block) for block in test_blocks],
             "dataset_start_fraction": start_fraction,
             "dataset_end_fraction": end_fraction,
             "window_bounds_s": None if window_bounds is None else list(window_bounds),
@@ -337,6 +375,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               f"train {counts[TRAIN_SPLIT_NAME]}, test {counts[TEST_SPLIT_NAME]}")
     selection = split_record["selection"]
     print(f"train fraction {selection['train_fraction']} ({selection['train_fraction_source']})")
+    if selection["test_block_count"] is not None:
+        block_text = ", ".join(f"[{block_start:.3f}, {block_end:.3f})" for block_start, block_end in selection["test_blocks_s"])
+        print(f"{selection['test_block_count']} test blocks (s): {block_text}")
     print(f"membership sha256 {split_record['membership_sha256']}; renders match for "
           f"{', '.join(split_record['render_check'])}")
     print(f"wrote {run_dir / SPLIT_JSON_NAME} and {run_dir / SPLIT_CSV_NAME}")
