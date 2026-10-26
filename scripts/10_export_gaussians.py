@@ -7,8 +7,9 @@ the visibility limit (docs/research/evaluation_caveats.md §5).
 Steps:
     1. Pick the latest ``step-*.ckpt`` in ``<train dir>/nerfstudio_models`` (the one ``08`` renders).
     2. ``torch.load`` it on the CPU and convert the pipeline state dict to numpy.
-    3. Read w2m and the scale from ``<train dir>/dataparser_transforms.json`` (written by
-       ns-train, trainer.py:288-292), so no dataparser or dataset is needed.
+    3. Read w2m and the scale from ``<train dir>/dataparser_transforms.json``, so no dataparser
+       or dataset is needed. ns-train does not write it for SplatAD (trainer.py:288-292 skips
+       FullImagesLidarDataManager); ``08_render_lidar_pointcloud.py`` does, so 08 runs first.
     4. Decode and move the Gaussians to the map frame (T56) and write the npz
        (keys: viking_splatad.eval.gaussian_occupancy.GAUSSIANS_NPZ_KEYS, see
        runs/RUN_FOLDER_GLOSSARY.md).

@@ -14,7 +14,7 @@ runs/<run_id>/
 ├── compare/                           only if you ran scripts/slurm/compare_renders.py on the Mac
 ├── train/<session>/splatad/<run_id>/
 │   ├── config.yml                     full nerfstudio config (loads the model; holds the time window)
-│   ├── dataparser_transforms.json     w2m transform (dataparser frame), scale and time offset
+│   ├── dataparser_transforms.json     w2m transform (dataparser frame), scale and time offset; written by 08 (ns-train skips it for SplatAD)
 │   ├── events.out.tfevents.*          tensorboard training curves
 │   └── nerfstudio_models/step-*.ckpt  latest checkpoint only
 └── renders/
@@ -114,7 +114,7 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 | `sweep_index` | int64 scalar | row of this scan in `poses.npz` `<sensor>__times` / `__poses_world_sensor` |
 
 ## Gaussians (`renders/gaussians.npz`)
-- Every Gaussian of the model at the latest checkpoint (the one the renders use), made by `scripts/10_export_gaussians.py` (T56) from the checkpoint and `dataparser_transforms.json`. There is no rendering, so a Gaussian counts whether or not a sensor could see it (PLAN §5 P2, `docs/research/evaluation_caveats.md` §5).
+- Every Gaussian of the model at the latest checkpoint (the one the renders use), made by `scripts/10_export_gaussians.py` (T56) from the checkpoint and `dataparser_transforms.json` (written by `08_render_lidar_pointcloud.py`; ns-train skips it for SplatAD). There is no rendering, so a Gaussian counts whether or not a sensor could see it (PLAN §5 P2, `docs/research/evaluation_caveats.md` §5).
 - All Gaussians are static (no actors); the export fails if any belong to an actor.
 - Gaussian k's 3-D alpha at a map-frame point x is `opacities[k] · exp(−½ (x − μ)ᵀ Σ⁻¹ (x − μ))`, with μ = `means[k]`, Σ = `covariances[k]`.
 - To export a fetched run on the Mac, run the script inside the Docker image; it needs torch, not a GPU.

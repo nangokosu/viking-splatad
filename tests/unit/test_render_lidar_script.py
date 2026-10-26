@@ -133,3 +133,69 @@ def test_input_sweep_keeps_channel_column_as_last(tmp_path):
     loaded_sweep = load_lidar_sweep(sweep_path, min_lidar_radius=0.0)
     # The whole row, channel included, is kept untouched.
     np.testing.assert_array_equal(loaded_sweep, sweep)
+
+
+class RecordingDataparserOutputs:
+    """Stand-in for nerfstudio's DataparserOutputs: writes the same JSON keys as
+    ``save_dataparser_transform`` (base_dataparser.py) from a known w2m and scale."""
+
+    def __init__(self, dataparser_transform, dataparser_scale, time_offset):
+        """Store the values the writer serialises.
+
+        Args:
+            dataparser_transform: (3, 4) w2m.
+            dataparser_scale: Dataparser scale.
+            time_offset: Dataparser time offset (s).
+        """
+        self.dataparser_transform = dataparser_transform
+        self.dataparser_scale = dataparser_scale
+        self.time_offset = time_offset
+
+    def save_dataparser_transform(self, path):
+        """Write ``{"transform", "scale", "time-offset"}`` to ``path``, as nerfstudio does.
+
+        Args:
+            path: Destination JSON path.
+        """
+        import json  # pylint: disable=import-outside-toplevel
+
+        with open(path, "w", encoding="utf-8") as transforms_file:
+            json.dump({"transform": self.dataparser_transform.tolist(), "scale": float(self.dataparser_scale),
+                       "time-offset": self.time_offset}, transforms_file)
+
+
+def test_dataparser_transforms_land_in_the_train_dir_script_10_reads(tmp_path):
+    """08 writes dataparser_transforms.json next to config.yml, under the name 10 opens (job 222867 failed
+    because ns-train never writes it for SplatAD), and the known w2m and scale survive the round trip."""
+    import json  # pylint: disable=import-outside-toplevel
+
+    render_module = load_render_lidar_module()
+    export_spec = importlib.util.spec_from_file_location(
+        "export_gaussians", PROJECT_ROOT / "scripts" / "10_export_gaussians.py")
+    export_module = importlib.util.module_from_spec(export_spec)
+    export_spec.loader.exec_module(export_module)
+    # The two scripts must agree on the file name.
+    assert render_module.DATAPARSER_TRANSFORMS_FILE_NAME == export_module.DATAPARSER_TRANSFORMS_FILE_NAME
+    # A 90° yaw w2m with a shift, built from first principles: R = [[0,-1,0],[1,0,0],[0,0,1]], t = (2,-3,0.5).
+    yaw_radians = np.pi / 2
+    known_transform = np.array([[np.cos(yaw_radians), -np.sin(yaw_radians), 0.0, 2.0],
+                                [np.sin(yaw_radians), np.cos(yaw_radians), 0.0, -3.0],
+                                [0.0, 0.0, 1.0, 0.5]])
+    train_dir = tmp_path / "train" / "session" / "splatad" / "run"
+    train_dir.mkdir(parents=True)
+    written_path = render_module.save_dataparser_transforms(
+        RecordingDataparserOutputs(known_transform, 0.25, 12.5), train_dir)
+    # 10 is called with --train-dir "$(dirname "$TRAIN_CONFIG")", i.e. config.yml's parent.
+    assert written_path == train_dir / export_module.DATAPARSER_TRANSFORMS_FILE_NAME
+    with open(written_path, encoding="utf-8") as transforms_file:
+        saved_transforms = json.load(transforms_file)
+    np.testing.assert_allclose(np.asarray(saved_transforms["transform"]), known_transform)
+    assert saved_transforms["scale"] == 0.25
+
+
+def test_sbatch_passes_config_parent_as_the_export_train_dir():
+    """08 gets config.yml and writes into its parent; 10 must be pointed at that same parent."""
+    sbatch_text = (PROJECT_ROOT / "scripts" / "slurm" / "splatad_run.sbatch").read_text()
+    lidar_call_text = sbatch_text[sbatch_text.index("08_render_lidar_pointcloud.py"):]
+    assert '--load-config "$TRAIN_CONFIG"' in lidar_call_text
+    assert '--train-dir "$(dirname "$TRAIN_CONFIG")"' in sbatch_text

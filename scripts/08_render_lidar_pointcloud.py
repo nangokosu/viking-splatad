@@ -19,6 +19,8 @@ Steps:
        per-scan lidar metrics (``get_image_metrics_and_images``).
     4. Name each scan after the input sweep it re-renders (time match, rendered_lidar.py) and
        write ``<output>/<split>/lidar/<idx>_<ts_ns>.npz`` + ``<output>/<split>/lidar_metrics.json``.
+    Before step 2 it also writes ``dataparser_transforms.json`` next to config.yml (ns-train skips
+    it for SplatAD; scripts/10_export_gaussians.py reads it).
 
 Per-scan npz keys (float32 unless noted; "lidar frame" = the sweep's own sensor frame, the frame
 of the input ``.npy`` sweeps):
@@ -60,6 +62,9 @@ SUPPORTED_SPLITS = ("train", "test")
 HALF_PERIOD_DIVISOR = 2.0
 # poses.npz key separator, as in dataset/writer.py (POSE_KEY_SEPARATOR); key = <sensor>__times.
 POSES_TIMES_SUFFIX = "__times"
+# nerfstudio's file name for the dataparser transform (trainer.py:291). scripts/10_export_gaussians.py
+# reads it from the train dir; a test keeps the two names equal.
+DATAPARSER_TRANSFORMS_FILE_NAME = "dataparser_transforms.json"
 # Keys of every per-scan npz. runs/RUN_FOLDER_GLOSSARY.md documents each one (a test
 # keeps the two in sync), and render_split refuses to write a file with any other key set.
 LIDAR_NPZ_KEYS = (
@@ -276,6 +281,26 @@ def render_split(pipeline: Any, split_name: str, output_path: Path, sweep_stems:
     return len(per_scan_metrics)
 
 
+def save_dataparser_transforms(dataparser_outputs: Any, train_dir: Path) -> Path:
+    """Write ``<train dir>/dataparser_transforms.json``, which ns-train never writes for SplatAD.
+
+    trainer.py:288-292 saves it only for VanillaDataManager/ParallelDataManager; SplatAD uses
+    FullImagesLidarDataManager, so the file is missing (job 222867). It is written here with
+    nerfstudio's own writer (keys: transform, scale, time-offset), from the same
+    ``train_dataparser_outputs`` the renders use, so scripts/10_export_gaussians.py can read it.
+
+    Args:
+        dataparser_outputs: The loaded pipeline's ``datamanager.train_dataparser_outputs``.
+        train_dir: ns-train output dir (the parent of config.yml).
+
+    Returns:
+        Path of the written file.
+    """
+    transforms_path = Path(train_dir) / DATAPARSER_TRANSFORMS_FILE_NAME
+    dataparser_outputs.save_dataparser_transform(transforms_path)
+    return transforms_path
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     """Command-line interface.
 
@@ -330,7 +355,11 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     )
     print(f"loaded {checkpoint_path} (step {step})")
     pipeline.eval()
-    # Step 3: render every split.
+    # Step 3: the w2m + scale file 10_export_gaussians.py needs, before any render can fail.
+    transforms_path = save_dataparser_transforms(pipeline.datamanager.train_dataparser_outputs,
+                                                 arguments.load_config.parent)
+    print(f"wrote {transforms_path}")
+    # Step 4: render every split.
     for split_name in split_names:
         render_split(pipeline, split_name, arguments.output_path, sweep_stems, frame_times_seconds,
                      tolerance_seconds)
