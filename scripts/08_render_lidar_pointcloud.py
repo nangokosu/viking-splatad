@@ -21,17 +21,25 @@ Steps:
        write ``<output>/<split>/lidar/<idx>_<ts_ns>.npz`` + ``<output>/<split>/lidar_metrics.json``.
     Before step 2 it also writes ``dataparser_transforms.json`` next to config.yml (ns-train skips
     it for SplatAD; scripts/10_export_gaussians.py reads it).
+    The config keeps the trained ``add_missing_points``: ``streamline_ad_config`` turns it off, which
+    would drop every no-return ray from the render (``prepare_render_config``).
 
 Per-scan npz keys (float32 unless noted; "lidar frame" = the sweep's own sensor frame, the frame
 of the input ``.npy`` sweeps):
     pred_points          [M, 5] rendered points (x, y, z, intensity, t), lidar frame; rays with
-                         ray-drop probability <= 0.5 and a valid GT ray only (SplatAD's rule).
+                         ray-drop probability <= 0.5 and a valid GT ray only (SplatAD's rule),
+                         so with add_missing_points it may include rays the real lidar got no
+                         return on (pred_points_did_return False).
+    pred_points_did_return [M] bool, per pred_points row: its ray returned in the input scan.
     pred_points_median   [M, 5] same rays, median depth instead of expected depth.
     gt_points            [N, 5|6] input points that returned (x, y, z, intensity, t[, channel]),
                          lidar frame: the input sweep's own rows, so channel (laser ring id) is
                          present iff the sweep has it (it does for the current sessions).
     raster_pts           [C, H, W, 5] GT ray raster (azimuth deg, elevation deg, depth m, t,
-                         intensity) as built before rendering; depth 0 = no GT ray in the cell.
+                         intensity) as built before rendering; depth 0 = no GT ray in the cell;
+                         no-return rays (add_missing_points) hold the 2000 m placeholder depth.
+    raster_did_return    [C, H, W] bool: the cell has a ray and it returned (0 < depth <=
+                         valid_lidar_distance_threshold). No-return rays: depth > 0 and False.
     pred_depth, pred_median_depth, pred_intensity, pred_ray_drop_prob, pred_accumulation
                          [C, H, W, 1] rendered values on the same raster; accumulation =
                          Σ w_i = 1 − ∏(1 − α_i) along the ray (ungated extraction, PLAN §5 P1).
@@ -51,7 +59,7 @@ import json
 import sys
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
@@ -68,7 +76,7 @@ DATAPARSER_TRANSFORMS_FILE_NAME = "dataparser_transforms.json"
 # Keys of every per-scan npz. runs/RUN_FOLDER_GLOSSARY.md documents each one (a test
 # keeps the two in sync), and render_split refuses to write a file with any other key set.
 LIDAR_NPZ_KEYS = (
-    "pred_points", "pred_points_median", "gt_points", "raster_pts",
+    "pred_points", "pred_points_median", "pred_points_did_return", "gt_points", "raster_pts", "raster_did_return",
     "pred_depth", "pred_median_depth", "pred_intensity", "pred_ray_drop_prob", "pred_accumulation",
     "lidar_to_map", "lidar_to_world", "dataparser_transform", "absolute_time_s", "sweep_index",
 )
@@ -166,6 +174,30 @@ def iterate_split_scans(datamanager: Any, split_name: str) -> Iterator[Tuple[Any
         yield scan_lidar, batch
 
 
+def ray_return_masks(raster_depth: Any, valid_lidar_distance_threshold: float,
+                     kept_ray_mask: Any) -> Tuple[Any, Any]:
+    """Which raster rays, and which rendered points, returned in the input scan.
+
+    A raster cell holds a ray iff its depth > 0; the ray returned iff its depth is at most the
+    lidar's ``valid_lidar_distance_threshold`` (the same test as
+    full_images_lidar_datamanager.py:254). No-return rays carry the placeholder distance, which
+    lies above the threshold. Works on numpy arrays and torch tensors alike.
+
+    Args:
+        raster_depth: [C, H, W] raster depths (raster_pts[..., 2]).
+        valid_lidar_distance_threshold: The scan's return / no-return depth limit (m).
+        kept_ray_mask: [C*H*W] bool, the rays turned into pred_points (flattened raster order).
+
+    Returns:
+        (raster_did_return [C, H, W] bool, pred_points_did_return [M] bool, M = kept_ray_mask.sum()).
+    """
+    # Step 1: a ray exists (depth > 0) and it returned (depth <= threshold).
+    raster_did_return = (raster_depth > 0) & (raster_depth <= valid_lidar_distance_threshold)
+    # Step 2: pred_points rows are the kept rays in flattened raster order (filter_lidar_pred_and_gt).
+    pred_points_did_return = raster_did_return.reshape(-1)[kept_ray_mask]
+    return raster_did_return, pred_points_did_return
+
+
 def render_scan(model: Any, scan_lidar: Any, batch: Dict[str, Any]) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
     """Render one scan and collect its arrays and SplatAD's per-scan lidar metrics.
 
@@ -197,10 +229,13 @@ def render_scan(model: Any, scan_lidar: Any, batch: Dict[str, Any]) -> Tuple[Dic
         )
         # Whole input rows (INPUT_SWEEP_COLUMNS), so channel is kept when the sweep has it.
         gt_points = batch["lidar"][batch["lidar_pts_did_return"]]
+        # Return masks, so evaluation can include or leave out the no-return rays.
+        raster_did_return, pred_points_did_return = ray_return_masks(
+            raster_before_render[..., 2], float(scan_lidar.valid_lidar_distance_threshold), kept_ray_mask.bool()
+        )
         # Step 4: built-in metrics (depth L2, intensity RMSE, ray-drop accuracy, Chamfer).
-        # Ray-drop accuracy is trivially ~1 unless the run used add_missing_points with the
-        # no-return sidecar (Phase B): only then do the rays include no-returns. See
-        # RUN_FOLDER_GLOSSARY.md.
+        # Ray-drop accuracy is informative only when the raster holds no-return rays, i.e. the run
+        # trained with add_missing_points (prepare_render_config keeps it). See RUN_FOLDER_GLOSSARY.md.
         metrics, _ = model.get_image_metrics_and_images(outputs, batch)
 
     def to_float32(tensor: Any) -> np.ndarray:
@@ -210,8 +245,10 @@ def render_scan(model: Any, scan_lidar: Any, batch: Dict[str, Any]) -> Tuple[Dic
     arrays = {
         "pred_points": to_float32(pred_points),
         "pred_points_median": to_float32(pred_points_median),
+        "pred_points_did_return": pred_points_did_return.detach().cpu().numpy().astype(bool),
         "gt_points": to_float32(gt_points),
         "raster_pts": to_float32(raster_before_render),
+        "raster_did_return": raster_did_return.detach().cpu().numpy().astype(bool),
         "pred_depth": to_float32(outputs["depth"]),
         "pred_median_depth": to_float32(outputs["median_depth"]),
         "pred_intensity": to_float32(outputs["intensity"]),
@@ -301,6 +338,34 @@ def save_dataparser_transforms(dataparser_outputs: Any, train_dir: Path) -> Path
     return transforms_path
 
 
+def prepare_render_config(config: Any, streamline_config: Callable[[Any], Any]) -> Any:
+    """Apply ``ns-render dataset``'s config edits (render.py:916-932) that apply here.
+
+    ``streamline_ad_config`` also sets ``add_missing_points = False``. That drops every no-return
+    ray from the raster, so the render could not score ray drop or no-return directions. The
+    trained value is restored: rendering uses the same rays training saw.
+
+    Args:
+        config: The loaded run config (config.yml).
+        streamline_config: nerfstudio's ``streamline_ad_config`` (passed in so tests need no nerfstudio).
+
+    Returns:
+        The edited config.
+    """
+    dataparser_config = config.pipeline.datamanager.dataparser
+    # Step 1: remember the trained flag (absent on dataparsers without no-return support).
+    trained_add_missing_points = getattr(dataparser_config, "add_missing_points", None)
+    # Step 2: nerfstudio's edits (single-process loading, eval chunk size, missing points off).
+    config = streamline_config(config)
+    dataparser_config = config.pipeline.datamanager.dataparser
+    # Step 3: restore it, so the raster keeps the no-return rays the model trained on.
+    if trained_add_missing_points is not None:
+        dataparser_config.add_missing_points = trained_add_missing_points
+    # Step 4: no eval-frame cap: every held-out scan is rendered (a cap also reseeds torch, 123).
+    dataparser_config.max_eval_frames = None
+    return config
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     """Command-line interface.
 
@@ -343,15 +408,9 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     from nerfstudio.scripts.render import streamline_ad_config  # pylint: disable=import-outside-toplevel
     from nerfstudio.utils.eval_utils import eval_setup  # pylint: disable=import-outside-toplevel
 
-    def prepare_render_config(config: Any) -> Any:
-        """Same config edits as ``ns-render dataset`` (render.py:916-932) that apply here."""
-        config = streamline_ad_config(config)
-        # No eval-frame cap: every held-out scan is rendered (a cap also reseeds torch, 123).
-        config.pipeline.datamanager.dataparser.max_eval_frames = None
-        return config
-
     _, pipeline, checkpoint_path, step = eval_setup(
-        arguments.load_config, test_mode="test", update_config_callback=prepare_render_config
+        arguments.load_config, test_mode="test",
+        update_config_callback=lambda config: prepare_render_config(config, streamline_ad_config),
     )
     print(f"loaded {checkpoint_path} (step {step})")
     pipeline.eval()

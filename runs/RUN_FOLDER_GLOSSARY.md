@@ -97,21 +97,23 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 
   | | keys |
   |---|---|
-  | prediction (SplatAD's render) | `pred_points`, `pred_points_median`; per ray: `pred_depth`, `pred_median_depth`, `pred_intensity`, `pred_ray_drop_prob`, `pred_accumulation` |
-  | ground truth (the real scan) | `gt_points`, a copy of the input `.npy` sweep's rows; per ray: `raster_pts` |
+  | prediction (SplatAD's render) | `pred_points`, `pred_points_median` (+ `pred_points_did_return`); per ray: `pred_depth`, `pred_median_depth`, `pred_intensity`, `pred_ray_drop_prob`, `pred_accumulation` |
+  | ground truth (the real scan) | `gt_points`, a copy of the input `.npy` sweep's rows; per ray: `raster_pts`, `raster_did_return` |
   | pose and identity | `lidar_to_map`, `lidar_to_world`, `dataparser_transform`, `absolute_time_s`, `sweep_index` |
 
   In `test/` the model never trained on the ground truth. In `train/` it did.
-- SplatAD renders along the **rays of the real scan** (each real point's azimuth and elevation). So a rendered point exists only where the real lidar got a return; there are no new points in directions where the input had none.
-- **No-returns are not in the rendered rays (open issue, job 222869).** Run `may_chunks0_1_smoke-smoke-20261026-210818-f4f6972` trained with `add_missing_points: true`, and its sidecar holds ~15k no-returns per sweep (`lidar_no_return/`). Yet its rasters still hold exactly one ray per real return (train: 2,152,148 rays = 2,152,148 `gt_points`) and no 2000 m rays. Whether training saw them, and why 08's rasters drop them, is not yet known.
+- SplatAD renders along the **rays of the real scan** (each real point's azimuth and elevation), plus, when the run trained with `add_missing_points: true`, the rays the real lidar fired but got **no return** on (`lidar_no_return/`, stored at the 2000 m placeholder depth). There are no rays in directions the lidar never fired.
+- **Including or leaving out no-returns in evaluation:** use the masks. Returned rays are `raster_did_return`; no-return rays are `raster_pts[..., 2] > 0` and not `raster_did_return`. `pred_points[pred_points_did_return]` keeps only the points on rays where the real lidar got a return, which is what runs rendered before this change contained. The rest are points the model predicts on no-return rays (its ray-drop probability there was ≤ 0.5).
 - Load a scan with `np.load(path)`.
 
 | key | dtype, shape | meaning |
 |---|---|---|
 | `pred_points` | float32 [M, 5] | **prediction**: rendered point cloud: x, y, z (lidar frame, m), intensity (0–1), t (s within the sweep). Keeps rays with ray-drop probability ≤ 0.5 and a valid real ray. xyz = expected depth × ray direction + velocity × t (rolling shutter). |
 | `pred_points_median` | float32 [M, 5] | same rays, using the **median** depth along the ray (sharper surfaces) instead of the expected depth |
+| `pred_points_did_return` | bool [M] | per row of `pred_points` / `pred_points_median`: True if its ray returned in the real scan, False if it is a no-return ray (only with `add_missing_points: true`) |
 | `gt_points` | float32 [N, 5 or 6] | **ground truth**: the real points that returned (x, y, z, intensity, t, channel), lidar frame, after the ego-vehicle filter. These are the input sweep's own rows (in job 222869 they are identical to the input `.npy`): channel (laser ring id, 0 to beams−1) is there only if the sweep stores it, which the current sessions do, so N × 6. The rows are in input order, not row-aligned with `pred_points` (raster order) even when M = N, so pair them by nearest neighbour or through the raster, never by row index. |
-| `raster_pts` | float32 [C, H, W, 5] | the real scan on SplatAD's ray grid: azimuth (deg), elevation (deg), depth (m), t (s), intensity. H = beams, W = azimuth bins, C > 1 only when a cell holds several points. depth 0 = no ray in that cell. Rays with depth above the return threshold are non-returns. |
+| `raster_pts` | float32 [C, H, W, 5] | the real scan on SplatAD's ray grid: azimuth (deg), elevation (deg), depth (m), t (s), intensity. H = beams, W = azimuth bins, C > 1 only when a cell holds several points. depth 0 = no ray in that cell. No-return rays (only with `add_missing_points: true`) hold the 2000 m placeholder depth, above the return threshold (1000 m). |
+| `raster_did_return` | bool [C, H, W] | True where the cell holds a ray that returned: 0 < depth ≤ the lidar's `valid_lidar_distance_threshold` (1000 m). No-return rays: depth > 0 and False. Empty cells: depth 0 and False. |
 | `pred_depth` | float32 [C, H, W, 1] | rendered expected depth (m) per ray of `raster_pts` |
 | `pred_median_depth` | float32 [C, H, W, 1] | rendered median depth (m) per ray |
 | `pred_intensity` | float32 [C, H, W, 1] | rendered intensity per ray (0–1) |
@@ -153,11 +155,12 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 | `depth_mean_rel_l2` | mean of ((pred − real) / real)², expected depth | unitless, lower |
 | `median_depth_median_l2`, `median_depth_mean_rel_l2` | same two, using the rendered median depth | as above |
 | `intensity_rmse` | √mean (pred intensity − real intensity)² over valid returned rays | intensity units (0–1), lower |
-| `ray_drop_accuracy` | fraction of valid rays where (ray-drop prob > 0.5) equals (the real ray did not return). **Not yet informative, even with `add_missing_points: true`.** Job 222869 had it on, but its rendered rays hold no no-returns (see "Lidar renders"). Its score therefore equals `len(pred_points)` / `len(gt_points)` (train 0.969, test 0.947): the share of real returns the model predicts will return. In principle it needs `add_missing_points: true`, which in turn needs a dataset extracted after 2026-10-26: the converter keeps no-returns out of the returns files and writes them to `lidar_no_return/` (T51–T54), and the dataparser adds them as 2000 m rays (T55). Without that, every ray is a return. The score is then 1 whenever the model predicts no drop, and the ray-drop loss only ever sees "returned" labels, so ignore it (all runs up to job 222633). | 0–1, higher |
+| `ray_drop_accuracy` | fraction of valid rays where (ray-drop prob > 0.5) equals (the real ray did not return). Informative only for runs trained **and rendered** with `add_missing_points: true`. Job 222869 trained with it, but 08 then rendered without the no-return rays (nerfstudio's `streamline_ad_config` turned the flag off; fixed after that run). Its score therefore equals `len(pred_points)` / `len(gt_points)` (train 0.969, test 0.947): the share of real returns the model predicts will return. `add_missing_points: true` needs a dataset extracted after 2026-10-26: the converter keeps no-returns out of the returns files and writes them to `lidar_no_return/` (T51–T54), and the dataparser adds them as 2000 m rays (T55). Without that, every ray is a return. The score is then 1 whenever the model predicts no drop, and the ray-drop loss only ever sees "returned" labels, so ignore it (all runs up to job 222633). | 0–1, higher |
 | `chamfer_distance` | (Σ over `pred_points` of the squared distance to the nearest real point + Σ over real points of the squared distance to the nearest `pred_points` point) / N_real. Note that SplatAD divides **both** sums by the real point count. Missing when either cloud is empty. | m², lower |
 | `median_chamfer_distance` | same, using `pred_points_median` | m², lower |
 
 ## Version notes
 - Runs before commit `a7202f7` (e.g. `may_chunks0_1_smoke-smoke-20261025-182824-b8104e1`) have camera renders only. They have no `lidar/`, no `lidar_metrics.json`, no `TRAIN_SEED` (their seed was nerfstudio's default, 42).
 - Runs submitted before `09_extract_run_split.py` existed have no `split.json`, `split_render_check` or `TRAIN_SPLIT_FRACTION`. If such a run succeeded, write the file afterwards with the script. It uses the manifest's fraction and ignores `config.yml`'s 0.5. Failed runs stay undocumented.
+- Lidar renders made before the no-return render fix (all runs up to and including job 222869) have no `raster_did_return` or `pred_points_did_return`, and their rasters hold no no-return rays even if the run trained with `add_missing_points: true`. Their `chamfer_distance` and `ray_drop_accuracy` are not comparable with later renders.
 - Runs rendered before 2026-10-26 have no `pred_accumulation` in their lidar npz files and no `renders/gaussians.npz`. Export the Gaussians afterwards with `scripts/10_export_gaussians.py` on the fetched checkpoint.
