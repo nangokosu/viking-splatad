@@ -95,5 +95,7 @@ splatad:
   load_cuboids: false
   # true = append the recorded Ouster no-returns (lidar_no_return/, written by the converter since
   # 2026-10-26) as 2000 m "did not return" rays for the ray-drop loss (T55). Needs a dataset
-  # extracted with the sidecar; May, B and R must use the same value.
-  add_missing_points: false
+  # extracted with the sidecar; May, B and R must use the same value. Read by
+  # scripts/slurm/submit_run.py (stage refuses a dataset without the sidecar; submit passes it to
+  # ns-train as --add-missing-points).
+  add_missing_points: true

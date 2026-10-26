@@ -17,6 +17,8 @@
 #   RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX
 #   MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR
 #   DATASET_START_FRACTION DATASET_END_FRACTION  (time window; 0 and 1 = whole recording)
+#   ADD_MISSING_POINTS  (True/False: the session config's splatad.add_missing_points; True appends
+#                        the dataset's recorded no-returns, lidar_no_return/, as 2000 m rays)
 #
 # Stage layout ($STAGE_ROOT): data/<session>/, code/<sha>/ (committed repo snapshot),
 # envs/splatad-<recipe hash>/ (environment), runs/<run_id>/.
@@ -27,7 +29,7 @@ set -euo pipefail
 # ---- check the required variables (set -u alone would give a less clear message) ----------
 for required_variable in RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX \
     MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
-    DATASET_START_FRACTION DATASET_END_FRACTION; do
+    DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS; do
   if [ -z "${!required_variable:-}" ]; then
     echo "ERROR: $required_variable is not set (submit with scripts/slurm/submit_run.py)" >&2
     exit 1
@@ -52,7 +54,7 @@ mkdir -p "$RUN_DIR"
   echo "slurm_mem_per_node_mb: ${SLURM_MEM_PER_NODE:-unset}"
   for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX \
       MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
-      DATASET_START_FRACTION DATASET_END_FRACTION; do
+      DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS; do
     echo "$exported_variable: ${!exported_variable:-}"
   done
   echo "environment build:"; sed 's/^/  /' "$ENV_PREFIX/.build-complete"
@@ -95,7 +97,8 @@ ns-train splatad \
   --steps-per-save "$STEPS_PER_SAVE" \
   --machine.seed "$TRAIN_SEED" \
   viking-data --data "$STAGE_ROOT/data" --session-name "$SESSION" \
-  --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION"
+  --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION" \
+  --add-missing-points "$ADD_MISSING_POINTS"
 TRAIN_END_SECONDS=$(date +%s)
 {
   echo "train_end_epoch_s: $TRAIN_END_SECONDS"

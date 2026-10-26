@@ -21,6 +21,7 @@ Every external command goes through ``run_command`` so tests can replace it.
 import argparse
 import datetime
 import hashlib
+import json
 import math
 import os
 import shlex
@@ -51,6 +52,12 @@ RECIPE_HASH_LENGTH = 12
 # build_env.sbatch writes <stage_root>/envs/<env name>.marker as its last step; it names the
 # env's path, so a marker means a complete build.
 ENV_MARKER_SUFFIX = ".marker"
+# Local datasets (one directory per dataset name) and the session configs they were extracted with.
+INTERMEDIATE_DATA_ROOT = PROJECT_ROOT / "data" / "intermediate"
+SESSION_CONFIG_DIRECTORY = PROJECT_ROOT / "configs" / "sessions"
+# Directory of the per-sweep no-return files inside a dataset (dataset/writer.py NO_RETURN_DIRECTORY;
+# repeated here because this script runs without importing the package).
+NO_RETURN_DIRECTORY_NAME = "lidar_no_return"
 # Local ledger of submitted jobs (runs/ is git-ignored).
 SUBMITTED_LEDGER_PATH = PROJECT_ROOT / "runs" / "submitted.tsv"
 # Environment variable that, when set, supplies the cluster username for user@host.
@@ -456,9 +463,60 @@ def profile_window_fractions(profile_settings: Dict[str, Any], session: str) -> 
                             float(profile_settings["window_seconds"]))
 
 
+def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                               session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> bool:
+    """``splatad.add_missing_points`` of the session config a dataset was extracted with.
+
+    The session name comes from the dataset's ``manifest.json`` (a dataset directory may be named
+    differently, e.g. ``may_chunks0_1_smoke`` was extracted with ``may_short_grass``). Without a
+    local manifest the dataset name itself is taken as the session name.
+
+    Args:
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        The flag (True = SplatAD gets the recorded no-returns as 2000 m rays).
+
+    Raises:
+        FileNotFoundError: If the session config does not exist.
+        ValueError: If the flag is missing or not a YAML boolean.
+    """
+    # Step 1: session name, from the manifest when the dataset is present.
+    manifest_path = Path(intermediate_root) / session / "manifest.json"
+    session_name = json.loads(manifest_path.read_text())["session"]["name"] if manifest_path.is_file() else session
+    # Step 2: the flag from that session's config; only a real boolean is accepted (no "yes"/1).
+    session_config = yaml.safe_load((Path(session_config_directory) / f"{session_name}.yaml").read_text())
+    flag = session_config.get("splatad", {}).get("add_missing_points")
+    if not isinstance(flag, bool):
+        raise ValueError(f"configs/sessions/{session_name}.yaml: splatad.add_missing_points must be true/false, got {flag!r}")
+    return flag
+
+
+def require_no_return_sidecar(dataset_dir: Path, add_missing_points: bool) -> None:
+    """Refuse a dataset that lacks the no-return sidecar when the run needs it.
+
+    Without this check the job would queue for a GPU and then fail in the dataparser.
+
+    Args:
+        dataset_dir: Local dataset directory.
+        add_missing_points: The session's flag.
+
+    Raises:
+        FileNotFoundError: If the flag is set and ``lidar_no_return/`` is missing.
+    """
+    if add_missing_points and not (Path(dataset_dir) / NO_RETURN_DIRECTORY_NAME).is_dir():
+        raise FileNotFoundError(
+            f"{dataset_dir} has no {NO_RETURN_DIRECTORY_NAME}/ but add_missing_points is true: "
+            "re-extract it with scripts/03_extract.py --force"
+        )
+
+
 def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id: str,
                           git_sha: str, absolute_stage_root: str,
-                          env_marker: Dict[str, str]) -> Dict[str, str]:
+                          env_marker: Dict[str, str],
+                          add_missing_points: Optional[bool] = None) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
 
     Args:
@@ -468,6 +526,9 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         git_sha: Full commit SHA.
         absolute_stage_root: Resolved stage root on the cluster.
         env_marker: Parsed marker of the environment the run activates (its path).
+        add_missing_points: The session's flag (``session_add_missing_points``), exported as
+            ADD_MISSING_POINTS. ``submit_run`` always passes it; None leaves it out, and then
+            splatad_run.sbatch refuses to start.
 
     Returns:
         Mapping variable name -> string value.
@@ -480,7 +541,7 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
     if isinstance(train_seed, bool) or not isinstance(train_seed, int):
         raise ValueError(f"profile needs an integer 'seed' (got {train_seed!r})")
     start_fraction, end_fraction = profile_window_fractions(profile_settings, session)
-    return {
+    job_environment = {
         "RUN_ID": run_id,
         "SESSION": session,
         "STAGE_ROOT": absolute_stage_root,
@@ -497,6 +558,10 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         "DATASET_START_FRACTION": repr(start_fraction),
         "DATASET_END_FRACTION": repr(end_fraction),
     }
+    # tyro (ns-train) parses booleans as True/False, which is what str(bool) gives.
+    if add_missing_points is not None:
+        job_environment["ADD_MISSING_POINTS"] = str(bool(add_missing_points))
+    return job_environment
 
 
 def build_job_script(job_environment: Dict[str, str], script_path: str) -> str:
@@ -737,15 +802,17 @@ def stage_session(config: Dict[str, Any], session: str) -> str:
         The git SHA whose code was staged.
 
     Raises:
-        FileNotFoundError: If the dataset is missing locally.
+        FileNotFoundError: If the dataset is missing locally, or lacks the no-return sidecar that
+            its session's add_missing_points needs.
         RuntimeError: If a remote command fails.
     """
-    # Step 1: resolve paths.
+    # Step 1: resolve paths; check the dataset holds what the run will read.
     ssh_target = resolve_ssh_target(config["ssh_host"])
     absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
     dataset_dir = PROJECT_ROOT / "data" / "intermediate" / session
     if not dataset_dir.is_dir():
         raise FileNotFoundError(f"dataset {dataset_dir} not found")
+    require_no_return_sidecar(dataset_dir, session_add_missing_points(session))
     git_sha = get_head_sha()
     # Step 2: create remote directories (rsync creates only the last path component).
     run_checked(ssh_command(ssh_target, ["mkdir", "-p", f"{absolute_stage_root}/data/{session}",
@@ -909,7 +976,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     run_checked(ssh_command(ssh_target, ["mkdir", "-p", remote_run_dir]), "remote run dir mkdir")
     job_script_path = f"{remote_run_dir}/job.sbatch"
     write_remote_file(ssh_target, job_script_path, build_job_script(
-        build_job_environment(profile_settings, session, run_id, git_sha, absolute_stage_root, env_marker),
+        build_job_environment(profile_settings, session, run_id, git_sha, absolute_stage_root, env_marker,
+                              add_missing_points=session_add_missing_points(session)),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
