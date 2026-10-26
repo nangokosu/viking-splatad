@@ -1,4 +1,4 @@
-"""Framework-free half of the Viking Hill dataparser (T27).
+"""Framework-free half of the Viking Hill dataparser (T27, T55).
 
 Everything that turns the intermediate dataset (``dataset/writer.py`` layout) into the
 numeric arrays neurad-studio's ``ADDataParser`` needs lives here, using only numpy, so it
@@ -19,14 +19,21 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from viking_splatad.contract.splatad_contract import AZIMUTH_INTEGER_RTOL
+from viking_splatad.contract.splatad_contract import AZIMUTH_INTEGER_RTOL, CHANNEL_COLUMN
 from viking_splatad.dataset.schema import SCHEMA_VERSION
 from viking_splatad.dataset.writer import (
     FRAME_FILE_PATTERN,
+    NO_RETURN_DIRECTORY,
     POSE_KEY_SEPARATOR,
     SchemaVersionError,
 )
 from viking_splatad.extract.geometry import apply_opencv_to_nerfstudio
+from viking_splatad.extract.no_return import (
+    NO_RETURN_CHANNEL_COLUMN,
+    NO_RETURN_DIRECTION_COLUMNS,
+    NO_RETURN_ROW_WIDTH,
+    NO_RETURN_TIME_COLUMN,
+)
 from viking_splatad.registry import transform
 
 # Name of the LidarType member the patch adds (patches/apply_ouster_patch.py).
@@ -246,6 +253,68 @@ def load_lidar_sweep(
     outside_box = np.any(np.abs(sweep[:, :3]) >= np.asarray(ego_box_half_extents, dtype=np.float32), axis=1)
     keep_mask = np.isfinite(sweep).all(axis=1) & (ranges >= min_lidar_radius) & outside_box
     return sweep[keep_mask]
+
+
+def no_return_path_for_sweep(sweep_path: Path) -> Path:
+    """No-return file of a sweep: ``<root>/lidar/<sensor>/<f>`` -> ``<root>/lidar_no_return/<sensor>/<f>``.
+
+    Args:
+        sweep_path: Returns file of one sweep.
+
+    Returns:
+        Path of its no-return file (same sensor directory name and file name).
+    """
+    sweep_path = Path(sweep_path)
+    # parents[0] = <root>/lidar/<sensor>, parents[2] = <root>.
+    return sweep_path.parents[2] / NO_RETURN_DIRECTORY / sweep_path.parent.name / sweep_path.name
+
+
+@transform(
+    "T55",
+    "No-return sidecar rows -> SplatAD missing-point rows (x,y,z,intensity,t[,channel]) at the "
+    "placeholder distance",
+)
+def no_return_placeholder_points(
+    no_return_rows: np.ndarray, placeholder_distance_m: float, sweep_column_count: int
+) -> np.ndarray:
+    """Turn no-return rows into the same row layout as the sweep they extend.
+
+    xyz = placeholder_distance * unit direction, in the sweep's sensor frame (motion-compensated
+    like the returns). SplatAD marks a ray "did not return" when its depth exceeds
+    ``valid_lidar_distance_threshold`` (1000 m), so the caller passes neurad's
+    ``DUMMY_DISTANCE_VALUE`` (2000 m), the value its own missing-point code uses. Intensity is
+    0: the intensity, depth and line-of-sight losses use returned rays only, so it is never read.
+    t and channel are copied from the sidecar; its cloud-column field has no sweep counterpart and
+    is dropped.
+
+    Args:
+        no_return_rows: float32 [m,6] rows (``extract/no_return.py`` layout).
+        placeholder_distance_m: Distance of the placeholder points (metres).
+        sweep_column_count: Columns of the returns array, 5 (no channel) or 6 (with channel).
+
+    Returns:
+        float32 [m, sweep_column_count] rows x, y, z, intensity, t[, channel].
+
+    Raises:
+        ValueError: If the rows do not have the sidecar width or the sweep width is not 5 or 6.
+    """
+    no_return_rows = np.asarray(no_return_rows, dtype=np.float32)
+    # 1) Reject anything that is not the sidecar layout before slicing columns by index.
+    if no_return_rows.ndim != 2 or no_return_rows.shape[1] != NO_RETURN_ROW_WIDTH:
+        raise ValueError(f"no-return rows must be [m,{NO_RETURN_ROW_WIDTH}], got {no_return_rows.shape}")
+    # 2) Directions are unit vectors, so scaling gives ||xyz|| = placeholder distance exactly.
+    xyz = no_return_rows[:, NO_RETURN_DIRECTION_COLUMNS] * np.float32(placeholder_distance_m)
+    intensity = np.zeros((no_return_rows.shape[0], 1), dtype=np.float32)
+    # 3) Width-1 slices keep t and channel as [m,1] columns for hstack.
+    time = no_return_rows[:, NO_RETURN_TIME_COLUMN:NO_RETURN_TIME_COLUMN + 1]
+    channel = no_return_rows[:, NO_RETURN_CHANNEL_COLUMN:NO_RETURN_CHANNEL_COLUMN + 1]
+    # 4) Match the sweep layout (contract): x, y, z, intensity, t, then the channel at
+    # CHANNEL_COLUMN if present, so width CHANNEL_COLUMN + 1 has a channel and CHANNEL_COLUMN does not.
+    if sweep_column_count == CHANNEL_COLUMN + 1:
+        return np.hstack([xyz, intensity, time, channel]).astype(np.float32)
+    if sweep_column_count == CHANNEL_COLUMN:
+        return np.hstack([xyz, intensity, time]).astype(np.float32)
+    raise ValueError(f"sweep must have 5 or 6 columns, got {sweep_column_count}")
 
 
 def _stack_with_first_axis(arrays: List[np.ndarray], empty_shape: tuple, dtype) -> np.ndarray:

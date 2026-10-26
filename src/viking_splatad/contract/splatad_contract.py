@@ -12,6 +12,13 @@ import numpy as np
 from viking_splatad.dataset.schema import IntermediateDataset
 from viking_splatad.dataset.splits import linspace_train_eval_split
 from viking_splatad.dataset.writer import SchemaVersionError, read_dataset
+from viking_splatad.extract.no_return import (
+    NO_RETURN_CELL_COLUMN,
+    NO_RETURN_CHANNEL_COLUMN,
+    NO_RETURN_DIRECTION_COLUMNS,
+    NO_RETURN_ROW_WIDTH,
+    NO_RETURN_TIME_COLUMN,
+)
 
 # Elevation-mapping length must tile into groups of 8 channels (SplatAD lidar tiling).
 ELEVATION_TILE_CHANNELS = 8
@@ -23,6 +30,9 @@ INTENSITY_COLUMN, TIME_COLUMN, CHANNEL_COLUMN = 3, 4, 5
 DISTORTION_K4_INDEX = 3
 # Relative tolerance when asking whether 2*pi/resolution is an integer (float round-off only).
 AZIMUTH_INTEGER_RTOL = 1e-9
+# Allowed | ||d|| - 1 | of a stored no-return direction. Rounding each float32 component changes it
+# by a relative factor within eps/2, so the norm moves by at most eps/2; eps leaves a factor-2 margin.
+NO_RETURN_UNIT_NORM_TOLERANCE = float(np.finfo(np.float32).eps)
 # World up axis required by SplatAD (z-up).
 Z_UP = np.array([0.0, 0.0, 1.0])
 
@@ -401,6 +411,63 @@ def check_azimuth_tiles(dataset: IntermediateDataset) -> CheckResult:
     return _result("azimuth_tile_integral", problems)
 
 
+def check_no_returns(dataset: IntermediateDataset) -> CheckResult:
+    """No-return sidecar (Phase B), when present, is complete and well formed.
+
+    The sidecar is optional (datasets extracted before Phase B have none; the dataparser then
+    refuses ``add_missing_points``). When a lidar has one, every sweep needs its file, because
+    a missing file would silently drop that sweep's no-return rays from the ray-drop loss.
+
+    Args:
+        dataset: Loaded intermediate dataset; ``no_return_streams`` hold the sidecar rows and
+            the lidar model gives the bounds (sweep period, channels, columns per ring).
+
+    Returns:
+        CheckResult "lidar_no_return_sidecar": passed when every present sidecar has one file per
+        sweep (same index and stamp) with float32 [m,6] rows, unit directions, |t| <= sweep
+        period, channels in the mapping and integer columns in [0, columns per ring);
+        otherwise failed listing the problems.
+    """
+    problems = []
+    valid_channels = np.array(sorted(dataset.lidar.elevation_mapping), dtype=np.float64)
+    # Columns per ring = full turn / azimuth resolution (an integer, see check_azimuth_tiles).
+    columns_per_ring = int(np.rint(2.0 * np.pi / dataset.lidar.azimuth_resolution))
+    for name, no_return_stream in dataset.no_return_streams.items():
+        stream = dataset.streams[name]
+        # Step 1: one file per sweep, matched by index and stamp.
+        if not (np.array_equal(no_return_stream.frame_indices, stream.frame_indices)
+                and np.array_equal(no_return_stream.frame_timestamps_ns, stream.frame_timestamps_ns)):
+            problems.append(
+                f"{name}: {len(no_return_stream.frames)} no-return files for {len(stream.frames)} sweeps "
+                "(indices/stamps differ)"
+            )
+            continue
+        # Step 2: content of each file.
+        for frame_number, rows in enumerate(no_return_stream.frames):
+            label = f"{name}[{frame_number}]"
+            if rows.dtype != np.float32 or rows.ndim != 2 or rows.shape[1] != NO_RETURN_ROW_WIDTH:
+                problems.append(f"{label}: {rows.dtype} {rows.shape}")
+                continue
+            if rows.shape[0] == 0:
+                continue
+            values = rows.astype(np.float64)
+            if not np.isfinite(values).all():
+                problems.append(f"{label}: non-finite values")
+                continue
+            norms = np.linalg.norm(values[:, NO_RETURN_DIRECTION_COLUMNS], axis=1)
+            if np.abs(norms - 1.0).max() > NO_RETURN_UNIT_NORM_TOLERANCE:
+                problems.append(f"{label}: direction not unit length")
+            if np.abs(values[:, NO_RETURN_TIME_COLUMN]).max() > dataset.lidar.sweep_period:
+                problems.append(f"{label}: |t| > sweep period")
+            if not np.isin(values[:, NO_RETURN_CHANNEL_COLUMN], valid_channels).all():
+                problems.append(f"{label}: channel not in elevation mapping")
+            cell_columns = values[:, NO_RETURN_CELL_COLUMN]
+            if not (np.all(cell_columns == np.rint(cell_columns)) and cell_columns.min() >= 0
+                    and cell_columns.max() < columns_per_ring):
+                problems.append(f"{label}: column outside 0..{columns_per_ring - 1}")
+    return _result("lidar_no_return_sidecar", problems)
+
+
 def check_splits(dataset: IntermediateDataset) -> CheckResult:
     """Train and eval splits are non-empty for every camera/lidar sensor.
 
@@ -449,7 +516,7 @@ CONTRACT_CHECKS: List[Callable[[IntermediateDataset], CheckResult]] = [
     check_poses, check_intrinsics_integer_size, check_image_shape, check_distortion_k4,
     check_times, check_index_contiguity, check_lidar_format, check_intensity,
     check_point_time, check_channels, check_elevation_mapping, check_azimuth_tiles,
-    check_splits, check_world_up,
+    check_no_returns, check_splits, check_world_up,
 ]
 
 

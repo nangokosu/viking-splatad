@@ -75,6 +75,12 @@ lidar:
   ego_margin_m: 0.05
   # Scans pooled to derive elevation mapping / ego box (T15/T16); every scan is overkill.
   model_derivation_scan_count: 50
+  # Phase B no-return sidecar (T51): the beam directions of every (ring, column) cell are fitted on
+  # the raw cloud of the same sweeps. Gate on the median fit residual, in azimuth columns: below half
+  # a column a placeholder still falls in its own raster column.
+  beam_fit_max_median_residual_columns: 0.5
+  # Residual percentile stored in derived.json for diagnostics (conventional robust max).
+  beam_fit_residual_percentile: 99.0
 
 radar:
   name: hugin
@@ -87,4 +93,7 @@ split:
 splatad:
   # Passed to the dataparser config; see plan contract table.
   load_cuboids: false
+  # true = append the recorded Ouster no-returns (lidar_no_return/, written by the converter since
+  # 2026-10-26) as 2000 m "did not return" rays for the ray-drop loss (T55). Needs a dataset
+  # extracted with the sidecar; May, B and R must use the same value.
   add_missing_points: false

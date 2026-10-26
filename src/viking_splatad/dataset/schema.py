@@ -195,8 +195,21 @@ class SensorStream(ExactEqualityMixin):
 
 
 @dataclass(eq=False)
+class NoReturnStream(ExactEqualityMixin):
+    """One lidar's no-return sidecar files (Phase B, ``extract/no_return.py``).
+
+    One file per lidar frame, same index and stamp as the returns file. ``frames`` holds
+    float32 [m,6] rows ``dir_x, dir_y, dir_z, t, channel, column``.
+    """
+
+    frame_indices: np.ndarray
+    frame_timestamps_ns: np.ndarray
+    frames: List[np.ndarray] = field(default_factory=list)
+
+
+@dataclass(eq=False)
 class IntermediateDataset(ExactEqualityMixin):
-    """Whole intermediate dataset (manifest + poses + frames + radar sidecar)."""
+    """Whole intermediate dataset (manifest + poses + frames + radar and no-return sidecars)."""
 
     schema_version: int
     cameras: Dict[str, CameraIntrinsics]
@@ -208,3 +221,5 @@ class IntermediateDataset(ExactEqualityMixin):
     session: SessionInfo
     streams: Dict[str, SensorStream]
     radar_sidecar: Dict[str, np.ndarray] = field(default_factory=dict)
+    # lidar sensor name -> no-return files; empty for datasets extracted before Phase B.
+    no_return_streams: Dict[str, NoReturnStream] = field(default_factory=dict)

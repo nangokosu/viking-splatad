@@ -35,6 +35,7 @@ from viking_splatad.dataset.splits import linspace_train_eval_split, split_probl
 from viking_splatad.dataset.writer import (
     FRAME_FILE_PATTERN,
     INDEX_DIGITS,
+    NO_RETURN_DIRECTORY,
     POSE_KEY_SEPARATOR,
     write_dataset,
     write_frame_file,
@@ -53,6 +54,14 @@ from viking_splatad.extract.geometry import (
     assign_sensor_indices,
     camera_to_world_opencv,
     lidar_to_world_at_reference_time,
+)
+from viking_splatad.extract.no_return import (
+    NO_RETURN_TIME_COLUMN,
+    BeamDirectionModel,
+    beam_unit_directions,
+    derive_beam_direction_model,
+    no_return_cells,
+    no_return_sweep_rows,
 )
 from viking_splatad.extract.lidar import (
     assemble_scan_array,
@@ -98,9 +107,15 @@ MANIFEST_FILE_NAME = "manifest.json"
 POSES_FILE_NAME = "poses.npz"
 # Entries removed by --force (everything this pipeline owns in the output directory).
 OWNED_OUTPUT_ENTRIES = (
-    "camera", "lidar", "sidecar", ODOMETRY_CACHE_DIRECTORY,
+    "camera", "lidar", NO_RETURN_DIRECTORY, "sidecar", ODOMETRY_CACHE_DIRECTORY,
     MANIFEST_FILE_NAME, POSES_FILE_NAME, DERIVED_FILE_NAME, STATE_FILE_NAME, "contract_report.md",
 )
+# Beam-direction fit gate (T51), in azimuth columns: a no-return placeholder off by less than half
+# a column still falls in its own raster column. Config key lidar.beam_fit_max_median_residual_columns.
+DEFAULT_BEAM_FIT_MAX_MEDIAN_RESIDUAL_COLUMNS = 0.5
+# Diagnostic percentile of the fit residual stored in derived.json (conventional robust max).
+# Config key lidar.beam_fit_residual_percentile.
+DEFAULT_BEAM_FIT_RESIDUAL_PERCENTILE = 99.0
 # Lidar model name from the plan (LidarType patch for neurad-studio); config key lidar.type overrides.
 DEFAULT_LIDAR_TYPE = "OUSTER_OS0_32"
 # Rolling shutter scan direction is not documented for the IDS uEye; top-to-bottom is the
@@ -531,6 +546,88 @@ def sample_lidar_scans(
     return samples
 
 
+def sample_raw_beam_returns(
+    chunk_path: Path, config: Dict[str, Any], scan_count: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """Returns of the first ``scan_count`` RAW sweeps with their (ring, column) cell.
+
+    The raw topic is used even when lidar.source is "deskewed": only before motion compensation
+    does every cell keep a fixed direction in the sensor frame (T51 input).
+
+    Args:
+        chunk_path: MCAP file.
+        config: Session config.
+        scan_count: Number of sweeps (``lidar.model_derivation_scan_count``).
+
+    Returns:
+        (points_xyz [n,3] metres, ring [n], column [n], column_count) over all sampled sweeps.
+
+    Raises:
+        ValueError: If no sweep is found or the sweeps disagree on their width.
+    """
+    lidar_config = config["lidar"]
+    points_per_sweep, rings_per_sweep, columns_per_sweep, widths = [], [], [], set()
+    generator = open_chunk_messages(chunk_path, [config["topics"]["lidar_raw"]])
+    for _, message in generator:
+        fields = decode_cloud_fields(message)
+        coordinates = np.stack([fields["x"], fields["y"], fields["z"]], axis=1).astype(np.float64)
+        # Same validity rule as the returns (range > 0 and finite coordinates).
+        returned = (fields[lidar_config["range_field"]] > 0) & np.all(np.isfinite(coordinates), axis=1)
+        # Row-major organized cloud: cell k is in column k mod width (T53 checks the layout).
+        cell_column = np.arange(returned.size) % int(message.width)
+        points_per_sweep.append(coordinates[returned])
+        rings_per_sweep.append(fields[lidar_config["ring_field"]][returned].astype(np.int64))
+        columns_per_sweep.append(cell_column[returned])
+        widths.add(int(message.width))
+        if len(points_per_sweep) >= scan_count:
+            break
+    generator.close()
+    # The model is indexed by column, so all sweeps must share one width; an empty set means
+    # no raw sweep was found.
+    if len(widths) != 1:
+        raise ValueError(f"raw lidar sweeps in {chunk_path.name}: expected one width, found {sorted(widths)}")
+    return (
+        np.concatenate(points_per_sweep), np.concatenate(rings_per_sweep),
+        np.concatenate(columns_per_sweep), widths.pop(),
+    )
+
+
+def derive_session_beam_model(
+    config: Dict[str, Any], chunk_path: Path, elevation_mapping_deg: Dict[str, float], azimuth_resolution_deg: float,
+) -> Dict[str, Any]:
+    """Fit the beam-direction model (T51) on the first raw sweeps of a chunk.
+
+    Args:
+        config: Session config.
+        chunk_path: Chunk to sample (the first processed chunk).
+        elevation_mapping_deg: Derived elevation mapping; its keys are the rings to fit.
+        azimuth_resolution_deg: Derived degrees per column (scales the residual gate).
+
+    Returns:
+        ``BeamDirectionModel.to_dict()`` for ``derived.json``.
+
+    Raises:
+        ValueError: From the raw sampling (no sweep, mixed widths) or the T51 fit (a ring without
+            returns or with too few distinct ranges, median residual above the gate).
+    """
+    lidar_config = config["lidar"]
+    # Returns of the raw cloud, with the (ring, column) cell of each.
+    points_xyz, ring, column, column_count = sample_raw_beam_returns(
+        chunk_path, config, int(lidar_config["model_derivation_scan_count"])
+    )
+    max_residual_columns = float(lidar_config.get(
+        "beam_fit_max_median_residual_columns", DEFAULT_BEAM_FIT_MAX_MEDIAN_RESIDUAL_COLUMNS))
+    # Fit with the gate converted to degrees: residual_deg = residual_columns * degrees per column.
+    model = derive_beam_direction_model(
+        points_xyz, ring, column, column_count,
+        expected_rings=[int(channel) for channel in elevation_mapping_deg],
+        max_median_residual_deg=max_residual_columns * float(azimuth_resolution_deg),
+        residual_percentile=float(lidar_config.get(
+            "beam_fit_residual_percentile", DEFAULT_BEAM_FIT_RESIDUAL_PERCENTILE)),
+    )
+    return model.to_dict()
+
+
 # --------------------------------------------------------------------------------------
 # /tf cross-check
 # --------------------------------------------------------------------------------------
@@ -628,7 +725,8 @@ def load_accumulator(output_dir: Path, name: str, kind: str) -> SensorAccumulato
     """Restore a sensor's written-frame records from poses.npz and the frame file names.
 
     Frame files beyond the recorded count (left by an interrupted run) are deleted so the
-    next frame index is never reused by a stale file.
+    next frame index is never reused by a stale file. For a lidar this includes its no-return
+    sidecar files, which share the frame indices.
 
     Args:
         output_dir: Dataset directory.
@@ -654,6 +752,12 @@ def load_accumulator(output_dir: Path, name: str, kind: str) -> SensorAccumulato
     for frame_index, _, path in frame_files:
         if frame_index >= len(times):
             path.unlink()
+    # A lidar's no-return files share its frame indices, so their orphans go too.
+    if kind == "lidar":
+        for path in (output_dir / NO_RETURN_DIRECTORY / name).glob("*"):
+            match = FRAME_FILE_PATTERN.match(path.name)
+            if match and int(match.group(1)) >= len(times):
+                path.unlink()
     accumulator.times = [float(value) for value in times]
     accumulator.poses = [pose for pose in poses]
     accumulator.stamps_ns = [record[1] for record in frame_files if record[0] < len(times)]
@@ -662,6 +766,8 @@ def load_accumulator(output_dir: Path, name: str, kind: str) -> SensorAccumulato
 
 def longest_point_time_in_frames(output_dir: Path, name: str, frame_count: int) -> float:
     """Largest |t| over the lidar frame files already on disk (state files from before T49).
+
+    Datasets this old predate the no-return sidecar too, so only the returns files are read.
 
     Reads every recorded sweep once: O(total points), only when the state lacks the value.
 
@@ -762,6 +868,7 @@ class DatasetExtractor:
             int(channel): angle for channel, angle in derived.elevation_mapping_deg.items()
         }
         self.min_lidar_dist = tuple(derived.min_lidar_dist)
+        self.beam_model = BeamDirectionModel.from_dict(derived.beam_direction_model)
         self.frames_written = {"camera": 0, "lidar": 0, "radar": 0}
         self.skipped: Dict[str, int] = {}
         self.clipped_values = 0
@@ -835,8 +942,13 @@ class DatasetExtractor:
     def handle_lidar(self, message: Any) -> None:
         """Process one lidar sweep: mask, intensity, deskew (if configured), pose, write.
 
+        Also writes the sweep's no-return file (Phase B, T53/T52/T54) with the same index and stamp.
+
         Args:
             message: Decoded sensor_msgs/PointCloud2 of the configured source topic.
+
+        Raises:
+            ValueError: If the cloud is not organized (T53), so no-return cells cannot be located.
         """
         admitted = self._admit(message.header.stamp, self.lidar_accumulator.last_stamp_ns)
         if admitted is None:
@@ -844,7 +956,8 @@ class DatasetExtractor:
         seconds, total_ns = admitted
         lidar_config = self.config["lidar"]
         sweep_period = self.derived.sweep_period_seconds
-        sample = lidar_sample_from_fields(decode_cloud_fields(message), message.width, total_ns, lidar_config)
+        fields = decode_cloud_fields(message)
+        sample = lidar_sample_from_fields(fields, message.width, total_ns, lidar_config)
         if sample.points_xyz.shape[0] == 0:
             self._skip("lidar_no_valid_points")
             return
@@ -853,12 +966,12 @@ class DatasetExtractor:
             T_world_lidar, reference_time = lidar_to_world_at_reference_time(
                 self.trajectory, self.T_base_lidar, seconds, sweep_period, lidar_config["reference"]
             )
+            def pose_at(query_times: np.ndarray) -> np.ndarray:
+                """T_world_lidar at the given times (batched)."""
+                return interpolate_pose_se3(self.trajectory, query_times) @ self.T_base_lidar
+
             if lidar_config["source"] == "raw_own_deskew":
                 # T13: move every point to the reference pose using the interpolated trajectory.
-                def pose_at(query_times: np.ndarray) -> np.ndarray:
-                    """T_world_lidar at the given times (batched)."""
-                    return interpolate_pose_se3(self.trajectory, query_times) @ self.T_base_lidar
-
                 points_xyz, relative_time = deskew_points(
                     sample.points_xyz, seconds + sample.point_time_seconds, pose_at, reference_time
                 )
@@ -883,11 +996,33 @@ class DatasetExtractor:
         if scan_array.shape[0] == 0:
             self._skip("lidar_empty_after_filter")
             return
+        # No-returns (T53 -> T52 -> T54): cell, far-field raw direction, rotation to the reference
+        # pose with our trajectory (also for the "deskewed" source, whose no-return cells carry no
+        # usable coordinates). The column times can run past the last odometry stamp at the end of
+        # the session; there the end pose is held. Directions use only the rotation, so the error
+        # is at most the turn during one sweep. T53 raises ValueError on an unorganized cloud.
+        no_return_ring, no_return_column, no_return_time = no_return_cells(
+            fields, message.width, message.height, lidar_config)
+
+        def pose_at_held(query_times: np.ndarray) -> np.ndarray:
+            """T_world_lidar at the given times, holding the end poses outside the trajectory."""
+            return interpolate_pose_se3(self.trajectory, query_times, allow_extrapolation=True) @ self.T_base_lidar
+
+        no_return_rows = no_return_sweep_rows(
+            beam_unit_directions(self.beam_model, no_return_ring, no_return_column),
+            seconds + no_return_time, pose_at_held, reference_time,
+            assign_channels(self.elevation_mapping, ring=no_return_ring), no_return_column,
+        )
         frame_index = self.lidar_accumulator.add(seconds, T_world_lidar, total_ns)
         write_frame_file(self.output_dir, "lidar", self.lidar_name, frame_index, total_ns, scan_array)
+        write_frame_file(self.output_dir, NO_RETURN_DIRECTORY, self.lidar_name, frame_index, total_ns, no_return_rows)
         # Track the longest |t| actually written; the manifest sweep period must cover it (T49).
+        # No-returns count too (they are SplatAD rows with add_missing_points): the latest column
+        # of a sweep can be all no-returns, or its returns removed by the ego filter. scan_array is
+        # non-empty here, so the max is defined even when the sweep has no no-returns.
+        written_times = [scan_array[:, SCAN_TIME_COLUMN], no_return_rows[:, NO_RETURN_TIME_COLUMN]]
         self.longest_point_time_seconds = max(
-            self.longest_point_time_seconds, float(np.abs(scan_array[:, SCAN_TIME_COLUMN]).max())
+            self.longest_point_time_seconds, float(np.abs(np.concatenate(written_times)).max())
         )
         self.frames_written["lidar"] += 1
 
@@ -1114,6 +1249,10 @@ def derive_session_parameters(
     )
     if lidar_derived["min_lidar_dist_fallback"]:
         warnings_list.append("min_lidar_dist: no radial gap found, ego filtering disabled (0,0,0)")
+    # Beam directions of every cell, for the no-return sidecar (T51).
+    lidar_derived["beam_direction_model"] = derive_session_beam_model(
+        config, first_chunk, lidar_derived["elevation_mapping_deg"], lidar_derived["azimuth_resolution_deg"]
+    )
     # /tf cross-check of the three sensor extrinsics (T4 + T6).
     pairs = {
         f"{frames['base']}->{frames[role]}": (frames["base"], frames[role])
@@ -1226,6 +1365,13 @@ def run_pipeline(
         derived, result.warnings = derive_session_parameters(
             config, new_chunks[0], reference_ns, calibration, output_dir
         )
+    elif derived.beam_direction_model is None:
+        # Cache from before Phase B: fit the beam model once and keep it. Frames extracted
+        # earlier have no no-return files; the contract reports the gap (re-extract with --force).
+        derived.beam_direction_model = derive_session_beam_model(
+            config, new_chunks[0], derived.elevation_mapping_deg, derived.azimuth_resolution_deg
+        )
+        save_derived(output_dir / DERIVED_FILE_NAME, derived)
     # Step 6: stream each new chunk.
     # max_seconds is measured on the session reference clock (first odometry stamp = 0 s).
     cutoff_seconds = float("inf") if max_seconds is None else float(max_seconds)

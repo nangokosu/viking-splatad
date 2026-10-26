@@ -7,6 +7,10 @@ Layout under ``root``::
     poses.npz                          <sensor>__times, <sensor>__poses_world_sensor
     camera/<sensor>/<idx>_<ts_ns>.jpg  one subdirectory per camera (several cameras may exist)
     lidar/<sensor>/<idx>_<ts_ns>.npy   float32 [n,5] or [n,6]
+    lidar_no_return/<sensor>/<idx>_<ts_ns>.npy
+                                       float32 [m,6] no-returns of that sweep (dir_x, dir_y,
+                                       dir_z, t, channel, column); SplatAD input only with
+                                       add_missing_points (extract/no_return.py)
     sidecar/radar/<name>.npy           radar diagnostics (never part of the SplatAD input)
 """
 
@@ -23,6 +27,7 @@ from viking_splatad.dataset.schema import (
     ClockInfo,
     IntermediateDataset,
     LidarInfo,
+    NoReturnStream,
     RollingShutterParams,
     SCHEMA_VERSION,
     SensorStream,
@@ -36,6 +41,8 @@ JPEG_QUALITY = 100
 FRAME_FILE_PATTERN = re.compile(r"^(\d+)_(\d+)\.(jpg|npy)$")
 # Zero-padding width of the frame index in file names (sorts lexicographically up to 10^6 frames).
 INDEX_DIGITS = 6
+# Directory of the per-sweep no-return files, parallel to lidar/ (same <sensor>/<stem>.npy).
+NO_RETURN_DIRECTORY = "lidar_no_return"
 # Separator between sensor name and array name inside poses.npz keys.
 POSE_KEY_SEPARATOR = "__"
 
@@ -117,11 +124,11 @@ def write_frame_file(
 
     Args:
         root: Dataset directory.
-        kind: "camera" (JPEG) or "lidar" (.npy).
+        kind: "camera" (JPEG), or "lidar" / ``NO_RETURN_DIRECTORY`` (.npy).
         sensor_name: Sensor subdirectory name.
         frame_index: Zero-based frame index (zero-padded to INDEX_DIGITS in the file name).
         timestamp_ns: Absolute header stamp in nanoseconds (part of the file name).
-        frame: uint8 BGR image (camera) or float32 sweep array (lidar).
+        frame: uint8 BGR image (camera) or float32 array (lidar sweep / no-return rows).
 
     Returns:
         Path of the written file.
@@ -170,6 +177,13 @@ def write_dataset(root: Path, dataset: IntermediateDataset) -> None:
     radar_directory.mkdir(parents=True, exist_ok=True)
     for name, array in dataset.radar_sidecar.items():
         np.save(radar_directory / f"{name}.npy", array)
+    # 5) no-return files, only for lidars that have them (pre-Phase-B datasets have none)
+    for name, no_return_stream in dataset.no_return_streams.items():
+        (root / NO_RETURN_DIRECTORY / name).mkdir(parents=True, exist_ok=True)
+        for frame_index, timestamp_ns, rows in zip(
+            no_return_stream.frame_indices, no_return_stream.frame_timestamps_ns, no_return_stream.frames
+        ):
+            write_frame_file(root, NO_RETURN_DIRECTORY, name, frame_index, timestamp_ns, rows)
 
 
 def read_dataset(root: Path) -> IntermediateDataset:
@@ -222,6 +236,22 @@ def read_dataset(root: Path) -> IntermediateDataset:
         path.stem: np.load(path)
         for path in sorted((root / "sidecar" / "radar").glob("*.npy"))
     }
+    # No-return files of every lidar that has a no-return directory, in index order.
+    no_return_streams = {}
+    for sensor in manifest["sensors"]:
+        no_return_directory = root / NO_RETURN_DIRECTORY / sensor["name"]
+        if sensor["kind"] != "lidar" or not no_return_directory.is_dir():
+            continue
+        no_return_files = sorted(
+            (int(match.group(1)), int(match.group(2)), path)
+            for path in no_return_directory.iterdir()
+            if (match := FRAME_FILE_PATTERN.match(path.name))
+        )
+        no_return_streams[sensor["name"]] = NoReturnStream(
+            frame_indices=np.array([record[0] for record in no_return_files], dtype=np.int64),
+            frame_timestamps_ns=np.array([record[1] for record in no_return_files], dtype=np.int64),
+            frames=[np.load(path) for _, _, path in no_return_files],
+        )
     lidar = manifest["lidar"]
     # JSON stores tuples/arrays as lists and int keys as strings; restore dtypes and key types.
     return IntermediateDataset(
@@ -256,4 +286,5 @@ def read_dataset(root: Path) -> IntermediateDataset:
         ),
         streams=streams,
         radar_sidecar=radar_sidecar,
+        no_return_streams=no_return_streams,
     )

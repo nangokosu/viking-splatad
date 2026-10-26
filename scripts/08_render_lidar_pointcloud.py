@@ -192,8 +192,9 @@ def render_scan(model: Any, scan_lidar: Any, batch: Dict[str, Any]) -> Tuple[Dic
         # Whole input rows (INPUT_SWEEP_COLUMNS), so channel is kept when the sweep has it.
         gt_points = batch["lidar"][batch["lidar_pts_did_return"]]
         # Step 4: built-in metrics (depth L2, intensity RMSE, ray-drop accuracy, Chamfer).
-        # Ray-drop accuracy is trivially ~1 while the input has no no-return rays (converter
-        # drops range-0 points; add_missing_points not implemented): see RUN_FOLDER_GLOSSARY.md.
+        # Ray-drop accuracy is trivially ~1 unless the run used add_missing_points with the
+        # no-return sidecar (Phase B): only then do the rays include no-returns. See
+        # RUN_FOLDER_GLOSSARY.md.
         metrics, _ = model.get_image_metrics_and_images(outputs, batch)
 
     def to_float32(tensor: Any) -> np.ndarray:

@@ -91,7 +91,7 @@ To compare with GT cuboids or raw sweeps, take points to the map frame with the 
 Read the clouds with these limits in mind:
 - **Rays come only from the input returns.** SplatAD renders along the input scan's own rays (`raster_pts`), so `pred_points` has no point where the input lidar had no return. A rendered trunk behind grass shows up only as a different depth on an existing ray.
 - `pred_points` uses expected depth and `pred_points_median` uses median depth. SplatAD reports Chamfer for both.
-- **`ray_drop_accuracy` is always ~1.0. Ignore it.** No-returns are dropped at conversion and `add_missing_points` (Phase B) is not implemented, so every ray is a return. Job 222633 shows it: 2,392,058 valid raster rays = 2,392,058 GT points, and the max ray-drop prob is 0.05.
+- **`ray_drop_accuracy` is ~1.0 and meaningless unless the run used `add_missing_points: true`** (Phase B, check the run's `config.yml`). That needs a dataset extracted with the no-return sidecar (`lidar_no_return/`, T51–T55). Without it, every ray is a return. Job 222633 shows it: 2,392,058 valid raster rays = 2,392,058 GT points, and the max ray-drop prob is 0.05.
 - `<sensor>` is the manifest's only lidar (`ouster` for the current sessions).
 - `test` is every ~10th frame interleaved with training frames (open issue in the session summary), so it measures interpolation, not a held-out stretch.
 

@@ -118,7 +118,7 @@ No second rasteriser pass: it would overwrite `self.info` and corrupt the MCMC d
 - **Setting λ_opa:** the stock `mcmc_opacity_reg` pushes every opacity down. So λ_opa is set so that the step-0 radar term equals the step-0 `mcmc_opacity_reg` (measured and logged).
 - **Logged every 100 steps:** the fraction of seeds with ≥1 gated Gaussian.
   - If it collapses, switch to the seed-density form, which still gives a gradient when no Gaussian is near: −log(1 − exp(−D(q_i))), with D(q) = Σ_k σ(o_k)·exp(−½dᵀ(Σ_k+Σ_i)⁻¹d) at the fixed seed means.
-- The radar losses only say "occupied here", never "empty here". Radar free space is unreliable (lateral blur, multipath), so free space stays with the lidar ray-drop and line-of-sight losses.
+- The radar losses only say "occupied here", never "empty here". Radar free space is unreliable (lateral blur, multipath), so free space stays with the lidar. SplatAD's line-of-sight loss carves the space in front of each returned point. The ray-drop loss learns where no return comes back, but only from no-return rays, i.e. with `add_missing_points` and the no-return sidecar (Phase B, T51–T55); it acts on the Gaussians only indirectly, through the lidar decoder.
 
 **Depth loss (T44, optional, added only after R works with the opacity loss).** "Gaussians must agree with the radar range as well as the lidar depth."
 - For each seed, cast a ray from `sensor_origin` to the seed.
@@ -184,6 +184,11 @@ Two extra runs: the same as core B and R with camera training on (`train-lidar-o
 | T47 | BEV raster | a known point set gives exact pixel counts |
 | T49 (done) | manifest sweep period covers the per-point time of every extracted sweep | derived period kept unless a longer \|t\| is written; a synthetic chunk with stretched sweeps passes the contract after an incremental, fresh or resumed run |
 | T48 | time-range split override (backtrack hold-out, only if chosen) | frames inside the eval range go to eval and all others to train; both splits non-empty and disjoint |
+| T51 | Ouster beam directions fitted from raw returns (Phase B) | synthetic beams with a known parallax and either column direction give back the exact far-field angles; a cloud the model cannot describe fails the gate |
+| T52 | (ring, column) → unit direction | known angles give the exact vectors |
+| T53 | no-return cells of an organized cloud | known range-0 cells give their exact ring, column, time; an unorganized cloud raises |
+| T54 | no-return directions to the reference pose → sidecar rows | a known yaw rate rotates each direction by rate × time; t = capture − reference |
+| T55 | sidecar rows → 2000 m placeholders (dataparser, `add_missing_points`) | xyz = 2000·d, depth beyond SplatAD's return threshold, layout matches the sweep |
 
 ## 7. File structure (new items marked +)
 ```

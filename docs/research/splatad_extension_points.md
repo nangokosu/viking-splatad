@@ -78,6 +78,13 @@ After this:
 | `ray_drop_loss` | BCE-with-logits | 0.1 |
 | `alpha_sum_until_points_loss` | opacity accumulated in front of the measured point (line of sight) | 0.1, `line_of_sight_dist=0.8` |
 
+**Which lidar rays each term sees** (`splatad.py:1265-1291, 1410-1430`; `full_images_lidar_datamanager.py:244-262`). A ray "returned" if its depth ≤ `valid_lidar_distance_threshold` (1e3 m).
+- Depth, intensity and line of sight use **returned rays only**.
+- Ray drop (BCE, target = "did not return") uses every valid ray. It is the only term that sees no-return rays, which exist only with `add_missing_points` (2e3 m placeholders).
+- The ray-drop logit comes from `lidar_decoder` on the alpha-blended features plus the ray direction, so it reaches the Gaussians only indirectly.
+- The `*_dropped` predictions are computed but unused.
+- Our dataset adds the **recorded** Ouster no-returns from the `lidar_no_return/` sidecar (T51–T55, `extract/no_return.py`), not neurad's `_get_missing_points` gap guess.
+
 **Adding a term:**
 - The trainer sums **every** dict entry with no filtering: `loss = functools.reduce(torch.add, loss_dict.values())` (`engine/trainer.py:551-553`). A subclass just does `d = super().get_loss_dict(...); d["radar_loss"] = λ·L; return d`. `metrics_dict` is logged only.
 - Every loss in the table is **self-supervised against a raw measurement**, with no semantic labels. The radar loss follows the same pattern: the radar return is the target.

@@ -23,6 +23,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         "T49",
         # Rendered lidar scans: dataparser-frame pose -> map-frame pose (scripts/08_*).
         "T50",
+        # Phase B, option C: Ouster no-returns as a per-sweep sidecar (extract/no_return.py) and
+        # their 2000 m placeholders in the dataparser (splatad/viking_conversions.py).
+        "T51", "T52", "T53", "T54", "T55",
     }
 )
 

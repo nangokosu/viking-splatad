@@ -84,6 +84,9 @@ class DerivedParameters:
     resize_factor: float
     bag_extrinsics: Dict[str, List[List[float]]] = field(default_factory=dict)
     extrinsic_check: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # T51 beam model (``BeamDirectionModel.to_dict``). None in caches written before Phase B;
+    # run_pipeline fits and saves it then, so adding it needs no format-version bump.
+    beam_direction_model: Optional[Dict[str, Any]] = None
     format_version: int = DERIVED_FORMAT_VERSION
 
 

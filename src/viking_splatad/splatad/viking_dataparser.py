@@ -23,6 +23,8 @@ from viking_splatad.splatad.viking_conversions import (
     DatasetView,
     build_sensor_arrays,
     load_lidar_sweep,
+    no_return_path_for_sweep,
+    no_return_placeholder_points,
     open_dataset_view,
     resolve_train_fraction,
 )
@@ -33,7 +35,11 @@ try:
     from nerfstudio.cameras import lidars as lidars_module
     from nerfstudio.cameras.cameras import Cameras, CameraType
     from nerfstudio.cameras.lidars import LIDAR_MODEL_TO_TYPE, Lidars
-    from nerfstudio.data.dataparsers.ad_dataparser import ADDataParser, ADDataParserConfig
+    from nerfstudio.data.dataparsers.ad_dataparser import (
+        DUMMY_DISTANCE_VALUE,
+        ADDataParser,
+        ADDataParserConfig,
+    )
     from nerfstudio.plugins.registry_dataparser import DataParserSpecification
 
     NERFSTUDIO_AVAILABLE = True
@@ -176,7 +182,12 @@ if NERFSTUDIO_AVAILABLE:
             return lidars, list(arrays.sweep_paths)
 
         def _read_lidars(self, lidars: "Lidars", filepaths: List[Path]) -> List["torch.Tensor"]:
-            """Load sweeps (x,y,z,intensity,t[,channel]) minus ego returns.
+            """Load sweeps (x,y,z,intensity,t[,channel]) minus ego returns, plus no-returns if asked.
+
+            With ``add_missing_points`` each sweep gets its recorded no-returns (Phase B sidecar,
+            ``lidar_no_return/``) appended as placeholders at neurad's ``DUMMY_DISTANCE_VALUE``
+            (T55), which SplatAD treats as "did not return" rays (ray-drop loss only). This
+            replaces neurad's ``_get_missing_points`` guess from gaps between neighbouring returns.
 
             Args:
                 lidars: Lidars (unused except for ordering).
@@ -184,17 +195,27 @@ if NERFSTUDIO_AVAILABLE:
 
             Returns:
                 One float32 tensor per sweep.
+
+            Raises:
+                FileNotFoundError: With ``add_missing_points``, if a sweep has no no-return file
+                    (dataset extracted before Phase B: re-extract with ``--force``).
             """
             # Ego filter from the manifest: sphere radius or box (one of them is the identity).
             model = self._lidar_arrays.model
-            point_clouds = [
-                torch.from_numpy(load_lidar_sweep(path, model.min_lidar_radius, model.ego_box_half_extents))
-                for path in filepaths
-            ]
-            if self.config.add_missing_points:
-                raise NotImplementedError(
-                    "add_missing_points (Phase B) is not implemented for the Viking parser yet"
-                )
+            point_clouds = []
+            for path in filepaths:
+                sweep = load_lidar_sweep(path, model.min_lidar_radius, model.ego_box_half_extents)
+                if self.config.add_missing_points:
+                    no_return_path = no_return_path_for_sweep(path)
+                    if not no_return_path.is_file():
+                        raise FileNotFoundError(
+                            f"{no_return_path} missing: add_missing_points needs the no-return sidecar "
+                            "(re-extract the dataset with the current converter, --force)"
+                        )
+                    placeholders = no_return_placeholder_points(
+                        np.load(no_return_path), DUMMY_DISTANCE_VALUE, sweep.shape[1])
+                    sweep = np.concatenate([sweep, placeholders], axis=0)
+                point_clouds.append(torch.from_numpy(sweep))
             return point_clouds
 
         def _add_sensor_velocities(self, cameras, lidars) -> None:
