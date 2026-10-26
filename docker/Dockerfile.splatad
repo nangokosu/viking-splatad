@@ -150,6 +150,8 @@ COPY configs /workspace/viking-splatad/configs
 COPY scripts /workspace/viking-splatad/scripts
 # Loaded by path in tests/unit/test_readonly_guard.py.
 COPY .claude/hooks/readonly_bash_guard.py /workspace/viking-splatad/.claude/hooks/readonly_bash_guard.py
+# Read by tests/unit/test_render_lidar_script.py (the run-folder glossary must document every npz key).
+COPY runs/RUN_FOLDER_GLOSSARY.md /workspace/viking-splatad/runs/RUN_FOLDER_GLOSSARY.md
 # The final-step pytest pin lives in constraints.txt as a comment (it cannot be a global
 # constraint: neurad-studio[dev] pins an older pytest in the step above).
 RUN python3.10 -m pip install -e "/workspace/viking-splatad[dev]" \

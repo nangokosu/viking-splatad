@@ -45,7 +45,9 @@ BUILD_SCRIPT_RELATIVE_PATH = "scripts/slurm/build_env.sbatch"
 # the Dockerfile COPYs, plus the Dockerfile itself, which build_env.sbatch reads pins from).
 STAGED_REPO_PATHS = ("pyproject.toml", "src", "tests", "configs", "scripts",
                      "docker/constraints.txt", "docker/Dockerfile.splatad",
-                     ".claude/hooks/readonly_bash_guard.py")
+                     ".claude/hooks/readonly_bash_guard.py",
+                     # Read by tests/unit/test_render_lidar_script.py (the build's pytest step).
+                     "runs/RUN_FOLDER_GLOSSARY.md")
 # Hex digits of the recipe hash used in environment names: 12 hex = 48 bits, so two different
 # recipes collide with probability ~2**-48, negligible for the handful of envs ever built.
 RECIPE_HASH_LENGTH = 12

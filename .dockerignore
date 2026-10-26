@@ -10,6 +10,8 @@
 !docker/constraints.txt
 # tests/unit/test_readonly_guard.py loads this hook by path
 !.claude/hooks/readonly_bash_guard.py
+# tests/unit/test_render_lidar_script.py reads the run-folder glossary
+!runs/RUN_FOLDER_GLOSSARY.md
 **/__pycache__
 **/*.pyc
 **/.pytest_cache
