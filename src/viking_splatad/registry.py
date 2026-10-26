@@ -26,6 +26,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # Phase B, option C: Ouster no-returns as a per-sweep sidecar (extract/no_return.py) and
         # their 2000 m placeholders in the dataparser (splatad/viking_conversions.py).
         "T51", "T52", "T53", "T54", "T55",
+        # A run's exact train/test frames rebuilt without torch (dataset/run_split.py,
+        # scripts/09_extract_run_split.py): neurad's time window and per-sensor LINSPACE split.
+        "T58", "T59",
     }
 )
 

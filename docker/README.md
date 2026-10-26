@@ -32,7 +32,7 @@ Commit the result. Later builds then resolve to the same versions.
 
 | Tag | Image ID | Built from commit | `CUDA_ARCHITECTURES` | Notes |
 |---|---|---|---|---|
-| `viking-splatad:cu118` | `aab3781dea3e` | `a14bb2a` | `86` | sm_86 cubin only, no PTX: runs on the RTX A6000/A4500/A4000/A2000 nodes, **not** the RTX 4090 (sm_89) nodes. `constraints.txt` was frozen from this image afterwards. |
+| `viking-splatad:cu118` | `aab3781dea3e` | `d626664` | `86` | sm_86 cubin only, no PTX: runs on the RTX A6000/A4500/A4000/A2000 nodes, **not** the RTX 4090 (sm_89) nodes. `constraints.txt` was frozen from this image afterwards. |
 
 Layer order matters for rebuild cost. `docker/constraints.txt` and the Ouster patcher files are copied **before**
 the neurad-studio and splatad CUDA builds, so changing either one recompiles everything (hours under emulation).

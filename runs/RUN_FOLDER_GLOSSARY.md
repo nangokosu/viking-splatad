@@ -2,12 +2,14 @@
 
 This document covers every run folder in `runs/`. All runs from `scripts/slurm/splatad_run.sbatch` share one layout. It is the only copy: it lives in the repo at `runs/RUN_FOLDER_GLOSSARY.md` and is versioned with the code, so update it whenever the job's outputs change. Differences between older and newer runs are listed under "Version notes" at the end.
 
-Path on the Mac after `submit_run.py fetch <run_id>`: `runs/<run_id>/`. On the cluster: `~/viking-splatad/runs/<run_id>/`.
+Path on the Mac after `submit_run.py fetch <run_id>`: `runs/<run_id>/`. On the cluster: `<stage root>/runs/<run_id>/` on the workdisk (currently `/w/20262/<user>/viking-splatad/runs/<run_id>/`).
 `<run_id>` = `<session>-<profile>-<UTC yyyymmdd-HHMMSS>-<short sha>`. The short sha is the code commit; `GIT_SHA` in `job_info.txt` gives it in full.
 
 ```
 runs/<run_id>/
 ├── job_info.txt                       settings, environment, GPU, timings
+├── split.json                         exact train/test frames + provenance (scripts/09_extract_run_split.py)
+├── split_frames.csv                   the same frames, one row each
 ├── slurm-<job id>.out                 Slurm log (stdout + stderr of the job)
 ├── compare/                           only if you ran scripts/slurm/compare_renders.py on the Mac
 ├── train/<session>/splatad/<run_id>/
@@ -37,6 +39,24 @@ runs/<run_id>/
 - `train`: the poses used to fit the model. Its renders show how well the model fits.
 - `test`: held-out poses. The dataparser holds out every ~10th frame (train fraction 0.9, linspace), interleaved with training frames. It therefore measures interpolation between nearby training views, not a held-out stretch of the drive.
 - Cameras and lidar are split separately, so frame counts can differ between `rgb/` and `lidar/`.
+- **The split is deterministic, with no RNG.** First the time window: every camera and lidar frame with time in [t_min + D·`DATASET_START_FRACTION`, t_min + D·`DATASET_END_FRACTION`] (inclusive; t_min and D over all camera and lidar times). Then, per sensor, ceil(n·f) evenly spaced train frames (linspace); the rest are test. At f = 1.0 every frame is in both. `TRAIN_SEED` does not affect it.
+- f is the dataset manifest's `session.train_fraction` (0.9), unless `train_split_fraction_override` is set. **`config.yml`'s `train_split_fraction` (0.5) is wrong**: nerfstudio saves it before the dataparser sets the real value. `manifest.json` `pipeline.splits` covers the whole recording, not the run's window, so it isn't the run's split either.
+
+### `split.json` and `split_frames.csv`
+Written by `scripts/09_extract_run_split.py` (T58 window, T59 split), which rebuilds the split on the CPU from `job_info.txt`, `config.yml` (override only) and the dataset. The job runs it before training and again after rendering. Re-run it on your own machine after `fetch` with `uv run python scripts/09_extract_run_split.py --run-dir runs/<run_id>`; the dataset defaults to `data/intermediate/<SESSION>`. The output is byte-identical for the same inputs.
+
+| key (`split.json`) | meaning |
+|---|---|
+| `run` | `run_id`, `session`, `git_sha`, `train_seed`, `add_missing_points` from `job_info.txt` |
+| `selection` | `dataset_start_fraction`, `dataset_end_fraction`, `window_bounds_s` (`poses.npz` seconds; `null` = whole recording), `train_fraction` and `train_fraction_source` (`manifest.session.train_fraction` or `override`), `max_eval_frames` (always `null`) |
+| `dataset` | dataset folder name, and SHA-256 of its `manifest.json` and `poses.npz` (the same split needs the same dataset) |
+| `counts` | per sensor: `kind`, `frames_in_recording`, `frames_in_window`, `train`, `test` |
+| `membership_sha256` | fingerprint of which frame is in which split. Two runs or two people with equal values used the same frames. |
+| `render_check` | per `<kind>/<split>` with renders on disk: `match`, `missing_from_renders`, `unexpected_in_renders` (render file names vs the rebuilt split). Empty before rendering. |
+| `frames` | one entry per frame, same columns as the CSV |
+| `seed_note`, `schema` | why the seed is recorded, and the layout version (`viking-splatad/run-split/1`) |
+
+`split_frames.csv` columns: `sensor`, `kind`, `split`, `frame_index`, `timestamp_ns`, `time_s` (`poses.npz` seconds), `file` (path inside the dataset).
 
 ## `job_info.txt`
 `key: value` lines, written as the job progresses.
@@ -55,6 +75,7 @@ runs/<run_id>/
 | `ADD_MISSING_POINTS` | `True`/`False`, the session config's `splatad.add_missing_points` (session named by the dataset's manifest), passed to `ns-train` as `--add-missing-points`. `True` adds the recorded no-returns (`lidar_no_return/`) as 2000 m rays. Absent in runs before 2026-10-26, which all ran with `False`. |
 | `gpu (...)`, `gpu_check`, `viking_splatad_from` | GPU model, compute capability, driver; proof that CUDA and the right code were loaded |
 | `train_elapsed_s`, `render_elapsed_s`, `lidar_render_elapsed_s` | wall time of training, camera render and lidar render (also `*_start_epoch_s` and `*_end_epoch_s`) |
+| `split_render_check` | `match`, or `MISMATCH` when the rendered file names differ from `split.json`'s frames (details in its `render_check`) |
 
 ## Camera renders (`renders/<split>/rgb`, `gt-rgb`)
 - There is one JPEG per camera pose (quality 100, still lossy) at native resolution. They come from `ns-render dataset`.
@@ -99,4 +120,5 @@ runs/<run_id>/
 | `median_chamfer_distance` | same, using `pred_points_median` | m², lower |
 
 ## Version notes
-- Runs before commit `806db4f` (e.g. `may_chunks0_1_smoke-smoke-20261025-182824-b8104e1`) have camera renders only. They have no `lidar/`, no `lidar_metrics.json`, no `TRAIN_SEED` (their seed was nerfstudio's default, 42).
+- Runs before commit `a7202f7` (e.g. `may_chunks0_1_smoke-smoke-20261025-182824-b8104e1`) have camera renders only. They have no `lidar/`, no `lidar_metrics.json`, no `TRAIN_SEED` (their seed was nerfstudio's default, 42).
+- Runs submitted before `09_extract_run_split.py` existed have no `split.json` or `split_render_check`. Write the file afterwards with the script; it needs only `job_info.txt` and the same dataset.

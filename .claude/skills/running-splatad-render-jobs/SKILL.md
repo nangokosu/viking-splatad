@@ -61,9 +61,31 @@ It does **not** make runs bit-identical:
 
 Same seed means statistically similar runs, not identical ones. Compare B vs R with the same seed, and don't read small metric gaps as signal without repeats.
 
+## Train/test split record (every run)
+**The split has no randomness, and the seed does not affect it.** SplatAD keeps the frames inside the time window (`DATASET_START/END_FRACTION`, over camera and lidar times together, inclusive), then picks, per sensor, ceil(n·f) evenly spaced train frames; the rest are test. f is the manifest's `session.train_fraction` (0.9) unless overridden.
+
+`scripts/09_extract_run_split.py` rebuilds it on the CPU, without torch, and writes `<run dir>/split.json` and `split_frames.csv`:
+- every frame with its split, index, ns stamp and time;
+- the seed, git SHA, window, train fraction and its source;
+- SHA-256 hashes of the dataset's `manifest.json` and `poses.npz`;
+- `membership_sha256`, a fingerprint of the split, and `render_check`.
+
+`splatad_run.sbatch` runs it before training and again after rendering, and records `split_render_check: match|MISMATCH` in `job_info.txt`.
+
+It was verified against the real dataparser on `may_chunks0_1_smoke`'s smoke window: 135/15 camera and 135/15 lidar, identical frames.
+
+- **For a fetched run without the file** (older runs), or to check one:
+  ```bash
+  uv run python scripts/09_extract_run_split.py --run-dir runs/<run_id>    # dataset: data/intermediate/<SESSION>
+  ```
+  It exits 1 if renders exist and their file names differ from the rebuilt split. The output is byte-identical for the same inputs.
+- **Same split for two runs or two people:** equal `membership_sha256` means the same frames. Equal `dataset.*_sha256` means the same dataset.
+- **Never read the split from `config.yml`.** Its `train_split_fraction` is 0.5, saved before the dataparser sets the real value. Don't use `manifest.json` `pipeline.splits` either: it covers the whole recording and ignores the window.
+- To list a run's test frames: `python -c "import json; print([f['file'] for f in json.load(open('runs/<run_id>/split.json'))['frames'] if f['split'] == 'test'])"`.
+
 ## Monitor: stuck vs progressing
 - The log, `job_info.txt` and all outputs are in the run dir: `<stage root>/runs/<run_id>/`.
-- Milestones, in order: `gpu_check` → `train_elapsed_s` → `render_elapsed_s` (camera) → `lidar_render_elapsed_s` → `end_utc`.
+- Milestones, in order: `gpu_check` → `split.json` written → `train_elapsed_s` → `render_elapsed_s` (camera) → `lidar_render_elapsed_s` → `end_utc`.
 
 **The progress table often stops appearing in the log while training is healthy.** It was seen right after `Caching eval lidars`, the step-500 eval, with 5+ silent minutes. A silent log is NOT evidence of a hang, so check the job itself before any `scancel`:
 ```bash
@@ -87,8 +109,9 @@ Result on your machine in `runs/<run_id>/`. Every file and key of every run fold
 - `renders/{train,test}/lidar/<idx>_<ts_ns>.npz`: one per lidar pose, named exactly like the input sweep `data/intermediate/<session>/lidar/<sensor>/<idx>_<ts_ns>.npy`.
 - `renders/{train,test}/lidar_metrics.json`: SplatAD's built-in per-scan lidar metrics, with `mean` and `per_scan` (depth_median_l2, intensity_rmse, ray_drop_accuracy, chamfer_distance, ...).
 - `train/.../config.yml`, the latest `step-*.ckpt`, `job_info.txt`, and the Slurm log.
+- `split.json` and `split_frames.csv`: the exact train/test frames (see "Train/test split record").
 
-A complete smoke run has 135 train + 15 test frames per camera output. Lidar scan counts come from the dataparser's own split, so check them against the `.npz` count.
+A complete smoke run has 135 train + 15 test frames for camera and for lidar. Check `split_render_check: match` in `job_info.txt`, or re-run `09_extract_run_split.py`, instead of counting files by hand.
 
 **Lidar npz keys** (full list in the docstring of `scripts/08_render_lidar_pointcloud.py`):
 

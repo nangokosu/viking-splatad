@@ -80,6 +80,12 @@ assert torch.cuda.is_available(), 'CUDA not available'; \
 print('gpu_check:', torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0)); \
 print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 
+# ---- (c2) record the exact train/test frames ------------------------------------------------
+# The split is deterministic (time window + per-sensor LINSPACE, no RNG), so it is rebuilt on the
+# CPU from job_info.txt and the dataset: $RUN_DIR/split.json + split_frames.csv. Written before
+# training so a run that dies still documents its frames; step (f) re-checks it against the renders.
+python "$CODE_DIR/scripts/09_extract_run_split.py" --run-dir "$RUN_DIR" --dataset-dir "$STAGE_ROOT/data/$SESSION"
+
 # ---- (d) train --------------------------------------------------------------------------
 # --machine.seed seeds python/numpy/torch (all CUDA devices) before setup (nerfstudio train.py).
 # It does not make training bit-exact: the gsplat/SplatAD and tcnn backward passes accumulate
@@ -148,6 +154,13 @@ python "$CODE_DIR/scripts/08_render_lidar_pointcloud.py" \
 LIDAR_RENDER_END_SECONDS=$(date +%s)
 
 # ---- (f) done -------------------------------------------------------------------------------
+# Re-run the split extraction now that renders exist: it compares the rendered file names with the
+# rebuilt split (split.json render_check). A mismatch is recorded, not fatal: the renders are done.
+if python "$CODE_DIR/scripts/09_extract_run_split.py" --run-dir "$RUN_DIR" --dataset-dir "$STAGE_ROOT/data/$SESSION"; then
+  echo "split_render_check: match" >> "$JOB_INFO"
+else
+  echo "split_render_check: MISMATCH (see split.json render_check)" >> "$JOB_INFO"
+fi
 {
   echo "lidar_render_end_epoch_s: $LIDAR_RENDER_END_SECONDS"
   echo "lidar_render_elapsed_s: $((LIDAR_RENDER_END_SECONDS - LIDAR_RENDER_START_SECONDS))"
