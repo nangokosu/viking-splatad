@@ -10,7 +10,7 @@ description: Use when training SplatAD and rendering camera images or lidar poin
 1. **Trains** with `ns-train splatad ... viking-data`, passing `--machine.seed` = the profile's `seed`.
 2. **Renders camera images** with `ns-render dataset`: rgb + gt-rgb jpg.
 3. **Renders lidar** with `scripts/08_render_lidar_pointcloud.py`, which calls SplatAD's `get_lidar_outputs` and then `filter_lidar_pred_and_gt(output_point_cloud=True)`.
-4. Both renders cover every input pose of the profile's `render_pose_source`, which is **`test` only** (user's choice 2026-10-26): training views are never re-rendered, and the test split is only the middle half of each held-out block (T62, below). That keeps the fetch small: ~240 test frames for the full May run instead of ~2400.
+4. Both renders cover every input pose of the profile's `render_pose_source`, which is **`test` only** (user's choice 2026-10-26): training views are never re-rendered, and the test split is only the middle 10% of each held-out block (T62, below). That keeps the fetch small: 22 camera frames and 24 lidar sweeps for the full May run instead of ~2400 each.
 
 Jobs run the **committed** code at HEAD. They need a built env: if `submit` says it is missing, follow the `building-splatad-cluster-env` skill.
 
@@ -65,7 +65,7 @@ Same seed means statistically similar runs, not identical ones. Compare B vs R w
 ## Train/test split record (successful runs only)
 **The split has no randomness, and the seed does not affect it.** SplatAD keeps the frames inside the time window (`DATASET_START/END_FRACTION`, over camera and lidar times together, inclusive). Then the test set is K contiguous time blocks, the same for camera and lidar, centred at k/(K+1) of the window, each (1−f)/K of it long (T60, `VikingHillDataParser.test_block_count`). K is the session config's `split.test_block_count` (2), exported as `TEST_BLOCK_COUNT`. f is the manifest's `session.train_fraction` (0.9) unless overridden. Runs from before T60 used neurad's per-sensor linspace split instead (every ~10th frame).
 
-**Only each block's core is test (T62).** The session config's `split.test_block_core_fraction` c (0.5), exported as `TEST_BLOCK_CORE_FRACTION` and passed as `--test-block-core-fraction`, keeps as test only the frames in [m − c·L/2, m + c·L/2) around each block's centre m. The rest of each block (a quarter on each side at c = 0.5) is **guard**: never trained on (train is unchanged), never rendered, in neither split. The guard also puts a quarter block of time between the nearest train frame and any test frame. Whole May recording (241.09 s): camera 2162 train / 118 test / 121 guard, lidar 2172 / 120 / 120; blocks 74.34–86.39 s and 154.70–166.76 s, cores 77.35–83.38 s and 157.72–163.74 s.
+**Only each block's core is test (T62).** The session config's `split.test_block_core_fraction` c (0.1), exported as `TEST_BLOCK_CORE_FRACTION` and passed as `--test-block-core-fraction`, keeps as test only the frames in [m − c·L/2, m + c·L/2) around each block's centre m. The rest of each block (45% on each side at c = 0.1) is **guard**: never trained on (train is unchanged), never rendered, in neither split. The guard also puts 45% of a block of time between the nearest train frame and any test frame. Whole May recording (241.09 s): camera 2162 train / 22 test / 217 guard, lidar 2172 / 24 / 216; blocks 74.34–86.39 s and 154.70–166.76 s, cores 79.76–80.97 s and 160.13–161.33 s (camera frames 795–806 and 1595–1604, lidar sweeps 798–809 and 1602–1613). The 15 s smoke window keeps only 1 camera and 1 lidar test frame.
 
 `scripts/09_extract_run_split.py` rebuilds it on the CPU, without torch, and writes `<run dir>/split.json` and `split_frames.csv`:
 - every frame with its split, index, ns stamp and time;
@@ -113,6 +113,9 @@ ssh <user>@comps0.cs.toronto.edu "srun --jobid=<job> --overlap -n1 -c1 bash -c \
 - Truly stuck: the GPU is idle and nothing advances for >10 min.
 - Held with `user_env_retrieval_failed_requeued_held`, or a silent death in seconds: see the building-splatad-cluster-env table.
 
+## Cancelled, failed or unwanted runs
+Remove every artifact of them (cluster run dir, fetched copy, ledger row) with the `cleaning-up-splatad-runs` skill (`submit_run.py clean`), never by hand.
+
 ## Fetch (automatic after every successful run)
 **Fetching is part of every run: don't ask first.** Right after `submit`, start a background wait for the job to leave `squeue`. Then read `job_info.txt`:
 - **`split_render_check: match` and `end_utc` present (success):** fetch right away, then report the results.
@@ -128,7 +131,7 @@ Result on your machine in `runs/<run_id>/`. Every file and key of every run fold
 - `train/.../config.yml`, the latest `step-*.ckpt`, `job_info.txt`, and the Slurm log.
 - `split.json` and `split_frames.csv`: the exact train/test frames. They exist only for successful runs (see "Train/test split record").
 
-A complete smoke run renders only its few test-core frames (about 3–4 per block for camera and for lidar). Check `split_render_check: match` and `end_utc` in `job_info.txt` instead of counting files by hand. A run without them failed: don't document it.
+A complete smoke run renders only its test-core frames: 1 camera frame and 1 lidar sweep. Check `split_render_check: match` and `end_utc` in `job_info.txt` instead of counting files by hand. A run without them failed: don't document it.
 
 **Lidar npz keys** (full list in the docstring of `scripts/08_render_lidar_pointcloud.py`):
 

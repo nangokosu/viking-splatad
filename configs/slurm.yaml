@@ -68,7 +68,7 @@ profiles:
     #     intrinsics/distortion errors), a sign and a boulder (#682).
     # 15 s at ~10 Hz is ~150 camera frames and ~150 sweeps over ~14 m, so neighbouring views
     # overlap heavily; the 0.9 train fraction holds out two T60 blocks of ~7 frames each, and the
-    # session's block core fraction keeps their central halves as the rendered test frames.
+    # session's block core fraction (central 10%) leaves ~1 rendered test frame per sensor here.
     window_start_seconds: 52
     window_seconds: 15
     # ~135 training frames x ~22 visits each = 3000 iterations (one image per iteration):
@@ -103,7 +103,7 @@ profiles:
     # Same seed as the smoke and as June B / R, so the three runs differ only in their data/method.
     seed: 42
     # Estimate from job 222933 scaled linearly: train 656 s x 10 = ~1.8 h; camera and lidar renders
-    # ~100 s per 150 frames x ~120 test frames each = ~3 min. ~2 h total; 6 h leaves ~3x headroom
+    # ~100 s per 150 frames x ~24 test frames each = under a minute. ~2 h total; 6 h leaves ~3x headroom
     # for a larger Gaussian count on a full scene, far under the 5-day limit.
     time_limit: "0-06:00:00"
     # Render only the test frames (the T62 cores of the two T60 held-out blocks), for the held-out

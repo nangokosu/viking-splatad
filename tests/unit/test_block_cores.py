@@ -235,13 +235,13 @@ def test_bad_core_fraction_in_the_session_config_is_refused(tmp_path, bad_fracti
         load_submit_module().session_test_block_core_fraction("s", tmp_path / "intermediate", tmp_path / "sessions")
 
 
-def test_may_and_june_sessions_render_the_middle_half_of_each_block():
-    """Both sessions set c = 0.5 (user's choice 2026-10-26), so May, June B and R test the same way."""
+def test_may_and_june_sessions_render_the_middle_tenth_of_each_block():
+    """Both sessions set c = 0.1 (user's choice 2026-10-26, replacing 0.5), so May, June B and R test the same way."""
     submit_module = load_submit_module()
     core_fractions = {session_path.stem: submit_module.session_test_block_core_fraction(
         session_path.stem, Path("/absent"), SESSION_CONFIG_DIRECTORY)
         for session_path in SESSION_CONFIG_DIRECTORY.glob("*.yaml")}
-    assert core_fractions["may_short_grass"] == core_fractions["june_tall_grass"] == 0.5
+    assert core_fractions["may_short_grass"] == core_fractions["june_tall_grass"] == 0.1
 
 
 def test_job_environment_exports_the_core_fraction():
