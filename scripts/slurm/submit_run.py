@@ -638,6 +638,59 @@ def dataset_train_fraction(session: str, intermediate_root: Path = INTERMEDIATE_
     return float(train_fraction)
 
 
+def profile_split_fractions(profile_settings: Dict[str, Any], session: str,
+                            intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                            session_config_directory: Path = SESSION_CONFIG_DIRECTORY
+                            ) -> Tuple[float, Optional[float], float]:
+    """The run's train fraction and block core fraction: the profile's own, else the dataset's.
+
+    A profile may set ``train_fraction`` and/or ``test_block_core_fraction`` to split one run
+    differently from its session (e.g. the 15 s smoke window, where the session's 0.9 / 0.1 leave
+    a single test frame per sensor). A profile train fraction differs from the manifest, so it
+    must reach the dataparser as ``--train-split-fraction-override`` (T27): without it the
+    dataparser resolves the manifest's value, and scripts/09 finds config.yml and the split
+    disagreeing.
+
+    Args:
+        profile_settings: The chosen ``profiles.<name>`` mapping.
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        (train fraction, train fraction override or None, core fraction). The override is the
+        profile's train fraction, None when the profile has none (the manifest's value applies).
+
+    Raises:
+        ValueError: If a profile value is not a number in (0, 1], or if the train fraction leaves
+            the test blocks overlapping (f <= 1/(K+1), T60).
+    """
+    # Step 1: each profile value, when present, must be a real number in (0, 1] (no bools/strings).
+    for key in ("train_fraction", "test_block_core_fraction"):
+        value = profile_settings.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                  or not 0 < value <= 1):
+            raise ValueError(f"profile {key} must be a number in (0, 1], got {value!r}")
+    # Step 2: the train fraction: the profile's (then it is also the override), else the manifest's.
+    train_fraction_override = profile_settings.get("train_fraction")
+    if train_fraction_override is None:
+        train_fraction = dataset_train_fraction(session, intermediate_root)
+    else:
+        train_fraction = float(train_fraction_override)
+        # K blocks of (1 - f)/K each, centred at k/(K+1), stay apart only if f > 1/(K+1) (T60);
+        # refuse here, before a GPU is queued, rather than in the dataparser.
+        test_block_count = session_test_block_count(session, intermediate_root, session_config_directory)
+        if not train_fraction > 1 / (test_block_count + 1):
+            raise ValueError(f"profile train_fraction {train_fraction} must exceed 1/(K+1) = "
+                             f"{1 / (test_block_count + 1)} for K = {test_block_count} test blocks")
+    # Step 3: the core fraction: the profile's, else the session config's.
+    core_fraction = profile_settings.get("test_block_core_fraction")
+    if core_fraction is None:
+        core_fraction = session_test_block_core_fraction(session, intermediate_root, session_config_directory)
+    return (train_fraction, None if train_fraction_override is None else float(train_fraction_override),
+            float(core_fraction))
+
+
 def require_no_return_sidecar(dataset_dir: Path, add_missing_points: bool) -> None:
     """Refuse a dataset that lacks the no-return sidecar when the run needs it.
 
@@ -688,6 +741,7 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
                           env_marker: Dict[str, str],
                           add_missing_points: Optional[bool] = None,
                           train_split_fraction: Optional[float] = None,
+                          train_split_fraction_override: Optional[float] = None,
                           test_block_count: Optional[int] = None,
                           test_block_core_fraction: Optional[float] = None,
                           minimum_eval_points: Optional[int] = None,
@@ -706,6 +760,9 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
             splatad_run.sbatch refuses to start.
         train_split_fraction: The dataset's train fraction (``dataset_train_fraction``), exported
             as TRAIN_SPLIT_FRACTION. Same rule as ``add_missing_points``: None leaves it out.
+        train_split_fraction_override: The profile's own train fraction (``profile_split_fractions``),
+            exported as TRAIN_SPLIT_FRACTION_OVERRIDE (viking-data --train-split-fraction-override).
+            Optional: None leaves it out, and the dataparser uses the manifest's fraction.
         test_block_count: The session's test block count (``session_test_block_count``), exported
             as TEST_BLOCK_COUNT. Same rule as ``add_missing_points``: None leaves it out.
         test_block_core_fraction: The session's core fraction (``session_test_block_core_fraction``),
@@ -749,6 +806,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
     # repr keeps every digit, so config.yml, job_info.txt and the manifest hold the same float.
     if train_split_fraction is not None:
         job_environment["TRAIN_SPLIT_FRACTION"] = repr(float(train_split_fraction))
+    if train_split_fraction_override is not None:
+        job_environment["TRAIN_SPLIT_FRACTION_OVERRIDE"] = repr(float(train_split_fraction_override))
     if test_block_count is not None:
         job_environment["TEST_BLOCK_COUNT"] = str(int(test_block_count))
     # repr keeps every digit, so config.yml and job_info.txt hold the same float.
@@ -1316,6 +1375,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     profile_settings = config["profiles"][profile]
     # The eval cadence is checked before any ssh/sbatch, so a profile too short for its minimum fails early.
     minimum_eval_points, steps_per_eval_all_images = profile_eval_cadence(profile_settings)
+    # The split fractions too (profile overrides, else the dataset's), so a bad value fails early.
+    train_fraction, train_fraction_override, core_fraction = profile_split_fractions(profile_settings, session)
     ssh_target = resolve_ssh_target(config["ssh_host"])
     absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
     git_sha = get_head_sha()
@@ -1336,9 +1397,10 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     write_remote_file(ssh_target, job_script_path, build_job_script(
         build_job_environment(profile_settings, session, run_id, git_sha, absolute_stage_root, env_marker,
                               add_missing_points=session_add_missing_points(session),
-                              train_split_fraction=dataset_train_fraction(session),
+                              train_split_fraction=train_fraction,
+                              train_split_fraction_override=train_fraction_override,
                               test_block_count=session_test_block_count(session),
-                              test_block_core_fraction=session_test_block_core_fraction(session),
+                              test_block_core_fraction=core_fraction,
                               minimum_eval_points=minimum_eval_points,
                               steps_per_eval_all_images=steps_per_eval_all_images),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))

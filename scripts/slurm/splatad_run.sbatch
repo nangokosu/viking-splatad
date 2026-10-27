@@ -20,7 +20,8 @@
 #   ADD_MISSING_POINTS  (True/False: the session config's splatad.add_missing_points; True appends
 #                        the dataset's recorded no-returns, lidar_no_return/, as 2000 m rays)
 #   TRAIN_SPLIT_FRACTION  (the dataset manifest's session.train_fraction, passed to viking-data so
-#                          config.yml records the fraction the dataparser actually uses)
+#                          config.yml records the fraction the dataparser actually uses; the
+#                          profile's train_fraction instead, when it sets one)
 #   TEST_BLOCK_COUNT  (the session config's split.test_block_count: the test set is that many
 #                      contiguous time blocks shared by camera and lidar, T60; recorded in config.yml)
 #   TEST_BLOCK_CORE_FRACTION  (the session config's split.test_block_core_fraction: only the central
@@ -29,6 +30,10 @@
 #   MINIMUM_EVAL_POINTS  (the profile's minimum number of whole-stretch evals per run)
 #   STEPS_PER_EVAL_ALL_IMAGES  (the eval interval k = (N-1)//MINIMUM_EVAL_POINTS, T63, derived by
 #                               submit_run.py; ns-train --steps-per-eval-all-images)
+# Optional:
+#   TRAIN_SPLIT_FRACTION_OVERRIDE  (set only when the profile has its own train_fraction; equal to
+#                                   TRAIN_SPLIT_FRACTION, passed as --train-split-fraction-override so
+#                                   the dataparser splits with it instead of the manifest's value, T27)
 #
 # After training, the overfitting plot script (scripts/11) writes <run dir>/overfitting/ (train-vs-test
 # curves); its outcome goes to job_info.txt (overfitting_plot:) and end_utc requires it to be written.
@@ -73,6 +78,10 @@ mkdir -p "$RUN_DIR"
     TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES; do
     echo "$exported_variable: ${!exported_variable:-}"
   done
+  # Recorded only when set, so runs without a profile override keep their old job_info.txt keys.
+  if [ -n "${TRAIN_SPLIT_FRACTION_OVERRIDE:-}" ]; then
+    echo "TRAIN_SPLIT_FRACTION_OVERRIDE: $TRAIN_SPLIT_FRACTION_OVERRIDE"
+  fi
   echo "environment build:"; sed 's/^/  /' "$ENV_PREFIX/.build-complete"
   echo "gpu (name, compute_cap, memory.total, driver_version):"
   nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv,noheader
@@ -113,6 +122,12 @@ print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 # default (ADPipelineConfig.calc_fid_steps), and no training step reaches it, resumed runs included.
 # The flag is a variable-length tuple: tyro reads values until the next flag, so another flag must
 # follow it. Directly before viking-data it swallowed the subcommand name (jobs 222980, 222983).
+# A profile's own train fraction must also reach the dataparser as the override: it otherwise
+# resolves the manifest's fraction (T27), and the split would disagree with config.yml (scripts/09).
+TRAIN_FRACTION_OVERRIDE_ARGS=()
+if [ -n "${TRAIN_SPLIT_FRACTION_OVERRIDE:-}" ]; then
+  TRAIN_FRACTION_OVERRIDE_ARGS=(--train-split-fraction-override "$TRAIN_SPLIT_FRACTION_OVERRIDE")
+fi
 TRAIN_START_SECONDS=$(date +%s)
 echo "train_start_epoch_s: $TRAIN_START_SECONDS" >> "$JOB_INFO"
 ns-train splatad \
@@ -129,6 +144,7 @@ ns-train splatad \
   --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION" \
   --add-missing-points "$ADD_MISSING_POINTS" \
   --train-split-fraction "$TRAIN_SPLIT_FRACTION" \
+  ${TRAIN_FRACTION_OVERRIDE_ARGS[@]+"${TRAIN_FRACTION_OVERRIDE_ARGS[@]}"} \
   --test-block-count "$TEST_BLOCK_COUNT" \
   --test-block-core-fraction "$TEST_BLOCK_CORE_FRACTION" \
   --eval-whole-test-blocks True
