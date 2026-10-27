@@ -73,10 +73,11 @@ lidar:
   ring_field: ring
   # Margin added around the derived robot-body cluster when computing min_lidar_dist (T15), metres.
   ego_margin_m: 0.05
-  # Scans pooled to derive elevation mapping / ego box (T15/T16); every scan is overkill.
+  # Scans pooled to derive the ring set / ego box (T15/T16); every scan is overkill.
   model_derivation_scan_count: 50
-  # Phase B no-return sidecar (T51): the beam directions of every (ring, column) cell are fitted on
-  # the raw cloud of the same sweeps. Gate on the median fit residual, in azimuth columns: below half
+  # Beam model (T51): the beam directions of every (ring, column) cell are fitted on the raw cloud
+  # of the same sweeps. Used by the no-return sidecar, and its far-field elevations are the
+  # manifest's elevation mapping (T61). Gate on the median fit residual, in azimuth columns: below half
   # a column a placeholder still falls in its own raster column.
   beam_fit_max_median_residual_columns: 0.5
   # Residual percentile stored in derived.json for diagnostics (conventional robust max).

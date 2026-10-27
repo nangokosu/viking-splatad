@@ -240,6 +240,7 @@ The radar claim concerns blocked and no-return cells. B and R should agree on se
 | T47 | BEV raster | a known point set gives exact pixel counts |
 | T49 (done) | manifest sweep period covers the per-point time of every extracted sweep | derived period kept unless a longer \|t\| is written; a synthetic chunk with stretched sweeps passes the contract after an incremental, fresh or resumed run |
 | T60 (done) | middle-block test split shared by every sensor | camera 0..12 s and lidar 0.5..11.5 s, f = 0.5, K = 2 give blocks [2.5, 5.5) and [6.5, 9.5) with the exact test frames (half-open edges); the real dataparser and scripts/09 pick identical frames |
+| T61 (done) | manifest elevation mapping = T51 far-field elevation per ring (replaces T16's parallax-biased medians; T16 now only supplies the ring set) | synthetic beams with elevation_inf + k/r give back elevation_inf exactly while T16's median sits at least k/r_max above it; rings come out ascending; the pipeline writes the cached beam model's far-field angles |
 | T48 | time-range split override (backtrack hold-out, only if chosen) | frames inside the eval range go to eval and all others to train; both splits non-empty and disjoint |
 | T51 | Ouster beam directions fitted from raw returns (Phase B) | synthetic beams with a known parallax and either column direction give back the exact far-field angles; a cloud the model cannot describe fails the gate |
 | T52 | (ring, column) → unit direction | known angles give the exact vectors |

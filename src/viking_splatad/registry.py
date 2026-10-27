@@ -34,6 +34,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # Middle-block test split shared by every sensor (dataset/run_split.py, used by
         # VikingHillDataParser's test_block_count and scripts/09).
         "T60",
+        # Elevation mapping = far-field beam elevations of the T51 fit (extract/no_return.py),
+        # replacing T16's parallax-biased medians in the manifest.
+        "T61",
     }
 )
 
