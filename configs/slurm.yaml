@@ -54,6 +54,16 @@ env_build:
   # well under that. Refine from sacct Elapsed of the first build.
   time_limit: "0-06:00:00"
 
+# Render-only jobs (submit_run.py render, scripts/slurm/render_only.sbatch): guard frames of a finished
+# run, rendered from its checkpoint without training.
+render_only:
+  # Measured render speeds (running-splatad-render-jobs skill, job 222633): camera ~0.5 s/frame
+  # (72-86 s for 150), lidar ~0.5 s/sweep (73 s for 150), plus a few minutes of model and dataset load
+  # per render step. A run's whole guard set is a few hundred frames (full May: 217 camera, 216 lidar),
+  # so even all of it is ~4 min of rendering. 2 h leaves >10x headroom for slow loads and a busy
+  # workdisk while staying short enough to schedule quickly.
+  time_limit: "0-02:00:00"
+
 profiles:
   smoke:
     # Goal: shortest run that still tests the dataparser and conversion pipeline, not quality.

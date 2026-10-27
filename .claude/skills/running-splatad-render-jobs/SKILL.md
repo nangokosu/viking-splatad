@@ -15,6 +15,8 @@ description: Use when training SplatAD and rendering camera images or lidar poin
 
 Jobs run the **committed** code at HEAD. They need a built env: if `submit` says it is missing, follow the `building-splatad-cluster-env` skill.
 
+To render more frames of a finished run (its guard frames) from its checkpoint without retraining, use the `rendering-splatad-checkpoints` skill (`submit_run.py render`).
+
 ## One-time setup (each user, on your own machine)
 Everyone uses their **own** CS Lab account. Your username and password never go into repo files, commits, env files or scripts. The repo stores only the host (`ssh_host` in `configs/slurm.yaml`).
 

@@ -47,6 +47,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # Held-out split by requester (dataset/run_split.py, VikingHillDataParser): training eval
         # ("val") gets the whole T60 blocks, renders keep the T62 cores.
         "T65",
+        # Render-only jobs (dataset/run_split.py, VikingHillDataParser.render_frame_selection_file):
+        # the test split becomes exactly the requested guard frames of a finished run.
+        "T66",
     }
 )
 

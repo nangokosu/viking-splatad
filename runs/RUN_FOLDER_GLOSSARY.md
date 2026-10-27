@@ -15,6 +15,7 @@ runs/<run_id>/
 │   └── overfitting_curves.csv
 ├── slurm-<job id>.out                 Slurm log (stdout + stderr of the job)
 ├── compare/                           only if you ran scripts/slurm/compare_renders.py on the Mac
+├── rerenders/<label>/                 one per render-only job on this run's checkpoint (guard frames); see "Render-only jobs"
 ├── train/<session>/splatad/<run_id>/
 │   ├── config.yml                     full nerfstudio config (loads the model; holds the time window)
 │   ├── dataparser_transforms.json     w2m transform (dataparser frame), scale and time offset; written by 08 (ns-train skips it for SplatAD)
@@ -180,6 +181,20 @@ Made by `scripts/11_plot_overfitting_curves.py` from the TensorBoard log, right 
 | `ray_drop_accuracy` | fraction of valid rays where (ray-drop prob > 0.5) equals (the real ray did not return). Informative only for runs trained **and rendered** with `add_missing_points: true`. Job 222869 trained with it, but 08 then rendered without the no-return rays (nerfstudio's `streamline_ad_config` turned the flag off; fixed after that run). Its score therefore equals `len(pred_points)` / `len(gt_points)` (train 0.969, test 0.947): the share of real returns the model predicts will return. `add_missing_points: true` needs a dataset extracted after 2026-10-26: the converter keeps no-returns out of the returns files and writes them to `lidar_no_return/` (T51–T54), and the dataparser adds them as 2000 m rays (T55). Without that, every ray is a return. The score is then 1 whenever the model predicts no drop, and the ray-drop loss only ever sees "returned" labels, so ignore it (all runs up to job 222633). | 0–1, higher |
 | `chamfer_distance` | (Σ over `pred_points` of the squared distance to the nearest real point + Σ over real points of the squared distance to the nearest `pred_points` point) / N_real. Note that SplatAD divides **both** sums by the real point count. Missing when either cloud is empty. | m², lower |
 | `median_chamfer_distance` | same, using `pred_points_median` | m², lower |
+
+## Render-only jobs (`rerenders/<label>/`)
+Made by `submit_run.py render` and `scripts/slurm/render_only.sbatch` (skill `rendering-splatad-checkpoints`). Each job renders **guard** frames of this run (split `guard` in `split.json`: never trained on, never rendered by the run) from its `config.yml` and latest checkpoint, without training. `<label>` = `render-<UTC yyyymmdd-HHMMSS>-<short sha>`; the short sha is the render code.
+
+| file | meaning |
+|---|---|
+| `selection.json` | `camera`, `lidar`: the requested frame indices (sorted); `files`: their dataset paths, from `split.json`; `source_split_membership_sha256`: the `split.json` they were checked against; `requested_utc` |
+| `job.sbatch`, `slurm-<job id>.out` | the generated job script (its exported variables) and the Slurm log |
+| `job_info.txt` | `RUN_ID`, `RERENDER_LABEL`, `SESSION`, `GIT_SHA` (**render code**), `TRAIN_GIT_SHA` (the code that trained the checkpoint), `CODE_DIR`, `ENV_PREFIX`, `RENDER_DOWNSCALE_FACTOR` (the run's); host, GPU and `gpu_check` as for a run; `render_config`; `render_elapsed_s`, `lidar_render_elapsed_s` (+ epochs); `render_check` (`match`, or `FAILED (exit N)`: 1 = renders differ from the selection, 2 = outputs missing); `end_utc` only after `render_check: match` |
+| `config.yml` | the run's `config.yml` with the dataparser's `render_frame_selection_file` = this `selection.json` (T66: split `test`/`eval` = exactly the selected guard frames; `train`, `val`, the window, `w2m` and time origin unchanged). The run's own `config.yml` is never edited. |
+| `dataparser_transforms.json` | written by script 08; the same `w2m` as the run's |
+| `renders/test/{rgb,gt-rgb}/<idx>_<ts_ns>.jpg`, `renders/test/lidar/<idx>_<ts_ns>.npz`, `renders/test/lidar_metrics.json` | same formats and keys as the run's `renders/test/` (sections above). The folder is called `test` because ns-render and 08 name folders by split; the frames are guard frames. |
+
+A failed render job leaves its folder but never changes the run's own `job_info.txt`, so `clean` still sees the run as successful. Deleting the run deletes its `rerenders/`. While a render job is queued or running, `clean` keeps the run.
 
 ## Version notes
 - Runs before commit `a7202f7` (e.g. `may_chunks0_1_smoke-smoke-20261025-182824-b8104e1`) have camera renders only. They have no `lidar/`, no `lidar_metrics.json`, no `TRAIN_SEED` (their seed was nerfstudio's default, 42).
