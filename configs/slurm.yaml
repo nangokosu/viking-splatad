@@ -87,3 +87,25 @@ profiles:
     render_pose_source: train+test
     # Full resolution: only ~150 frames, and pixel-level misalignment is what we look for.
     render_downscale_factor: 1
+  may_scene_a:
+    # Goal: the full May Scene A model (CLAUDE.md scope: chunks 7-9 of may_short_grass, low grass),
+    # trained with stock SplatAD and checked on the held-out T60 blocks.
+    # No window_start_seconds / window_seconds: the whole extracted recording (~241 s), since the
+    # session config already cuts it to Scene A (start/end fraction 0.0 / 1.0).
+    # SplatAD's stock iteration count (method config default), so May matches the published
+    # recipe; ~2160 training camera frames x ~14 visits each (one image per iteration).
+    max_num_iterations: 30001
+    # ~15 checkpoints over the run; at the smoke's 0.22 s/iteration (job 222933: 656 s / 3000)
+    # that is one every ~7 min, so a kill at the time limit loses little.
+    steps_per_save: 2000
+    # Same seed as the smoke and as June B / R, so the three runs differ only in their data/method.
+    seed: 42
+    # Estimate from job 222933 scaled linearly: train 656 s x 10 = ~1.8 h; camera and lidar renders
+    # ~100 s per 150 frames x ~2400 frames each = ~0.9 h. ~2.7 h total; 12 h leaves ~4x headroom
+    # for a larger Gaussian count on a full scene, far under the 5-day limit.
+    time_limit: "0-12:00:00"
+    # Render every pose, train and test (test = the two T60 held-out blocks), for the held-out
+    # metrics in renders/test/lidar_metrics.json and for viewing.
+    render_pose_source: train+test
+    # Full resolution, as the smoke: pixel-level misalignment and trunk detail are what we look at.
+    render_downscale_factor: 1
