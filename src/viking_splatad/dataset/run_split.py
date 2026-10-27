@@ -50,6 +50,9 @@ FULL_RECORDING_END_FRACTION = 1.0
 ALL_FRAMES_TRAIN_FRACTION = 1.0
 # T62 core fraction meaning "the whole block is test" (no guard frames; the T60 split as is).
 WHOLE_BLOCK_CORE_FRACTION = 1.0
+# nerfstudio's training-time eval split name (full_images_datamanager.py:115): FullImageDatamanager
+# runs with test_mode="val" while training; ns-render and scripts/08 ask for "test".
+EVAL_WHOLE_BLOCKS_SPLIT_NAME = "val"
 
 
 @dataclass(frozen=True)
@@ -216,6 +219,28 @@ def middle_block_train_eval_indices(
             test_mask |= (times >= block_start) & (times < block_end)
         positions[name] = (np.flatnonzero(~test_mask).astype(np.int64), np.flatnonzero(test_mask).astype(np.int64))
     return positions, block_bounds
+
+
+@transform("T65", "held-out split by requester: training eval (val) gets whole test blocks, renders (test/eval) get the cores")
+def core_fraction_for_split(split_name: str, test_block_core_fraction: float, eval_whole_test_blocks: bool) -> float:
+    """Pick the T62 core fraction for the split a caller asked the dataparser for.
+
+    Training's periodic eval ("val") may cover the whole T60 blocks, guard included, while renders
+    ("test", "eval") keep the cheap cores. c = 1 makes T62 return the blocks unchanged.
+
+    Args:
+        split_name: Split the dataparser was asked for ("train", "val", "test" or "eval").
+        test_block_core_fraction: Configured core fraction c of T62.
+        eval_whole_test_blocks: True = "val" covers the whole blocks.
+
+    Returns:
+        WHOLE_BLOCK_CORE_FRACTION iff the flag is on and the split is "val"; else c unchanged.
+    """
+    # Step 1: only the training-time eval split is widened to the whole block.
+    if eval_whole_test_blocks and split_name == EVAL_WHOLE_BLOCKS_SPLIT_NAME:
+        return WHOLE_BLOCK_CORE_FRACTION
+    # Step 2: every other requester keeps the configured core.
+    return test_block_core_fraction
 
 
 @transform("T62", "test block cores: the central fraction of each T60 test block stays test, the rest is guard")

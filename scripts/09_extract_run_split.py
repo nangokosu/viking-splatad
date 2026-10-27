@@ -21,9 +21,11 @@ Only successful runs are documented. Nothing is written (and a stale record is r
 Outputs, in ``<run dir>``:
     split.json        provenance (run, git SHA, seed, window, train fraction and its source,
                       test block count, block and core bounds, dataset hashes), per-sensor counts
-                      (train / test / guard), every frame with its split (guard = in a block, outside its core), the
-                      membership digest and the render check. Deterministic: re-running on the
-                      same inputs writes the same bytes.
+                      (train / test / guard / val = frames evaluated during training: test + guard
+                      when config.yml has eval_whole_test_blocks, else test), the eval stretches
+                      (selection.eval_during_training_s), every frame with its split (guard = in a
+                      block, outside its core), the membership digest and the render check.
+                      Deterministic: re-running on the same inputs writes the same bytes.
     split_frames.csv  one row per frame: sensor, kind, split, frame_index, timestamp_ns, time_s, file.
 
 Usage:
@@ -39,7 +41,6 @@ the rebuilt split; 2 when the run did not complete (failed runs are never docume
 import argparse
 import csv
 import json
-import re
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -57,6 +58,8 @@ from viking_splatad.dataset.run_split import (
     resolve_run_train_fraction,
     split_digest,
 )
+# read_config_scalar / YAML_NULL_LITERALS moved to the package; the names stay available here.
+from viking_splatad.io.nerfstudio_config import YAML_NULL_LITERALS, read_config_scalar  # noqa: F401
 from viking_splatad.splatad.viking_conversions import open_dataset_view
 
 # Repository root: this file lives in <root>/scripts/ (default dataset location is relative to it).
@@ -78,8 +81,6 @@ POSE_SOURCE_SEPARATOR = "+"
 EXIT_WRITTEN, EXIT_INCONSISTENT, EXIT_INCOMPLETE = 0, 1, 2
 # Render folder per sensor kind and the file extension each renderer writes there.
 RENDER_FOLDER_BY_KIND = {"camera": ("rgb", ".jpg"), "lidar": ("lidar", ".npz")}
-# YAML literal nerfstudio writes for None.
-YAML_NULL_LITERALS = ("null", "~", "None")
 # Why the seed is recorded even though it does not choose frames (copied into split.json).
 SEED_NOTE = (
     "TRAIN_SEED (--machine.seed) seeds training-time sampling only; train/test membership is "
@@ -106,27 +107,6 @@ def parse_job_info(job_info_path: Path) -> Dict[str, str]:
         info_key, info_value = info_line.split(": ", 1)
         job_info.setdefault(info_key.strip(), info_value.strip())
     return job_info
-
-
-def read_config_scalar(config_path: Path, field_name: str) -> Optional[str]:
-    """Read one scalar field of nerfstudio's ``config.yml`` without constructing its Python objects.
-
-    config.yml holds ``!!python/object`` tags that need nerfstudio to load, so the field is read
-    with a line regex instead (field names here are unique within the dataparser config).
-
-    Args:
-        config_path: The run's ``config.yml``.
-        field_name: Field such as ``train_split_fraction_override``.
-
-    Returns:
-        The raw value string, None for a YAML null or an absent field/file.
-    """
-    if not config_path.is_file():
-        return None
-    field_match = re.search(rf"^\s*{re.escape(field_name)}:\s*(\S+)\s*$", config_path.read_text(), flags=re.MULTILINE)
-    if field_match is None or field_match.group(1) in YAML_NULL_LITERALS:
-        return None
-    return field_match.group(1)
 
 
 def list_rendered_stems(run_dir: Path) -> Dict[Tuple[str, str], List[str]]:
@@ -302,6 +282,10 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
     test_block_count = resolve_checked_test_block_count(job_info, config_path)
     test_block_core_fraction = resolve_checked_test_block_core_fraction(job_info, config_path)
     max_eval_text = read_config_scalar(config_path, "max_eval_frames")
+    # Runs from before the overfitting monitor lack the field: their training eval covered the
+    # cores only. YAML booleans are case-insensitive in practice, so compare lower-cased.
+    eval_whole_test_blocks = (
+        read_config_scalar(config_path, "eval_whole_test_blocks") or "").lower() == "true"
     start_fraction = float(job_info["DATASET_START_FRACTION"])
     end_fraction = float(job_info["DATASET_END_FRACTION"])
 
@@ -317,7 +301,8 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
     if mismatched:
         raise RunNotDocumented(f"renders disagree with the rebuilt split: {mismatched}", EXIT_INCONSISTENT)
 
-    # Step 5: per-sensor counts (frames in the recording, in the window, per split).
+    # Step 5: per-sensor counts (frames in the recording, in the window, per split). "val" is what
+    # training evaluated: the whole test blocks (test + guard frames) or, for old runs, the cores (test).
     sensor_counts = {}
     for sensor in view.manifest["sensors"]:
         if sensor["kind"] not in SPLIT_SENSOR_KINDS:
@@ -332,6 +317,10 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
             TEST_SPLIT_NAME: sum(frame.split == TEST_SPLIT_NAME for frame in sensor_frames),
             GUARD_SPLIT_NAME: sum(frame.split == GUARD_SPLIT_NAME for frame in sensor_frames),
         }
+        counts_of_sensor = sensor_counts[sensor["name"]]
+        counts_of_sensor["val"] = (
+            counts_of_sensor[TEST_SPLIT_NAME] + counts_of_sensor[GUARD_SPLIT_NAME]
+            if eval_whole_test_blocks else counts_of_sensor[TEST_SPLIT_NAME])
 
     # Step 6: the record (sorted keys and no wall-clock values keep it byte-reproducible).
     split_record = {
@@ -354,6 +343,11 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
             "test_blocks_s": [list(block) for block in test_blocks],
             "test_block_core_fraction": test_block_core_fraction,
             "test_cores_s": [list(core) for core in test_cores],
+            "eval_whole_test_blocks": eval_whole_test_blocks,
+            # Time stretches (s) the training eval (val) covered.
+            "eval_during_training_s": [
+                list(stretch)
+                for stretch in (test_blocks if eval_whole_test_blocks else test_cores)],
             "dataset_start_fraction": start_fraction,
             "dataset_end_fraction": end_fraction,
             "window_bounds_s": None if window_bounds is None else list(window_bounds),

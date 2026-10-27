@@ -10,6 +10,9 @@ runs/<run_id>/
 ├── job_info.txt                       settings, environment, GPU, timings
 ├── split.json                         exact train/test frames + provenance; successful runs only
 ├── split_frames.csv                   the same frames, one row each; successful runs only
+├── overfitting/                       train-vs-test curves from the training log; runs since the overfitting monitor only
+│   ├── overfitting_curves.png
+│   └── overfitting_curves.csv
 ├── slurm-<job id>.out                 Slurm log (stdout + stderr of the job)
 ├── compare/                           only if you ran scripts/slurm/compare_renders.py on the Mac
 ├── train/<session>/splatad/<run_id>/
@@ -61,13 +64,13 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 | key (`split.json`) | meaning |
 |---|---|
 | `run` | `run_id`, `session`, `git_sha`, `train_seed`, `add_missing_points` from `job_info.txt` |
-| `selection` | `dataset_start_fraction`, `dataset_end_fraction`, `window_bounds_s` (`poses.npz` seconds; `null` = whole recording), `train_fraction` and `train_fraction_source` (`manifest.session.train_fraction` or `override`), `algorithm`, `test_block_count` (`null` = linspace) and `test_blocks_s` (block [start, end) in `poses.npz` seconds), `test_block_core_fraction` (1.0 = whole blocks) and `test_cores_s` (the test part of each block, [start, end) seconds), `max_eval_frames` (always `null`) |
+| `selection` | `dataset_start_fraction`, `dataset_end_fraction`, `window_bounds_s` (`poses.npz` seconds; `null` = whole recording), `train_fraction` and `train_fraction_source` (`manifest.session.train_fraction` or `override`), `algorithm`, `test_block_count` (`null` = linspace) and `test_blocks_s` (block [start, end) in `poses.npz` seconds), `test_block_core_fraction` (1.0 = whole blocks) and `test_cores_s` (the test part of each block, [start, end) seconds), `max_eval_frames` (always `null`), `eval_whole_test_blocks` (true: the eval during training used the whole test blocks) and `eval_during_training_s` (the stretches that eval covered: the blocks when true, the cores in older runs) |
 | `dataset` | dataset folder name, and SHA-256 of its `manifest.json` and `poses.npz` (the same split needs the same dataset) |
-| `counts` | per sensor: `kind`, `frames_in_recording`, `frames_in_window`, `train`, `test`, `guard` (0 without T62 cores) |
+| `counts` | per sensor: `kind`, `frames_in_recording`, `frames_in_window`, `train`, `test`, `guard` (0 without T62 cores), `val` (frames the eval during training used: whole blocks when `eval_whole_test_blocks`, else the cores; derived by script 09 from the record, test + guard, with `config.yml`'s `eval_whole_test_blocks` as the source of truth) |
 | `membership_sha256` | fingerprint of which frame is in which split. Two runs or two people with equal values used the same frames. |
 | `render_check` | per `<kind>/<split>` rendered: `match` (always true in a written record), `missing_from_renders`, `unexpected_in_renders` |
 | `frames` | one entry per frame, same columns as the CSV |
-| `seed_note`, `schema` | why the seed is recorded, and the layout version (`viking-splatad/run-split/2`; `/1` lacked `algorithm`'s T60 case, `test_block_count` and `test_blocks_s`; records written before T62 lack `test_block_core_fraction`, `test_cores_s` and the `guard` count, an additive change within `/2`) |
+| `seed_note`, `schema` | why the seed is recorded, and the layout version (`viking-splatad/run-split/2`; `/1` lacked `algorithm`'s T60 case, `test_block_count` and `test_blocks_s`; records written before T62 do not have `test_block_core_fraction`, `test_cores_s` and the `guard` count, an additive change within `/2`) |
 
 `split_frames.csv` columns: `sensor`, `kind`, `split`, `frame_index`, `timestamp_ns`, `time_s` (`poses.npz` seconds), `file` (path inside the dataset).
 
@@ -91,7 +94,18 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 | `TEST_BLOCK_COUNT` | the session config's `split.test_block_count`, passed to `ns-train` as `--test-block-count`: the test set is that many time blocks shared by camera and lidar (T60). Absent in older runs (linspace split). |
 | `TEST_BLOCK_CORE_FRACTION` | the session config's `split.test_block_core_fraction`, passed to `ns-train` as `--test-block-core-fraction`: only that central fraction of each block is test (T62), the rest is guard. Absent in older runs (whole blocks). |
 | `TRAIN_SPLIT_FRACTION` | the dataset manifest's `session.train_fraction`, passed to `ns-train` as `--train-split-fraction`, so `config.yml` records it. Absent in older runs, whose `config.yml` says 0.5. |
+| `MINIMUM_EVAL_POINTS` | the profile's `minimum_eval_points`: the least number of all-images evals per run (50). Absent in older runs. |
+| `STEPS_PER_EVAL_ALL_IMAGES` | eval interval k = (`MAX_NUM_ITERATIONS` - 1) // `MINIMUM_EVAL_POINTS` (T63), passed to `ns-train --steps-per-eval-all-images`. Absent in older runs. |
+| `overfitting_plot` | `written` when `overfitting/` was produced after training; `FAILED (exit N)` otherwise (the job still renders, then fails before `end_utc`). Absent in older runs. |
+| `overfitting_plot_recovered_utc` | Only after a plot-only failure that was repaired by hand: UTC time script 11 was re-run successfully on a compute node. Appended after `overfitting_plot: written`, before `end_utc`. Absent in normal runs. |
 | `split_render_check` | `match` when `split.json` was written; `FAILED (exit N)` when the job stopped instead (1 = renders or fractions disagree, 2 = outputs missing). Then there is no `end_utc` and no `split.json`. |
+
+## Overfitting curves (`overfitting/`)
+Made by `scripts/11_plot_overfitting_curves.py` from the TensorBoard log, right after training. The eval during training uses split `val` = the whole T60 test stretches (T65), not the T62 cores the renders use. Cadence is `STEPS_PER_EVAL_ALL_IMAGES` (T63).
+- `overfitting_curves.png`: one panel per metric, train (raw line plus rolling median) against test (markers), plus Train Loss. Grey shading = steps at reduced resolution, where the gap is not meaningful.
+- `overfitting_curves.csv`: columns `metric,split,step,value`; `split` is `train`, `test` or `train_loss`.
+- Reading rule: overfitting is test getting worse over a sustained stretch after the shading while train keeps improving. A constant gap is not overfitting.
+- Runs from before the monitor have no `overfitting/` folder, no `MINIMUM_EVAL_POINTS`, `STEPS_PER_EVAL_ALL_IMAGES` or `overfitting_plot` in `job_info.txt`, and no `eval_whole_test_blocks`, `eval_during_training_s` or `counts.*.val` in `split.json` (absent in records written before this change; re-running script 09 on an old run writes `false` and cores).
 
 ## Camera renders (`renders/<split>/rgb`, `gt-rgb`)
 - There is one JPEG per camera pose (quality 100, still lossy) at native resolution. They come from `ns-render dataset`.

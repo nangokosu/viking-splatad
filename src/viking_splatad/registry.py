@@ -40,6 +40,13 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # Test block cores (dataset/run_split.py, VikingHillDataParser.test_block_core_fraction):
         # only the central part of each T60 block is test and rendered; the rest is guard.
         "T62",
+        # Eval cadence (eval/training_curves.py): largest interval giving >= P all-images evals.
+        "T63",
+        # Train/test metric pairing from TensorBoard tags (eval/training_curves.py).
+        "T64",
+        # Held-out split by requester (dataset/run_split.py, VikingHillDataParser): training eval
+        # ("val") gets the whole T60 blocks, renders keep the T62 cores.
+        "T65",
     }
 )
 

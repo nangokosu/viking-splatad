@@ -74,6 +74,9 @@ profiles:
     # ~135 training frames x ~22 visits each = 3000 iterations (one image per iteration):
     # enough for a recognisable fit, a tenth of SplatAD's stock 30001.
     max_num_iterations: 3000
+    # At least 50 whole-stretch evals per run (the user's minimum, 2026-10-26). submit_run.py derives
+    # the eval interval k = (N-1)//50 = 59 (T63) and exports it as --steps-per-eval-all-images.
+    minimum_eval_points: 50
     # 3000 / 1000 = 3 checkpoints, so a kill mid-run still leaves something to render.
     steps_per_save: 1000
     # ns-train --machine.seed (python/numpy/torch RNGs). 42 = nerfstudio's MachineConfig default,
@@ -97,6 +100,9 @@ profiles:
     # SplatAD's stock iteration count (method config default), so May matches the published
     # recipe; ~2160 training camera frames x ~14 visits each (one image per iteration).
     max_num_iterations: 30001
+    # At least 50 whole-stretch evals per run (the user's minimum, 2026-10-26). submit_run.py derives
+    # the eval interval k = (N-1)//50 = 600 (T63) and exports it as --steps-per-eval-all-images.
+    minimum_eval_points: 50
     # ~15 checkpoints over the run; at the smoke's 0.22 s/iteration (job 222933: 656 s / 3000)
     # that is one every ~7 min, so a kill at the time limit loses little.
     steps_per_save: 2000
@@ -111,4 +117,26 @@ profiles:
     # re-rendered, so far less is copied back to the Mac (user's choice 2026-10-26).
     render_pose_source: test
     # Full resolution, as the smoke: pixel-level misalignment and trunk detail are what we look at.
+    render_downscale_factor: 1
+  june_scene_a:
+    # Goal: June Scene A (chunks 20-22 of june_tall_grass, high grass) trained exactly like
+    # may_scene_a: stock SplatAD with lidar + camera (photometric) loss = PLAN §4.3's B+cam, run first
+    # by the user's choice (2026-10-26). Lidar-only core B needs a train-lidar-only switch, not yet here.
+    # Every value below equals may_scene_a's so the two runs differ only in their data.
+    # Whole extracted recording (~216 s): the session config already cuts it to Scene A.
+    # SplatAD's stock iteration count, as May; ~1940 training camera frames x ~15 visits each.
+    max_num_iterations: 30001
+    # At least 50 whole-stretch evals per run (the user's minimum, 2026-10-26). submit_run.py derives
+    # the eval interval k = (N-1)//50 = 600 (T63) and exports it as --steps-per-eval-all-images.
+    minimum_eval_points: 50
+    # As May: ~15 checkpoints, one every ~7 min at ~0.22 s/iteration.
+    steps_per_save: 2000
+    # Same seed as May (and as the later lidar-only B and R runs).
+    seed: 42
+    # As May: same iteration count on a slightly smaller recording (2153 vs 2401 camera frames),
+    # so May's ~2 h estimate is an upper bound; 6 h leaves ~3x headroom.
+    time_limit: "0-06:00:00"
+    # As May: render only the T62 test cores (21 camera frames, 22 lidar sweeps for June).
+    render_pose_source: test
+    # As May: full resolution.
     render_downscale_factor: 1

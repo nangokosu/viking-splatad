@@ -102,6 +102,7 @@ split:
   # copied back to the Mac). The other 90% of each block is guard: still never trained on (train is
   # unchanged), not rendered. It also puts 45% of a block of time between test frames and the
   # nearest train frame. Whole May recording: ~1.2 s per stretch, 22 camera frames, 24 lidar sweeps.
+  # The cores are the rendered set only: the eval during training uses the whole blocks (T65).
   # Read by scripts/slurm/submit_run.py (TEST_BLOCK_CORE_FRACTION -> viking-data --test-block-core-fraction).
   test_block_core_fraction: 0.1
 
