@@ -17,3 +17,6 @@ runs/*
 .codex/
 .env
 .env.*
+
+# Superpowers plan workspaces (local scratch)
+.superpowers/
