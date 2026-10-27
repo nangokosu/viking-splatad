@@ -25,6 +25,38 @@ def test_core_fraction_for_split():
         assert core_fraction_for_split(other_split, core_fraction, True) == core_fraction
 
 
+# Synthetic settings of the neurad test below. f = 0.5 (> 1/(K+1)) makes each T60 block long enough to
+# hold 3 of the 10 frames, so c = 0.5 leaves guard frames; at f = 0.8 each block holds only its centre frame.
+SYNTHETIC_TRAIN_FRACTION, SYNTHETIC_BLOCK_COUNT, SYNTHETIC_CORE_FRACTION = 0.5, 2, 0.5
+
+
+@pytest.mark.covers("T65")
+def test_synthetic_settings_have_guard_frames_for_both_sensors(tmp_path):
+    """Precondition of the neurad test (Mac-runnable): whole blocks differ from cores, per sensor kind."""
+    from tests.unit.test_viking_dataparser import _write_synthetic
+
+    _, root = _write_synthetic(tmp_path)
+    dataset_view = open_dataset_view(root)
+    split_counts = {}
+    for core_fraction in (WHOLE_BLOCK_CORE_FRACTION, SYNTHETIC_CORE_FRACTION):
+        frames, _, _, _ = build_run_split_with_cores(
+            dataset_view, 0.0, 1.0, SYNTHETIC_TRAIN_FRACTION, test_block_count=SYNTHETIC_BLOCK_COUNT,
+            test_block_core_fraction=core_fraction)
+        for sensor_kind in ("camera", "lidar"):
+            for record_split in ("train", "test", "guard"):
+                split_counts[(core_fraction, sensor_kind, record_split)] = sum(
+                    frame.kind == sensor_kind and frame.split == record_split for frame in frames)
+    for sensor_kind in ("camera", "lidar"):
+        whole_test = split_counts[(WHOLE_BLOCK_CORE_FRACTION, sensor_kind, "test")]
+        core_test = split_counts[(SYNTHETIC_CORE_FRACTION, sensor_kind, "test")]
+        guard = split_counts[(SYNTHETIC_CORE_FRACTION, sensor_kind, "guard")]
+        assert guard > 0 and core_test > 0
+        # Guard frames are exactly the test frames the cores drop; train is unchanged.
+        assert whole_test == core_test + guard
+        assert split_counts[(WHOLE_BLOCK_CORE_FRACTION, sensor_kind, "train")] == \
+            split_counts[(SYNTHETIC_CORE_FRACTION, sensor_kind, "train")]
+
+
 @pytest.mark.covers("T65")
 @pytest.mark.skipif(not _neurad_ready(), reason="needs torch + patched neurad-studio")
 def test_real_dataparser_val_is_whole_blocks(tmp_path):
@@ -33,7 +65,8 @@ def test_real_dataparser_val_is_whole_blocks(tmp_path):
     from viking_splatad.splatad.viking_dataparser import VikingHillDataParserConfig
 
     _, root = _write_synthetic(tmp_path)
-    train_fraction, block_count, core_fraction = 0.8, 2, 0.5
+    train_fraction, block_count, core_fraction = (
+        SYNTHETIC_TRAIN_FRACTION, SYNTHETIC_BLOCK_COUNT, SYNTHETIC_CORE_FRACTION)
     config_arguments = dict(data=tmp_path, session_name=root.name, cameras=(SYNTHETIC_CAMERA,),
                             lidars=(SYNTHETIC_LIDAR,), train_split_fraction_override=train_fraction,
                             test_block_count=block_count, test_block_core_fraction=core_fraction)
@@ -62,8 +95,10 @@ def test_real_dataparser_val_is_whole_blocks(tmp_path):
         expected_camera, expected_lidar_count = expected_names(frames, record_split)
         assert camera_names(parsed[parser_split]) == expected_camera
         assert len(parsed[parser_split].metadata["lidars"]) == expected_lidar_count
-    # Whole blocks are strictly larger than the cores here (guard frames exist at c = 0.5).
+    # Whole blocks are strictly larger than the cores (guard frames exist; checked on the Mac above).
+    assert whole_frames != core_frames
     assert len(parsed["val"].image_filenames) > len(parsed["test"].image_filenames)
+    assert len(parsed["val"].metadata["lidars"]) > len(parsed["test"].metadata["lidars"])
     # Train is the same with the flag off.
     assert camera_names(parsed["train"]) == camera_names(parsed_train_flag_off)
     assert len(parsed["train"].metadata["lidars"]) == len(parsed_train_flag_off.metadata["lidars"])
