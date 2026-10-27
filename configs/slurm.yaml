@@ -112,3 +112,22 @@ profiles:
     render_pose_source: test
     # Full resolution, as the smoke: pixel-level misalignment and trunk detail are what we look at.
     render_downscale_factor: 1
+  june_scene_a:
+    # Goal: June Scene A (chunks 20-22 of june_tall_grass, high grass) trained exactly like
+    # may_scene_a: stock SplatAD with lidar + camera (photometric) loss = PLAN §4.3's B+cam, run first
+    # by the user's choice (2026-10-26). Lidar-only core B needs a train-lidar-only switch, not yet here.
+    # Every value below equals may_scene_a's so the two runs differ only in their data.
+    # Whole extracted recording (~216 s): the session config already cuts it to Scene A.
+    # SplatAD's stock iteration count, as May; ~1940 training camera frames x ~15 visits each.
+    max_num_iterations: 30001
+    # As May: ~15 checkpoints, one every ~7 min at ~0.22 s/iteration.
+    steps_per_save: 2000
+    # Same seed as May (and as the later lidar-only B and R runs).
+    seed: 42
+    # As May: same iteration count on a slightly smaller recording (2153 vs 2401 camera frames),
+    # so May's ~2 h estimate is an upper bound; 6 h leaves ~3x headroom.
+    time_limit: "0-06:00:00"
+    # As May: render only the T62 test cores (21 camera frames, 22 lidar sweeps for June).
+    render_pose_source: test
+    # As May: full resolution.
+    render_downscale_factor: 1
