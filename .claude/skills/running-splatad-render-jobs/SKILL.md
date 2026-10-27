@@ -6,7 +6,7 @@ description: Use when training SplatAD and rendering camera images or lidar poin
 # Running SplatAD train+render jobs on Slurm
 
 ## Overview
-`scripts/slurm/submit_run.py` drives everything from your local machine (the submit host: macOS or Linux, repo root, `uv sync --extra dev` done). `splatad_run.sbatch` does four things, writing everything to `<stage root>/runs/<run_id>/` on the MSCAC workdisk (currently `/w/20262/<user>/viking-splatad`):
+`scripts/slurm/submit_run.py` drives everything from your local machine (the submit host: macOS or Linux, repo root, `uv sync --extra dev` done). `splatad_run.sbatch` does these things, writing everything to `<stage root>/runs/<run_id>/` on the MSCAC workdisk (currently `/w/20262/<user>/viking-splatad`):
 1. **Trains** with `ns-train splatad ... viking-data`, passing `--machine.seed` = the profile's `seed`.
 2. **Renders camera images** with `ns-render dataset`: rgb + gt-rgb jpg.
 3. **Renders lidar** with `scripts/08_render_lidar_pointcloud.py`, which calls SplatAD's `get_lidar_outputs` and then `filter_lidar_pred_and_gt(output_point_cloud=True)`.
@@ -65,7 +65,7 @@ Same seed means statistically similar runs, not identical ones. Compare B vs R w
 ## Train/test split record (successful runs only)
 **The split has no randomness, and the seed does not affect it.** SplatAD keeps the frames inside the time window (`DATASET_START/END_FRACTION`, over camera and lidar times together, inclusive). Then the test set is K contiguous time blocks, the same for camera and lidar, centred at k/(K+1) of the window, each (1−f)/K of it long (T60, `VikingHillDataParser.test_block_count`). K is the session config's `split.test_block_count` (2), exported as `TEST_BLOCK_COUNT`. f is the manifest's `session.train_fraction` (0.9) unless overridden. Runs from before T60 used neurad's per-sensor linspace split instead (every ~10th frame).
 
-**Only each block's core is test (T62).** The session config's `split.test_block_core_fraction` c (0.1), exported as `TEST_BLOCK_CORE_FRACTION` and passed as `--test-block-core-fraction`, keeps as test only the frames in [m − c·L/2, m + c·L/2) around each block's centre m. The rest of each block (45% on each side at c = 0.1) is **guard**: never trained on (train is unchanged), never rendered, in neither split. The guard also puts 45% of a block of time between the nearest train frame and any test frame. Whole May recording (241.09 s): camera 2162 train / 22 test / 217 guard, lidar 2172 / 24 / 216; blocks 74.34–86.39 s and 154.70–166.76 s, cores 79.76–80.97 s and 160.13–161.33 s (camera frames 795–806 and 1595–1604, lidar sweeps 798–809 and 1602–1613). The 15 s smoke window keeps only 1 camera and 1 lidar test frame.
+**Only each block's core is test (T62).** The session config's `split.test_block_core_fraction` c (0.1), exported as `TEST_BLOCK_CORE_FRACTION` and passed as `--test-block-core-fraction`, keeps as test only the frames in [m − c·L/2, m + c·L/2) around each block's centre m. The rest of each block (45% on each side at c = 0.1) is **guard**: never trained on (train is unchanged), never rendered, in neither split. **The eval during training uses the whole blocks** (cores plus guard; see "Overfitting monitor"); only the renders use the cores. The guard also puts 45% of a block of time between the nearest train frame and any test frame. Whole May recording (241.09 s): camera 2162 train / 22 test / 217 guard, lidar 2172 / 24 / 216; blocks 74.34–86.39 s and 154.70–166.76 s, cores 79.76–80.97 s and 160.13–161.33 s (camera frames 795–806 and 1595–1604, lidar sweeps 798–809 and 1602–1613). The 15 s smoke window keeps only 1 camera and 1 lidar test frame.
 
 `scripts/09_extract_run_split.py` rebuilds it on the CPU, without torch, and writes `<run dir>/split.json` and `split_frames.csv`:
 - every frame with its split, index, ns stamp and time;
@@ -97,9 +97,30 @@ It was verified against the real dataparser on `may_chunks0_1_smoke`'s smoke win
   - Don't use `manifest.json` `pipeline.splits` either: it covers the whole recording and ignores the window.
 - To list a run's test frames: `python -c "import json; print([f['file'] for f in json.load(open('runs/<run_id>/split.json'))['frames'] if f['split'] == 'test'])"`.
 
+## Overfitting monitor (every run)
+Training evaluates held-out data throughout, and the job plots train against test, so a run shows whether the model memorises the training views.
+- **What is evaluated:** SplatAD's all-images eval, split `val` = the **whole T60 test stretches** (`--eval-whole-test-blocks`, set by the job; T65). May: 239 camera frames, 240 lidar sweeps; June: 216 / 216. The renders (`ns-render`, script 08) still use split `test` = the T62 cores.
+- **Cadence (T63):** the profile key `minimum_eval_points` (50) gives `MINIMUM_EVAL_POINTS`. The eval interval is `k = (max_num_iterations - 1) // minimum_eval_points`, exported as `STEPS_PER_EVAL_ALL_IMAGES`. 30001 steps: every 600 steps, 50 points. Smoke (3000): every 59, 50 points. `submit` refuses a profile that cannot reach the minimum.
+- **Figure:** after training the job runs `scripts/11_plot_overfitting_curves.py`. It writes `<run dir>/overfitting/overfitting_curves.png` and `overfitting_curves.csv` (columns `metric,split,step,value`; split is `train`, `test` or `train_loss`).
+  - One panel per metric: train (thin raw line plus a rolling median) and test (whole stretches, markers), and a Train Loss panel.
+  - Test-only metrics (ssim, lpips, chamfer_distance, median_chamfer_distance) are titled "<metric> (no train value logged)".
+  - Grey shading marks the steps where training runs at reduced resolution (6000 for stock SplatAD, read from `config.yml`): "gap not meaningful". The y-limits ignore the start-up spike.
+- **How to read it:**
+  - Overfitting = the test curve gets worse over a sustained stretch **after the shaded region** while the train curve keeps improving.
+  - A constant train/test gap is **not** overfitting: train metrics include the camera optimiser (eval turns it off), and the held-out content differs.
+  - Train values are per single image or sweep, so they are noisy; read the rolling median.
+  - A smoke run lies entirely inside the shaded region, so it only checks that the figure is produced.
+- **Cost:** estimated ~30 s per all-images eval, ~25 min per full run. Not measured yet: record it from `train_elapsed_s` on the first full run.
+- **Re-plot any run** (the Mac venv lacks tensorboard and matplotlib, so use the cluster env or the image):
+  ```bash
+  python scripts/11_plot_overfitting_curves.py --train-dir <run>/train/<session>/splatad/<run_id> --output-dir <run>/overfitting
+  ```
+- Older runs have no `overfitting/` folder; their `split.json` lacks `selection.eval_whole_test_blocks`, `selection.eval_during_training_s` and `counts.<sensor>.val`.
+
 ## Monitor: stuck vs progressing
 - The log, `job_info.txt` and all outputs are in the run dir: `<stage root>/runs/<run_id>/`.
-- Milestones, in order: `gpu_check` → `train_elapsed_s` → `render_elapsed_s` (camera) → `lidar_render_elapsed_s` → `split_render_check: match` (`split.json` written) → `end_utc`.
+- Milestones, in order: `gpu_check` → `train_elapsed_s` → `overfitting_plot: written` → `render_elapsed_s` (camera) → `lidar_render_elapsed_s` → `split_render_check: match` (`split.json` written) → `end_utc`.
+- `overfitting_plot: FAILED (exit N)` does not stop the job (the renders still run), but the job then fails before `end_utc`.
 
 **The progress table often stops appearing in the log while training is healthy.** It was seen right after `Caching eval lidars`, the step-500 eval, with 5+ silent minutes. A silent log is NOT evidence of a hang, so check the job itself before any `scancel`:
 ```bash
@@ -118,20 +139,21 @@ Remove every artifact of them (cluster run dir, fetched copy, ledger row) with t
 
 ## Fetch (automatic after every successful run)
 **Fetching is part of every run: don't ask first.** Right after `submit`, start a background wait for the job to leave `squeue`. Then read `job_info.txt`:
-- **`split_render_check: match` and `end_utc` present (success):** fetch right away, then report the results.
+- **`overfitting_plot: written`, `split_render_check: match` and `end_utc` present (success):** fetch right away, then report the results.
   ```bash
   uv run python scripts/slurm/submit_run.py fetch <run_id>
   ```
   Use a background command, since a smoke run is ~2.7 GB.
-- **Either line missing (failed run):** don't fetch. Read the Slurm log over ssh, diagnose, and report. Fetch a failed run only if the user asks.
+- **Any of the three missing (failed run):** don't fetch. Read the Slurm log over ssh, diagnose, and report. Fetch a failed run only if the user asks.
 Result on your machine in `runs/<run_id>/`. Every file and key of every run folder is described once, in `runs/RUN_FOLDER_GLOSSARY.md` (committed; the rest of `runs/` is gitignored). Update it whenever the job's outputs change; a test checks that it documents every lidar npz key.
 - `renders/test/{rgb,gt-rgb}/*.jpg`: one per test camera pose; file names are frame index + timestamp. (`renders/train/` exists only in runs from before 2026-10-26, which rendered `train+test`.)
 - `renders/test/lidar/<idx>_<ts_ns>.npz`: one per test lidar pose, named exactly like the input sweep `data/intermediate/<session>/lidar/<sensor>/<idx>_<ts_ns>.npy`.
 - `renders/test/lidar_metrics.json`: SplatAD's built-in per-scan lidar metrics, with `mean` and `per_scan` (depth_median_l2, intensity_rmse, ray_drop_accuracy, chamfer_distance, ...).
 - `train/.../config.yml`, the latest `step-*.ckpt`, `job_info.txt`, and the Slurm log.
+- `overfitting/overfitting_curves.png` and `.csv`: train-vs-test curves (see "Overfitting monitor").
 - `split.json` and `split_frames.csv`: the exact train/test frames. They exist only for successful runs (see "Train/test split record").
 
-A complete smoke run renders only its test-core frames: 1 camera frame and 1 lidar sweep. Check `split_render_check: match` and `end_utc` in `job_info.txt` instead of counting files by hand. A run without them failed: don't document it.
+A complete smoke run renders only its test-core frames: 1 camera frame and 1 lidar sweep. Check `overfitting_plot: written`, `split_render_check: match` and `end_utc` in `job_info.txt` instead of counting files by hand. A run without them failed: don't document it.
 
 **Lidar npz keys** (full list in the docstring of `scripts/08_render_lidar_pointcloud.py`):
 
