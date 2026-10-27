@@ -7,6 +7,7 @@ Usage:
     uv run python scripts/slurm/submit_run.py submit --session S --profile smoke [--skip-gates]
     uv run python scripts/slurm/submit_run.py status <job_id>
     uv run python scripts/slurm/submit_run.py fetch  <run_id>
+    uv run python scripts/slurm/submit_run.py clean  [<run_id> ...] [--yes]
 
 The GPU nodes have no container runtime, so jobs run in a native environment that
 ``build-env`` builds once from the Dockerfile's recipe (scripts/slurm/build_env.sbatch). The
@@ -24,7 +25,9 @@ import hashlib
 import json
 import math
 import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -79,6 +82,17 @@ SHORT_SHA_LENGTH = 7
 RUN_TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S"
 # Header of the local submission ledger.
 LEDGER_COLUMNS = ("run_id", "job_id", "git_sha", "session", "profile", "submitted_utc")
+# Local folder holding fetched runs (one sub-directory per run id) and the ledger.
+LOCAL_RUNS_ROOT = PROJECT_ROOT / "runs"
+# A run id is one path component (build_run_id: session-profile-timestamp-sha). Anything else is
+# refused before a path is built from it, so `clean` can never delete outside a runs/ folder.
+RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# job_info.txt lines that only a successful run has (splatad_run.sbatch writes end_utc after
+# `split_render_check: match`); a run without both was cancelled, failed or killed.
+SUCCESS_SPLIT_CHECK_VALUE = "match"
+# File name of the per-job batch script inside the run dir; squeue's %o names it, which maps an
+# active job back to its run id.
+JOB_SCRIPT_NAME = "job.sbatch"
 
 
 class GateFailure(RuntimeError):
@@ -465,6 +479,90 @@ def profile_window_fractions(profile_settings: Dict[str, Any], session: str) -> 
                             float(profile_settings["window_seconds"]))
 
 
+def load_dataset_session_config(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                                session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> Tuple[str, Dict[str, Any]]:
+    """The session config a dataset was extracted with, and that session's name.
+
+    The session name comes from the dataset's ``manifest.json`` (a dataset directory may be named
+    differently, e.g. ``may_chunks0_1_smoke`` was extracted with ``may_short_grass``). Without a
+    local manifest the dataset name itself is taken as the session name.
+
+    Args:
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        (session name, parsed session config).
+
+    Raises:
+        FileNotFoundError: If the session config does not exist.
+    """
+    manifest_path = Path(intermediate_root) / session / "manifest.json"
+    session_name = json.loads(manifest_path.read_text())["session"]["name"] if manifest_path.is_file() else session
+    session_config = yaml.safe_load((Path(session_config_directory) / f"{session_name}.yaml").read_text())
+    return session_name, session_config
+
+
+def session_test_block_count(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                             session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> int:
+    """``split.test_block_count`` of the session config a dataset was extracted with.
+
+    Passed to viking-data as ``--test-block-count``: the test set is that many contiguous time
+    blocks shared by every sensor (T60), and config.yml records the value for ns-render, scripts/08
+    and scripts/09.
+
+    Args:
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        The block count K >= 1.
+
+    Raises:
+        FileNotFoundError: If the session config does not exist.
+        ValueError: If the value is missing or not a positive YAML integer.
+    """
+    session_name, session_config = load_dataset_session_config(session, intermediate_root, session_config_directory)
+    block_count = session_config.get("split", {}).get("test_block_count")
+    # bool is an int subclass; refuse it (and floats/strings) instead of coercing.
+    if isinstance(block_count, bool) or not isinstance(block_count, int) or block_count < 1:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: split.test_block_count must be a positive "
+                         f"integer, got {block_count!r}")
+    return block_count
+
+
+def session_test_block_core_fraction(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                                     session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> float:
+    """``split.test_block_core_fraction`` of the session config a dataset was extracted with.
+
+    Passed to viking-data as ``--test-block-core-fraction``: only the central fraction c of each
+    T60 test block is the test split (T62), so only those frames are rendered and fetched; the
+    rest of each block is guard (neither trained on nor rendered). config.yml records c for
+    ns-render, scripts/08 and scripts/09.
+
+    Args:
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        c in (0, 1].
+
+    Raises:
+        FileNotFoundError: If the session config does not exist.
+        ValueError: If the value is missing, not a YAML number, or outside (0, 1].
+    """
+    session_name, session_config = load_dataset_session_config(session, intermediate_root, session_config_directory)
+    core_fraction = session_config.get("split", {}).get("test_block_core_fraction")
+    # bool is an int subclass; refuse it (and strings) instead of coercing.
+    if isinstance(core_fraction, bool) or not isinstance(core_fraction, (int, float)) or not 0 < core_fraction <= 1:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: split.test_block_core_fraction must be a number "
+                         f"in (0, 1], got {core_fraction!r}")
+    return float(core_fraction)
+
+
 def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
                                session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> bool:
     """``splatad.add_missing_points`` of the session config a dataset was extracted with.
@@ -485,11 +583,9 @@ def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDI
         FileNotFoundError: If the session config does not exist.
         ValueError: If the flag is missing or not a YAML boolean.
     """
-    # Step 1: session name, from the manifest when the dataset is present.
-    manifest_path = Path(intermediate_root) / session / "manifest.json"
-    session_name = json.loads(manifest_path.read_text())["session"]["name"] if manifest_path.is_file() else session
-    # Step 2: the flag from that session's config; only a real boolean is accepted (no "yes"/1).
-    session_config = yaml.safe_load((Path(session_config_directory) / f"{session_name}.yaml").read_text())
+    # Step 1: the session config the dataset was extracted with.
+    session_name, session_config = load_dataset_session_config(session, intermediate_root, session_config_directory)
+    # Step 2: the flag from that config; only a real boolean is accepted (no "yes"/1).
     flag = session_config.get("splatad", {}).get("add_missing_points")
     if not isinstance(flag, bool):
         raise ValueError(f"configs/sessions/{session_name}.yaml: splatad.add_missing_points must be true/false, got {flag!r}")
@@ -545,7 +641,9 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
                           git_sha: str, absolute_stage_root: str,
                           env_marker: Dict[str, str],
                           add_missing_points: Optional[bool] = None,
-                          train_split_fraction: Optional[float] = None) -> Dict[str, str]:
+                          train_split_fraction: Optional[float] = None,
+                          test_block_count: Optional[int] = None,
+                          test_block_core_fraction: Optional[float] = None) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
 
     Args:
@@ -560,6 +658,10 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
             splatad_run.sbatch refuses to start.
         train_split_fraction: The dataset's train fraction (``dataset_train_fraction``), exported
             as TRAIN_SPLIT_FRACTION. Same rule as ``add_missing_points``: None leaves it out.
+        test_block_count: The session's test block count (``session_test_block_count``), exported
+            as TEST_BLOCK_COUNT. Same rule as ``add_missing_points``: None leaves it out.
+        test_block_core_fraction: The session's core fraction (``session_test_block_core_fraction``),
+            exported as TEST_BLOCK_CORE_FRACTION. Same rule as ``add_missing_points``: None leaves it out.
 
     Returns:
         Mapping variable name -> string value.
@@ -595,6 +697,11 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
     # repr keeps every digit, so config.yml, job_info.txt and the manifest hold the same float.
     if train_split_fraction is not None:
         job_environment["TRAIN_SPLIT_FRACTION"] = repr(float(train_split_fraction))
+    if test_block_count is not None:
+        job_environment["TEST_BLOCK_COUNT"] = str(int(test_block_count))
+    # repr keeps every digit, so config.yml and job_info.txt hold the same float.
+    if test_block_core_fraction is not None:
+        job_environment["TEST_BLOCK_CORE_FRACTION"] = repr(float(test_block_core_fraction))
     return job_environment
 
 
@@ -1012,7 +1119,9 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     write_remote_file(ssh_target, job_script_path, build_job_script(
         build_job_environment(profile_settings, session, run_id, git_sha, absolute_stage_root, env_marker,
                               add_missing_points=session_add_missing_points(session),
-                              train_split_fraction=dataset_train_fraction(session)),
+                              train_split_fraction=dataset_train_fraction(session),
+                              test_block_count=session_test_block_count(session),
+                              test_block_core_fraction=session_test_block_core_fraction(session)),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
@@ -1084,6 +1193,256 @@ def fetch_run(config: Dict[str, Any], run_id: str) -> None:
     print(f"fetched {run_id} to {local_run_dir} (latest checkpoint {relative_path})")
 
 
+def parse_job_info_text(job_info_text: str) -> Dict[str, str]:
+    """Parse ``key: value`` lines of a job_info.txt (indented and value-less lines are skipped).
+
+    Args:
+        job_info_text: File contents.
+
+    Returns:
+        key -> value (the last occurrence wins).
+    """
+    job_info = {}
+    for line in job_info_text.splitlines():
+        key, separator, value = line.partition(": ")
+        if separator and key and not key.startswith(" "):
+            job_info[key] = value.strip()
+    return job_info
+
+
+def run_succeeded(job_info: Optional[Dict[str, str]]) -> bool:
+    """True iff job_info.txt proves a successful run (split check matched, then end_utc written).
+
+    Args:
+        job_info: Parsed job_info.txt, or None when the run has none.
+
+    Returns:
+        Whether the run finished every step.
+    """
+    return bool(job_info) and "end_utc" in job_info and job_info.get("split_render_check") == SUCCESS_SPLIT_CHECK_VALUE
+
+
+def parse_remote_run_listing(listing_text: str) -> Tuple[Dict[str, Optional[Dict[str, str]]], set]:
+    """Parse the output of the remote listing script in ``list_remote_runs``.
+
+    Format: ``RUN<TAB><run_id>`` opens a run, followed by its job_info.txt lines between
+    ``INFO_BEGIN`` and ``INFO_END`` (absent if it has none); ``ACTIVE<TAB><job script path>`` is one
+    pending or running job of the user.
+
+    Args:
+        listing_text: Remote stdout.
+
+    Returns:
+        (runs, active run ids): run id -> parsed job_info (None if missing); the run ids whose
+        job script (``<runs>/<run_id>/job.sbatch``) belongs to a queued or running job.
+    """
+    remote_runs: Dict[str, Optional[Dict[str, str]]] = {}
+    active_run_ids = set()
+    current_run_id, info_lines, inside_info = None, [], False
+    for line in listing_text.splitlines():
+        if line.startswith("RUN\t"):
+            current_run_id = line.split("\t", 1)[1]
+            remote_runs[current_run_id] = None
+        elif line == "INFO_BEGIN":
+            inside_info, info_lines = True, []
+        elif line == "INFO_END":
+            inside_info = False
+            remote_runs[current_run_id] = parse_job_info_text("\n".join(info_lines))
+        elif inside_info:
+            info_lines.append(line)
+        elif line.startswith("ACTIVE\t"):
+            # The job script is <stage>/runs/<run_id>/job.sbatch: its parent folder is the run id.
+            script_path = Path(line.split("\t", 1)[1].strip())
+            if script_path.name == JOB_SCRIPT_NAME:
+                active_run_ids.add(script_path.parent.name)
+    return remote_runs, active_run_ids
+
+
+def list_remote_runs(ssh_target: str, absolute_stage_root: str) -> Tuple[Dict[str, Optional[Dict[str, str]]], set]:
+    """Every run folder on the cluster with its job_info.txt, and the runs with a queued/running job.
+
+    One ssh call. squeue's default state filter lists only pending and running jobs, and its
+    ``%o`` field is the batch script path (``<run dir>/job.sbatch``), so a job that has not
+    written job_info.txt yet (still pending) is still recognised as active.
+
+    Args:
+        ssh_target: ``host`` or ``user@host``.
+        absolute_stage_root: Resolved stage root on the cluster.
+
+    Returns:
+        As ``parse_remote_run_listing``.
+
+    Raises:
+        RuntimeError: If the remote command fails (e.g. squeue unavailable), since deleting
+            without knowing which jobs are active is unsafe.
+    """
+    listing_script = (
+        'if [ -d "$1/runs" ]; then for run_dir in "$1"/runs/*/; do '
+        '[ -d "$run_dir" ] || continue; run_id=$(basename "$run_dir"); printf "RUN\\t%s\\n" "$run_id"; '
+        'if [ -f "$run_dir/job_info.txt" ]; then echo INFO_BEGIN; cat "$run_dir/job_info.txt"; echo; echo INFO_END; fi; '
+        'done; fi; '
+        'squeue -h -u "$(id -un)" -o "%o" | sed "s/^/ACTIVE\\t/"; exit "${PIPESTATUS[0]:-0}"'
+    )
+    completed = run_checked(ssh_command(ssh_target, ["bash", "-c", listing_script, "bash", absolute_stage_root]),
+                            "list remote runs")
+    return parse_remote_run_listing(completed.stdout)
+
+
+def list_local_runs(local_runs_root: Path) -> Dict[str, Optional[Dict[str, str]]]:
+    """Every fetched run folder on the Mac with its job_info.txt.
+
+    Args:
+        local_runs_root: The local runs/ folder.
+
+    Returns:
+        run id -> parsed job_info (None if missing).
+    """
+    local_runs: Dict[str, Optional[Dict[str, str]]] = {}
+    if not local_runs_root.is_dir():
+        return local_runs
+    for run_dir in sorted(local_runs_root.iterdir()):
+        if not run_dir.is_dir() or not RUN_ID_PATTERN.match(run_dir.name):
+            continue
+        job_info_path = run_dir / "job_info.txt"
+        local_runs[run_dir.name] = parse_job_info_text(job_info_path.read_text()) if job_info_path.is_file() else None
+    return local_runs
+
+
+def read_ledger(ledger_path: Path) -> List[Dict[str, str]]:
+    """Rows of the local submission ledger (runs/submitted.tsv).
+
+    Args:
+        ledger_path: Ledger file.
+
+    Returns:
+        One dict per row keyed by LEDGER_COLUMNS ([] when the file does not exist).
+    """
+    if not ledger_path.is_file():
+        return []
+    data_lines = [line for line in ledger_path.read_text().splitlines()[1:] if line.strip()]
+    return [dict(zip(LEDGER_COLUMNS, line.split("\t"))) for line in data_lines]
+
+
+def write_ledger(ledger_path: Path, ledger_rows: List[Dict[str, str]]) -> None:
+    """Rewrite the ledger with these rows (header always kept).
+
+    Args:
+        ledger_path: Ledger file.
+        ledger_rows: Rows keyed by LEDGER_COLUMNS.
+    """
+    lines = ["\t".join(LEDGER_COLUMNS)] + ["\t".join(row.get(column, "") for column in LEDGER_COLUMNS)
+                                          for row in ledger_rows]
+    ledger_path.write_text("\n".join(lines) + "\n")
+
+
+def plan_cleanup(remote_runs: Dict[str, Optional[Dict[str, str]]], active_run_ids: set,
+                 local_runs: Dict[str, Optional[Dict[str, str]]], ledger_rows: List[Dict[str, str]],
+                 named_run_ids: Sequence[str]) -> List[Dict[str, Any]]:
+    """Decide, per run, whether ``clean`` deletes it (pure: no I/O).
+
+    Rules, in order:
+        1. a queued or running job's run is never deleted (``scancel`` it first);
+        2. a run named on the command line is deleted, successful or not;
+        3. a run with no proof of success (no ``end_utc`` + ``split_render_check: match`` in its
+           job_info.txt, cluster copy preferred over the fetched one) is deleted: it was
+           cancelled (by the user or Slurm: time/memory limit), failed, or never started;
+        4. a successful run is kept.
+    Every place a deleted run lives is cleaned: the cluster run dir, the fetched copy, the ledger row.
+
+    Args:
+        remote_runs: From ``list_remote_runs``.
+        active_run_ids: From ``list_remote_runs``.
+        local_runs: From ``list_local_runs``.
+        ledger_rows: From ``read_ledger``.
+        named_run_ids: Runs the user asked to delete.
+
+    Returns:
+        One dict per known run, sorted by run id: run_id, delete (bool), reason, on_cluster,
+        on_mac, in_ledger.
+
+    Raises:
+        ValueError: If a named run id is malformed, unknown everywhere, or active.
+    """
+    # Step 1: validate the named runs before deciding anything.
+    ledger_run_ids = {row["run_id"] for row in ledger_rows}
+    known_run_ids = set(remote_runs) | set(local_runs) | ledger_run_ids
+    for run_id in named_run_ids:
+        if not RUN_ID_PATTERN.match(run_id):
+            raise ValueError(f"malformed run id {run_id!r}")
+        if run_id not in known_run_ids:
+            raise ValueError(f"run {run_id} is not on the cluster, on the Mac or in the ledger")
+        if run_id in active_run_ids:
+            raise ValueError(f"run {run_id} still has a queued or running job; scancel it first")
+    # Step 2: one decision per run, wherever it lives.
+    plan = []
+    for run_id in sorted(known_run_ids):
+        # The cluster copy is the job's own record; the fetched copy is used when the cluster one is gone.
+        job_info = remote_runs.get(run_id) if run_id in remote_runs else local_runs.get(run_id)
+        if run_id in active_run_ids:
+            delete, reason = False, "job queued or running"
+        elif run_id in named_run_ids:
+            delete, reason = True, "named"
+        elif not run_succeeded(job_info):
+            delete, reason = True, "cancelled, failed or incomplete (no end_utc + split_render_check: match)"
+        else:
+            delete, reason = False, "successful"
+        plan.append({"run_id": run_id, "delete": delete, "reason": reason, "on_cluster": run_id in remote_runs,
+                     "on_mac": run_id in local_runs, "in_ledger": run_id in ledger_run_ids})
+    return plan
+
+
+def clean_runs(config: Dict[str, Any], named_run_ids: Sequence[str], confirmed: bool,
+               local_runs_root: Path = LOCAL_RUNS_ROOT, ledger_path: Path = SUBMITTED_LEDGER_PATH) -> List[Dict[str, Any]]:
+    """Delete every artifact of cancelled/failed runs and of the named runs (dry run unless confirmed).
+
+    Args:
+        config: Parsed Slurm config.
+        named_run_ids: Runs to delete even if successful.
+        confirmed: False = print the plan only; True = delete.
+        local_runs_root: Local runs/ folder.
+        ledger_path: Local ledger.
+
+    Returns:
+        The plan from ``plan_cleanup``.
+
+    Raises:
+        ValueError: As ``plan_cleanup``.
+        RuntimeError: If a remote listing or deletion fails.
+    """
+    # Step 1: everything known about every run, then the plan.
+    ssh_target = resolve_ssh_target(config["ssh_host"])
+    absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
+    remote_runs, active_run_ids = list_remote_runs(ssh_target, absolute_stage_root)
+    ledger_rows = read_ledger(ledger_path)
+    plan = plan_cleanup(remote_runs, active_run_ids, list_local_runs(local_runs_root), ledger_rows, named_run_ids)
+    for decision in plan:
+        places = [place for place, present in (("cluster", decision["on_cluster"]), ("mac", decision["on_mac"]),
+                                               ("ledger", decision["in_ledger"])) if present]
+        action = "DELETE" if decision["delete"] else "keep  "
+        print(f"{action} {decision['run_id']}  [{', '.join(places)}]  {decision['reason']}")
+    doomed = [decision for decision in plan if decision["delete"]]
+    if not confirmed:
+        print(f"dry run: {len(doomed)} run(s) would be deleted; re-run with --yes to delete")
+        return plan
+    # Step 2: delete. Run ids passed RUN_ID_PATTERN (one path component), so each path stays
+    # inside a runs/ folder.
+    for decision in doomed:
+        run_id = decision["run_id"]
+        if not RUN_ID_PATTERN.match(run_id):
+            raise ValueError(f"refusing to delete malformed run id {run_id!r}")
+        if decision["on_cluster"]:
+            run_checked(ssh_command(ssh_target, ["rm", "-rf", "--", f"{absolute_stage_root}/runs/{run_id}"]),
+                        f"delete cluster run {run_id}")
+        if decision["on_mac"]:
+            shutil.rmtree(local_runs_root / run_id)
+    # Step 3: ledger rows of the deleted runs.
+    doomed_run_ids = {decision["run_id"] for decision in doomed}
+    if ledger_path.is_file():
+        write_ledger(ledger_path, [row for row in ledger_rows if row["run_id"] not in doomed_run_ids])
+    print(f"deleted {len(doomed)} run(s)")
+    return plan
+
+
 def main(argument_list: Optional[List[str]] = None) -> int:
     """CLI entry point.
 
@@ -1111,6 +1470,10 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     status_parser.add_argument("job_id")
     fetch_parser = subparsers.add_parser("fetch", help="copy a run back (latest checkpoint only)")
     fetch_parser.add_argument("run_id")
+    clean_parser = subparsers.add_parser(
+        "clean", help="delete cancelled/failed runs and the named runs (cluster dir, fetched copy, ledger row)")
+    clean_parser.add_argument("run_ids", nargs="*", help="runs to delete even if successful")
+    clean_parser.add_argument("--yes", action="store_true", help="delete; without it only the plan is printed")
     arguments = parser.parse_args(argument_list)
     # Step 2: dispatch; every expected failure becomes a message and exit code 1.
     try:
@@ -1128,6 +1491,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             return 0 if show_status(config, arguments.job_id) == 0 else 1
         elif arguments.command == "fetch":
             fetch_run(config, arguments.run_id)
+        elif arguments.command == "clean":
+            clean_runs(config, arguments.run_ids, arguments.yes)
         return 0
     except (GateFailure, ValueError, KeyError, RuntimeError, FileNotFoundError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

@@ -1,7 +1,7 @@
 """Patch neurad-studio's ``nerfstudio/cameras/lidars.py`` with an Ouster OS0-32 lidar (T28).
 
 Design (why a runtime registry instead of a hardcoded elevation table):
-    The OS0-32 beam elevations are DERIVED from data (T16) and stored per dataset in the
+    The OS0-32 beam elevations are DERIVED from data (T51 far-field fit, mapped by T61) and stored per dataset in the
     manifest, so they must not be baked into neurad-studio from memory. The datamanager
     calls ``get_lidar_elevation_mapping(lidar_type)`` / ``get_lidar_azimuth_resolution``
     with only the ``LidarType`` (no dataset handle), so the patched functions look the

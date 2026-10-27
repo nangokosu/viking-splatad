@@ -17,10 +17,11 @@ column the cloud column of the cell.
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable, Dict, Iterable, Tuple
 
 import numpy as np
 
+from viking_splatad.contract.lidar_model import CHANNELS_PER_TILE
 from viking_splatad.extract.deskew import deskew_points
 from viking_splatad.registry import transform
 
@@ -290,6 +291,43 @@ def derive_beam_direction_model(
         residual_percentile=float(residual_percentile),
         percentile_residual_deg=float(np.percentile(residual_angles, residual_percentile)),
     )
+
+
+@transform(
+    "T61",
+    "Elevation mapping (channel -> far-field beam elevation deg, ascending) from the T51 beam model",
+)
+def elevation_mapping_from_beam_model(model: BeamDirectionModel, channel_ids: Iterable[int]) -> Dict[int, float]:
+    """SplatAD elevation mapping from the fitted far-field beam elevations.
+
+    Replaces T16's per-ring median elevation, which is biased by beam-origin parallax: a ring's
+    measured elevation is elevation_inf + k/r, so its median depends on the ranges the scene put
+    in front of that ring (near ground for the downward rings, shifted by grass height). The T51
+    intercept elevation_inf is the beam's own direction, a sensor property identical across sessions.
+    SplatAD builds its raster rows from the sorted mapping values, so the result is ordered ascending
+    and must have a multiple of CHANNELS_PER_TILE (8) channels, like T16's output.
+
+    Args:
+        model: Fitted beam model (T51); ``elevation_deg`` holds the per-ring intercepts.
+        channel_ids: Channel keys of the mapping (the ring ids that points carry, T19).
+
+    Returns:
+        Dict channel -> far-field elevation in degrees, in ascending elevation order.
+
+    Raises:
+        ValueError: If a channel is not in the model, or the channel count is not a positive
+            multiple of CHANNELS_PER_TILE.
+    """
+    channel_ids = [int(channel) for channel in channel_ids]
+    # Every channel needs a fitted beam; a missing one would leave its points without a raster row.
+    missing_channels = sorted(set(channel_ids) - set(model.elevation_deg))
+    if missing_channels:
+        raise ValueError(f"channels {missing_channels} are not in the beam model")
+    if not channel_ids or len(channel_ids) % CHANNELS_PER_TILE != 0:
+        raise ValueError(f"{len(channel_ids)} channels is not a positive multiple of {CHANNELS_PER_TILE}")
+    # Ascending by elevation, the order T16 documented ("sorted ascending").
+    return dict(sorted(((channel, float(model.elevation_deg[channel])) for channel in channel_ids),
+                       key=lambda item: item[1]))
 
 
 @transform("T52", "Unit direction of Ouster (ring, column) cells in the raw sensor frame from the beam model")

@@ -1,6 +1,6 @@
 """Globally derived pipeline parameters, computed once and cached in ``derived.json``.
 
-Parameters such as the intensity scale (T14), ego box (T15), elevation mapping (T16) and
+Parameters such as the intensity scale (T14), ego box (T15), ring set (T16), beam model (T51) and
 azimuth tiling (T17) must be identical for every frame of a session. They are derived from
 the first processed chunk and then reloaded for every later chunk, so frames added by a
 later run stay consistent with the earlier ones.
@@ -209,7 +209,8 @@ def derive_lidar_parameters(
         min_lidar_dist_fallback = True
     if min_lidar_dist_fallback:
         min_lidar_dist = [0.0, 0.0, 0.0]
-    # Step 4 (T16): per-ring median elevation (degrees), keys = ring ids.
+    # Step 4 (T16): per-ring median elevation (degrees), keys = ring ids. Only the keys (the ring set)
+    # are used downstream; the manifest mapping takes the T51 far-field angles instead (T61).
     elevation_mapping_deg = derive_elevation_mapping(pooled_xyz, pooled_ring)
     # Step 5 (T17): azimuth resolution and tile width from the measured columns per ring.
     columns_per_ring = float(np.median([sample.column_count for sample in samples]))

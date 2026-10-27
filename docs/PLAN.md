@@ -75,7 +75,7 @@
 
 ## 3. May Scene A: does SplatAD work out of the box?
 - **Data:** the May Scene A chunks. May chunk 1 (forest, on disk) is the first Slurm/Docker smoke test.
-- **Run:** stock `splatad`, lidar + camera, with the LINSPACE train/eval split (`train_fraction` from the session config).
+- **Run:** stock `splatad`, lidar + camera, with the middle-block train/test split (§5; `train_fraction` and `test_block_count` from the session config).
 - **Held-out metrics:**
   - PSNR, SSIM and LPIPS on eval cameras;
   - lidar depth, Chamfer and ray-drop on eval lidars;
@@ -144,8 +144,10 @@ Two extra runs: the same as core B and R with camera training on (`train-lidar-o
 - **Caveat 3, what the extension answers:** does adding the RGB loss improve or degrade the lidar geometry of B and R? Compare the §5 lidar metrics of core vs +cam for each model.
 
 ## 5. Evaluation: Model 1 vs Model 2 (June only, held-out June poses)
-**Held-out poses: two candidate splits** (decide before the June runs; B and R always use the same split):
-- **Interleaved (default):** SplatAD's LINSPACE split with `train_fraction` from the session config. Eval poses sit between train poses, so this measures interpolation.
+**Held-out poses: middle-block split (decided 2026-10-26; May, B and R all use it):**
+- **Middle blocks (T60, in use):** the test set is two contiguous time stretches, centred at 1/3 and 2/3 of the run's window, each (1 − `train_fraction`)/2 of it long. They are the same for camera and lidar. Config: `split.test_block_count: 2` in the session config. It replaced the interleaved split, whose eval frames sat 0.1 s from a train frame and were chosen per sensor (a test camera image usually had a training lidar sweep from the same instant). Test poses still lie on the training trajectory, inside a stretch of a few metres the model never trained on.
+- **Block cores (T62, in use):** only the middle 10% of each block is the test split (`split.test_block_core_fraction: 0.1`, decided 2026-10-26; first 0.5 the same day). The other 90% of each block is guard: not trained on, not rendered. Runs render the test split only, so far less is copied back to the Mac (full May run: 22 camera frames, 24 lidar sweeps), and every test frame is at least 45% of a block of time from the nearest train frame.
+- **Interleaved (retired):** SplatAD's LINSPACE split. Still the dataparser default when `test_block_count` is unset, so pre-T60 runs keep their meaning.
 - **Backtrack hold-out (candidate):** June 21 → 22 is an out-and-back through the dense stand. Train on chunks 20+21, evaluate on the return pass (chunk 22), which views the same trunks from a few metres to the side.
   - It is harder (lateral novel views) but closer to the question: does the trunk geometry hold from a viewpoint the model never trained on?
   - It needs a split override in `VikingHillDataParser`: eval = frames inside a configured time range, i.e. the backtrack chunk. That is a new transform, T48, with a known-answer test.
@@ -172,7 +174,7 @@ R must beat B on at least one of them on blocked and no-return cells (below), an
   - Σ = R(q̂)·diag(exp(s))²·R(q̂)ᵀ;
   - o = sigmoid(opacities);
   - means and Σ to the map frame with the same `inv(w2m)` as P1.
-  - Write `gaussians.npz` next to the lidar renders.
+  - Write `gaussians.npz` next to the lidar renders (`scripts/10_export_gaussians.py`, a job step after `08`).
 - **T57, grid:** Gaussian k's 3-D alpha is α_k(x) = o_k·exp(−½(x−μ_k)ᵀΣ_k⁻¹(x−μ_k)), the 3-D form of the alpha the rasteriser uses.
   - Voxel occupancy = 1 − ∏_k(1 − α_k(x)) at the voxel centre, visiting only voxels inside each Gaussian's 3σ ellipsoid.
   - A voxel is occupied if occupancy ≥ `eval.render_accumulation_threshold`, the same value as P1. So the two grids differ only by visibility.
@@ -238,13 +240,16 @@ The radar claim concerns blocked and no-return cells. B and R should agree on se
 | T46 | trunk precision / FP clusters | one matched and one unmatched synthetic cylinder give precision 0.5 and 1 FP |
 | T47 | BEV raster | a known point set gives exact pixel counts |
 | T49 (done) | manifest sweep period covers the per-point time of every extracted sweep | derived period kept unless a longer \|t\| is written; a synthetic chunk with stretched sweeps passes the contract after an incremental, fresh or resumed run |
+| T60 (done) | middle-block test split shared by every sensor | camera 0..12 s and lidar 0.5..11.5 s, f = 0.5, K = 2 give blocks [2.5, 5.5) and [6.5, 9.5) with the exact test frames (half-open edges); the real dataparser and scripts/09 pick identical frames |
+| T61 (done) | manifest elevation mapping = T51 far-field elevation per ring (replaces T16's parallax-biased medians; T16 now only supplies the ring set) | synthetic beams with elevation_inf + k/r give back elevation_inf exactly while T16's median sits at least k/r_max above it; rings come out ascending; the pipeline writes the cached beam model's far-field angles |
+| T62 (done) | test block cores: the central fraction c of each T60 block stays test, the rest is guard (neither split) | camera 0..12 s, f = 0.5, K = 2, c = 0.5 give cores [3.25, 4.75) and [7.25, 8.75), test 4 and 8, guard 3, 5, 7, 9, train untouched; c = 1 changes nothing; scripts/09 records guard counts and refuses whole-block renders |
 | T48 | time-range split override (backtrack hold-out, only if chosen) | frames inside the eval range go to eval and all others to train; both splits non-empty and disjoint |
 | T51 | Ouster beam directions fitted from raw returns (Phase B) | synthetic beams with a known parallax and either column direction give back the exact far-field angles; a cloud the model cannot describe fails the gate |
 | T52 | (ring, column) → unit direction | known angles give the exact vectors |
 | T53 | no-return cells of an organized cloud | known range-0 cells give their exact ring, column, time; an unorganized cloud raises |
 | T54 | no-return directions to the reference pose → sidecar rows | a known yaw rate rotates each direction by rate × time; t = capture − reference |
 | T55 | sidecar rows → 2000 m placeholders (dataparser, `add_missing_points`) | xyz = 2000·d, depth beyond SplatAD's return threshold, layout matches the sweep |
-| T56 | checkpoint Gaussians → map-frame means, covariances, opacities (P2) | a hand-made state dict: log-scales, an unnormalised quaternion and logit opacity give the exact Σ = R·diag(e^s)²·Rᵀ and sigmoid; `inv(w2m)` moves μ and rotates Σ |
+| T56 (done) | checkpoint Gaussians → map-frame means, covariances, opacities (P2) | a hand-made state dict: log-scales, an unnormalised quaternion and logit opacity give the exact Σ = R·diag(e^s)²·Rᵀ and sigmoid; `inv(w2m)` moves μ and rotates Σ |
 | T57 | Gaussian occupancy grid (P2) | one Gaussian gives occupancy σ(o) at its centre and visits exactly its 3σ voxels; two overlapping Gaussians give 1 − (1−α₁)(1−α₂) |
 
 ## 7. File structure (new items marked +)

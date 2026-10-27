@@ -26,9 +26,20 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # Phase B, option C: Ouster no-returns as a per-sweep sidecar (extract/no_return.py) and
         # their 2000 m placeholders in the dataparser (splatad/viking_conversions.py).
         "T51", "T52", "T53", "T54", "T55",
+        # P2: a run's checkpoint Gaussians in the map frame (eval/gaussian_occupancy.py).
+        "T56",
         # A run's exact train/test frames rebuilt without torch (dataset/run_split.py,
         # scripts/09_extract_run_split.py): neurad's time window and per-sensor LINSPACE split.
         "T58", "T59",
+        # Middle-block test split shared by every sensor (dataset/run_split.py, used by
+        # VikingHillDataParser's test_block_count and scripts/09).
+        "T60",
+        # Elevation mapping = far-field beam elevations of the T51 fit (extract/no_return.py),
+        # replacing T16's parallax-biased medians in the manifest.
+        "T61",
+        # Test block cores (dataset/run_split.py, VikingHillDataParser.test_block_core_fraction):
+        # only the central part of each T60 block is test and rendered; the rest is guard.
+        "T62",
     }
 )
 

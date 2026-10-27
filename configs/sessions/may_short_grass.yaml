@@ -73,10 +73,11 @@ lidar:
   ring_field: ring
   # Margin added around the derived robot-body cluster when computing min_lidar_dist (T15), metres.
   ego_margin_m: 0.05
-  # Scans pooled to derive elevation mapping / ego box (T15/T16); every scan is overkill.
+  # Scans pooled to derive the ring set / ego box (T15/T16); every scan is overkill.
   model_derivation_scan_count: 50
-  # Phase B no-return sidecar (T51): the beam directions of every (ring, column) cell are fitted on
-  # the raw cloud of the same sweeps. Gate on the median fit residual, in azimuth columns: below half
+  # Beam model (T51): the beam directions of every (ring, column) cell are fitted on the raw cloud
+  # of the same sweeps. Used by the no-return sidecar, and its far-field elevations are the
+  # manifest's elevation mapping (T61). Gate on the median fit residual, in azimuth columns: below half
   # a column a placeholder still falls in its own raster column.
   beam_fit_max_median_residual_columns: 0.5
   # Residual percentile stored in derived.json for diagnostics (conventional robust max).
@@ -87,8 +88,22 @@ radar:
   fields: [x, y, z, power, doppler]
 
 split:
-  # Single-trajectory capture: use most frames for training, keep an interleaved eval set (T21).
+  # Fraction of the windowed frames used for training; the rest are test.
   train_fraction: 0.9
+  # Test set = this many contiguous time blocks, the same for camera and lidar, centred at
+  # k/(K+1) of the run's window (T60; user's choice 2026-10-26: two middle stretches). It
+  # replaces neurad's interleaved split, whose test frames sit 0.1 s from a train frame (an
+  # interpolation-only check). Each block holds (1 - train_fraction)/K of the window; blocks stay
+  # apart only if train_fraction > 1/(K+1). Read by scripts/slurm/submit_run.py
+  # (TEST_BLOCK_COUNT -> viking-data --test-block-count).
+  test_block_count: 2
+  # Only the central 10% of each test block is the test split, rendered and fetched (T62; user's
+  # choice 2026-10-26: test renders only, the middle 10% of both test stretches, to cut what is
+  # copied back to the Mac). The other 90% of each block is guard: still never trained on (train is
+  # unchanged), not rendered. It also puts 45% of a block of time between test frames and the
+  # nearest train frame. Whole May recording: ~1.2 s per stretch, 22 camera frames, 24 lidar sweeps.
+  # Read by scripts/slurm/submit_run.py (TEST_BLOCK_CORE_FRACTION -> viking-data --test-block-core-fraction).
+  test_block_core_fraction: 0.1
 
 splatad:
   # Passed to the dataparser config; see plan contract table.

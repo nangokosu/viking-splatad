@@ -60,6 +60,7 @@ from viking_splatad.extract.no_return import (
     BeamDirectionModel,
     beam_unit_directions,
     derive_beam_direction_model,
+    elevation_mapping_from_beam_model,
     no_return_cells,
     no_return_sweep_rows,
 )
@@ -110,6 +111,8 @@ OWNED_OUTPUT_ENTRIES = (
     "camera", "lidar", NO_RETURN_DIRECTORY, "sidecar", ODOMETRY_CACHE_DIRECTORY,
     MANIFEST_FILE_NAME, POSES_FILE_NAME, DERIVED_FILE_NAME, STATE_FILE_NAME, "contract_report.md",
 )
+# Recorded in manifest pipeline.elevation_mapping_source: what lidar.elevation_mapping holds.
+ELEVATION_MAPPING_SOURCE = "T61: far-field elevation per ring of the T51 beam fit"
 # Beam-direction fit gate (T51), in azimuth columns: a no-return placeholder off by less than half
 # a column still falls in its own raster column. Config key lidar.beam_fit_max_median_residual_columns.
 DEFAULT_BEAM_FIT_MAX_MEDIAN_RESIDUAL_COLUMNS = 0.5
@@ -1152,9 +1155,10 @@ def write_metadata(
             readout_seconds=rolling_shutter_time, direction=DEFAULT_SHUTTER_DIRECTION)},
         lidar=LidarInfo(
             lidar_type=config["lidar"].get("type", DEFAULT_LIDAR_TYPE),
-            # LidarInfo documents radians; T16 yields degrees.
-            elevation_mapping={int(channel): float(np.radians(angle))
-                               for channel, angle in derived.elevation_mapping_deg.items()},
+            # T61: far-field beam elevations of the T51 fit for T16's channels (ring ids), not T16's
+            # parallax-biased medians. LidarInfo documents radians; T61 yields degrees.
+            elevation_mapping={channel: float(np.radians(angle)) for channel, angle in
+                               elevation_mapping_from_beam_model(extractor.beam_model, extractor.elevation_mapping).items()},
             azimuth_resolution=float(np.radians(derived.azimuth_resolution_deg)),
             azimuth_tile_width=derived.azimuth_tile_width,
             min_lidar_dist=list(derived.min_lidar_dist),
@@ -1198,6 +1202,8 @@ def write_metadata(
         "time_to_center_pixel": time_to_center_pixel,
         "timestamp_convention": camera_cfg["timestamp_convention"],
         "lidar_source": config["lidar"]["source"],
+        # Provenance of lidar.elevation_mapping (datasets without this key carry T16 medians).
+        "elevation_mapping_source": ELEVATION_MAPPING_SOURCE,
         "lidar_reference": config["lidar"]["reference"],
         "intensity_clipped_fraction": (
             extractor.clipped_values / extractor.total_values if extractor.total_values else 0.0

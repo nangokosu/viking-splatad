@@ -22,7 +22,7 @@ So a rendered point cloud is **what a lidar at that pose would see first**, not 
 - With Ouster no-returns on (every run from 2026-10-26), the decoder learns where the real lidar got no echo.
 - On the interleaved test split, eval poses sit between train poses. So the gate replays the neighbouring frames' drop-outs.
 - A radar-recovered trunk in a direction where the lidar had no return can be gated out.
-- **Adopted in PLAN §5:** the primary metrics use **ungated** extraction (accumulation > a config threshold, the same for every run). Gated numbers are secondary.
+- **Adopted in PLAN §5:** the primary metrics use **ungated** extraction (accumulation > a config threshold, the same for every run). Gated numbers are secondary. `08` saves the per-ray accumulation as `pred_accumulation`.
 
 ## 3. Caveat B: first surface only (occlusion), the main caveat
 For a ray aimed at a trunk base behind grass:
@@ -58,7 +58,7 @@ For a ray aimed at a trunk base behind grass:
 | `features_dc`, `features_rest` | [N,…] | decoder features | not needed |
 | `id` | [N,1] | actor index, or static | all static here (no actors) |
 
-`ns-export gaussian-splat` asserts a `SplatfactoModel` (`scripts/exporter.py:535`) and rejects SplatAD, so the checkpoint is the only source.
+`ns-export gaussian-splat` asserts a `SplatfactoModel` (`scripts/exporter.py:535`) and rejects SplatAD, so the checkpoint is the only source. `scripts/10_export_gaussians.py` (T56) reads it and writes `renders/gaussians.npz` (map-frame means, covariances, opacities; see `runs/RUN_FOLDER_GLOSSARY.md`).
 
 **Method.**
 - **Blocking probability:** Gaussian k's 3-D alpha is α_k(x) = σ(o_k)·exp(−½(x−μ_k)ᵀΣ_k⁻¹(x−μ_k)). This is the 3-D form of the alpha the rasteriser uses. A voxel's occupancy = 1 − ∏_k (1 − α_k(x)) at its centre or a few sub-samples: the chance that a ray through it is stopped.
