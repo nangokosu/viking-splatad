@@ -111,6 +111,8 @@ print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 # actor-edit FID indexes the dynamic actors, and our scenes have none, so it raises IndexError and
 # kills the job (222951, 222952). 99999999 is unavoidably hardcoded: it is SplatAD's own "never"
 # default (ADPipelineConfig.calc_fid_steps), and no training step reaches it, resumed runs included.
+# The flag is a variable-length tuple: tyro reads values until the next flag, so another flag must
+# follow it. Directly before viking-data it swallowed the subcommand name (jobs 222980, 222983).
 TRAIN_START_SECONDS=$(date +%s)
 echo "train_start_epoch_s: $TRAIN_START_SECONDS" >> "$JOB_INFO"
 ns-train splatad \
@@ -120,9 +122,9 @@ ns-train splatad \
   --timestamp "$RUN_ID" \
   --max-num-iterations "$MAX_NUM_ITERATIONS" \
   --steps-per-save "$STEPS_PER_SAVE" \
+  --pipeline.calc-fid-steps 99999999 \
   --machine.seed "$TRAIN_SEED" \
   --steps-per-eval-all-images "$STEPS_PER_EVAL_ALL_IMAGES" \
-  --pipeline.calc-fid-steps 99999999 \
   viking-data --data "$STAGE_ROOT/data" --session-name "$SESSION" \
   --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION" \
   --add-missing-points "$ADD_MISSING_POINTS" \

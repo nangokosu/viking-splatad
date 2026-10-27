@@ -64,3 +64,17 @@ def test_no_fid_step_is_reached_by_any_profile():
         for fid_step in fid_steps:
             assert fid_step >= iteration_count, (profile_name, fid_step)
             assert fid_step not in eval_steps, (profile_name, fid_step)
+
+
+def test_fid_values_are_followed_by_a_flag():
+    """The token after the FID values is another flag, never the viking-data subcommand.
+
+    tyro parses a variable-length tuple by consuming tokens until the next one starting with "--",
+    so a subcommand name right after the values becomes one of them (jobs 222980, 222983).
+    """
+    command = _ns_train_command(SBATCH_PATH.read_text())
+    # Step 1: the text after the flag's integer values.
+    match = re.search(re.escape(FID_FLAG) + r"(?:\s+\d+)+\s+(\S+)", command)
+    assert match, f"{FID_FLAG} has no token after its values"
+    # Step 2: that token must open another flag.
+    assert match.group(1).startswith("--"), match.group(1)
