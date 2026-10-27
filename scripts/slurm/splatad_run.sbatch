@@ -105,6 +105,14 @@ print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 # gradients with float atomics, so the same seed gives statistically similar runs only.
 # --experiment-name and --timestamp make the output path deterministic:
 # $RUN_DIR/train/$SESSION/splatad/$RUN_ID/{config.yml,nerfstudio_models/step-*.ckpt}
+# --pipeline.calc-fid-steps 99999999 turns off SplatAD's novel-view FIDs (lane/vertical shift, actor
+# edits). The splatad method config computes them at step 30000, the last step of a 30001-iteration
+# run, whenever that step is also an all-images eval (it is for stock's 2500 and our 600). The
+# actor-edit FID indexes the dynamic actors, and our scenes have none, so it raises IndexError and
+# kills the job (222951, 222952). 99999999 is unavoidably hardcoded: it is SplatAD's own "never"
+# default (ADPipelineConfig.calc_fid_steps), and no training step reaches it, resumed runs included.
+# The flag is a variable-length tuple: tyro reads values until the next flag, so another flag must
+# follow it. Directly before viking-data it swallowed the subcommand name (jobs 222980, 222983).
 TRAIN_START_SECONDS=$(date +%s)
 echo "train_start_epoch_s: $TRAIN_START_SECONDS" >> "$JOB_INFO"
 ns-train splatad \
@@ -114,6 +122,7 @@ ns-train splatad \
   --timestamp "$RUN_ID" \
   --max-num-iterations "$MAX_NUM_ITERATIONS" \
   --steps-per-save "$STEPS_PER_SAVE" \
+  --pipeline.calc-fid-steps 99999999 \
   --machine.seed "$TRAIN_SEED" \
   --steps-per-eval-all-images "$STEPS_PER_EVAL_ALL_IMAGES" \
   viking-data --data "$STAGE_ROOT/data" --session-name "$SESSION" \

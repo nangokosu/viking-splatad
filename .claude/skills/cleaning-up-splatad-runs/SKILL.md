@@ -11,7 +11,7 @@ A run leaves artifacts in three places: `<stage root>/runs/<run_id>/` on the clu
 ## What gets deleted
 | run | action |
 |---|---|
-| job queued or running (its `job.sbatch` is in `squeue`) | **kept**, even when named: `scancel <job>` first |
+| job queued or running (its `job.sbatch`, or a render-only job's `rerenders/<label>/job.sbatch`, is in `squeue`) | **kept**, even when named: `scancel <job>` first |
 | named on the command line | deleted, even if it succeeded |
 | no `end_utc` + `split_render_check: match` in `job_info.txt` (cancelled, killed at a limit, failed, never started), or a ledger row with no folder left | deleted |
 | successful | kept |

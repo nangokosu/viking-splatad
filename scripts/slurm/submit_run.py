@@ -8,6 +8,10 @@ Usage:
     uv run python scripts/slurm/submit_run.py status <job_id>
     uv run python scripts/slurm/submit_run.py fetch  <run_id>
     uv run python scripts/slurm/submit_run.py clean  [<run_id> ...] [--yes]
+    uv run python scripts/slurm/submit_run.py render <run_id> --camera-frames 795,797-800 --lidar-sweeps 801 [--skip-gates]
+
+``render`` re-renders guard frames of a finished run from its checkpoint, with the code at HEAD
+(scripts/slurm/render_only.sbatch), into <run dir>/rerenders/<label>/; no training.
 
 The GPU nodes have no container runtime, so jobs run in a native environment that
 ``build-env`` builds once from the Dockerfile's recipe (scripts/slurm/build_env.sbatch). The
@@ -43,6 +47,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SLURM_CONFIG_PATH = PROJECT_ROOT / "configs" / "slurm.yaml"
 # Batch scripts, as paths inside the staged code snapshot (code/<sha>/...).
 RUN_SCRIPT_RELATIVE_PATH = "scripts/slurm/splatad_run.sbatch"
+RENDER_SCRIPT_RELATIVE_PATH = "scripts/slurm/render_only.sbatch"
 BUILD_SCRIPT_RELATIVE_PATH = "scripts/slurm/build_env.sbatch"
 # Repo paths staged as code/<sha>/: what the environment build installs and tests (the same set
 # the Dockerfile COPYs, plus the Dockerfile itself, which build_env.sbatch reads pins from).
@@ -93,6 +98,21 @@ SUCCESS_SPLIT_CHECK_VALUE = "match"
 # File name of the per-job batch script inside the run dir; squeue's %o names it, which maps an
 # active job back to its run id.
 JOB_SCRIPT_NAME = "job.sbatch"
+# Folder inside a run dir that holds one sub-folder per render-only job (<run>/rerenders/<label>/).
+# A job script there also marks its run as active, so `clean` never deletes a checkpoint in use.
+RERENDERS_DIRECTORY_NAME = "rerenders"
+# Render-only job's frame selection, inside its rerender folder (read by the dataparser, T66, and by
+# scripts/12_prepare_rerender.py check).
+SELECTION_FILE_NAME = "selection.json"
+# Prefix of rerender labels: render-<UTC timestamp>-<short sha of the render code>.
+RERENDER_LABEL_PREFIX = "render"
+# Split name of guard frames in a run's split.json (dataset/run_split.py GUARD_SPLIT_NAME; repeated
+# here because this script runs without importing the package). Only these may be re-rendered.
+GUARD_SPLIT_NAME = "guard"
+# Fewest camera frames a render-only job accepts. Not a tunable: `ns-render dataset` names each output
+# relative to os.path.commonpath of the split's image files (nerfstudio render.py ~998-1013); for a
+# single file that path is the file itself, so `relative_to` raises (smoke job 222946 crashed so).
+MINIMUM_CAMERA_RENDER_FRAMES = 2
 
 
 class GateFailure(RuntimeError):
@@ -850,6 +870,165 @@ def ssh_command(ssh_target: str, remote_arguments: Sequence[str]) -> List[str]:
     return ["ssh", ssh_target, shlex.join(list(remote_arguments))]
 
 
+def parse_frame_index_list(frame_list_text: str) -> List[int]:
+    """Parse a frame index list such as ``795,797-800`` (single indices and inclusive ranges).
+
+    Args:
+        frame_list_text: Comma-separated items, each ``<n>`` or ``<first>-<last>`` with first <= last.
+
+    Returns:
+        Sorted, distinct frame indices (``795,797-800`` -> [795, 797, 798, 799, 800]).
+
+    Raises:
+        ValueError: If the text is empty, an item is empty or not a non-negative integer, or a
+            range is reversed.
+    """
+    # Step 1: one item per comma; blank items (",," or a trailing comma) are a typo, not "nothing".
+    item_texts = [item_text.strip() for item_text in frame_list_text.split(",")]
+    if not frame_list_text.strip() or any(not item_text for item_text in item_texts):
+        raise ValueError(f"frame list {frame_list_text!r} is empty or has an empty item")
+    frame_indices = set()
+    for item_text in item_texts:
+        # Step 2: "a-b" is an inclusive range; digits only, so "-3" (negative) fails here too.
+        first_text, separator, last_text = item_text.partition("-")
+        if not first_text.isdigit() or (separator and not last_text.isdigit()):
+            raise ValueError(f"frame list item {item_text!r} is not <n> or <first>-<last> (non-negative integers)")
+        first_index = int(first_text)
+        last_index = int(last_text) if separator else first_index
+        if last_index < first_index:
+            raise ValueError(f"frame range {item_text!r} is reversed")
+        frame_indices.update(range(first_index, last_index + 1))
+    # Step 3: sorted and distinct (overlapping items are merged).
+    return sorted(frame_indices)
+
+
+def validate_render_selection(split_record: Dict[str, Any], camera_frame_indices: Sequence[int],
+                              lidar_frame_indices: Sequence[int]) -> Dict[str, List[str]]:
+    """Check a render-only request against a finished run's split.json and name the selected files.
+
+    Only guard frames may be requested: frames inside a T60 test block but outside its T62 core, which
+    the run never trained on and never rendered (split ``guard`` in split.json, scripts/09).
+
+    Args:
+        split_record: The run's parsed split.json (``frames`` entries: sensor, kind, split,
+            frame_index, timestamp_ns, time_s, file).
+        camera_frame_indices: Camera frame indices to render (at least MINIMUM_CAMERA_RENDER_FRAMES).
+        lidar_frame_indices: Lidar sweep indices to render (at least one).
+
+    Returns:
+        Sensor kind -> split.json ``file`` of every selected frame, in frame-index order.
+
+    Raises:
+        ValueError: If a list is empty or repeats an index, the camera list is shorter than
+            MINIMUM_CAMERA_RENDER_FRAMES, or an index is not a guard frame of that kind (each
+            offender is listed with its actual split, or "absent" when the record has no such frame).
+    """
+    requested_by_kind = {"camera": [int(frame_index) for frame_index in camera_frame_indices],
+                         "lidar": [int(frame_index) for frame_index in lidar_frame_indices]}
+    # Step 1: list sizes (both kinds are always rendered; ns-render needs >= 2 camera frames).
+    for sensor_kind, requested_indices in requested_by_kind.items():
+        if not requested_indices:
+            raise ValueError(f"no {sensor_kind} frames requested: both --camera-frames and --lidar-sweeps are required")
+        if len(set(requested_indices)) != len(requested_indices):
+            raise ValueError(f"{sensor_kind} frame list repeats an index: {requested_indices}")
+    if len(requested_by_kind["camera"]) < MINIMUM_CAMERA_RENDER_FRAMES:
+        raise ValueError(
+            f"request at least {MINIMUM_CAMERA_RENDER_FRAMES} camera frames: ns-render dataset names outputs "
+            "relative to the common path of the split's images, which for one image is the file itself "
+            "(render.py relative_to raises; smoke job 222946)")
+    # Step 2: each frame's records, per kind (several sensors of one kind share an index: keep all).
+    records_by_kind_and_index: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
+    for frame_record in split_record["frames"]:
+        records_by_kind_and_index.setdefault((frame_record["kind"], int(frame_record["frame_index"])),
+                                             []).append(frame_record)
+    # Step 3: every requested index must be guard for its kind; collect all offenders first.
+    offenders, selected_files = [], {}
+    for sensor_kind, requested_indices in requested_by_kind.items():
+        selected_files[sensor_kind] = []
+        for frame_index in sorted(requested_indices):
+            frame_records = records_by_kind_and_index.get((sensor_kind, frame_index), [])
+            actual_splits = sorted({frame_record["split"] for frame_record in frame_records}) or ["absent"]
+            if actual_splits != [GUARD_SPLIT_NAME]:
+                offenders.append(f"{sensor_kind} {frame_index} ({'/'.join(actual_splits)})")
+                continue
+            selected_files[sensor_kind] += [frame_record["file"] for frame_record in frame_records]
+    if offenders:
+        raise ValueError("only guard frames of the run's split.json can be re-rendered; not guard: "
+                         + ", ".join(offenders))
+    return selected_files
+
+
+def build_rerender_label(git_sha: str, now_utc: datetime.datetime) -> str:
+    """Name of one render-only job's folder: ``render-<YYYYmmdd-HHMMSS>-<sha7>``.
+
+    Args:
+        git_sha: Full SHA of the render code.
+        now_utc: Submission time (UTC).
+
+    Returns:
+        The label (one path component).
+    """
+    return f"{RERENDER_LABEL_PREFIX}-{now_utc.strftime(RUN_TIMESTAMP_FORMAT)}-{git_sha[:SHORT_SHA_LENGTH]}"
+
+
+def build_render_job_environment(run_id: str, rerender_label: str, absolute_stage_root: str,
+                                 run_job_info: Dict[str, str], git_sha: str,
+                                 env_marker: Dict[str, str]) -> Dict[str, str]:
+    """Build the variables exported to render_only.sbatch (insertion order is kept).
+
+    Args:
+        run_id: The finished run whose checkpoint is rendered.
+        rerender_label: ``build_rerender_label`` output.
+        absolute_stage_root: Resolved stage root on the cluster.
+        run_job_info: The run's parsed job_info.txt (SESSION, GIT_SHA, RENDER_DOWNSCALE_FACTOR).
+        git_sha: Full SHA of the render code (HEAD, staged as code/<sha>).
+        env_marker: Parsed marker of the environment the job activates.
+
+    Returns:
+        Mapping variable name -> string value.
+
+    Raises:
+        KeyError: If the run's job_info.txt lacks SESSION, GIT_SHA or RENDER_DOWNSCALE_FACTOR.
+    """
+    return {
+        "RUN_ID": run_id,
+        "RERENDER_LABEL": rerender_label,
+        "STAGE_ROOT": absolute_stage_root,
+        "SESSION": run_job_info["SESSION"],
+        # The code that renders (HEAD) and the code that trained the checkpoint can differ; both are recorded.
+        "GIT_SHA": git_sha,
+        "TRAIN_GIT_SHA": run_job_info["GIT_SHA"],
+        "CODE_DIR": f"{absolute_stage_root}/code/{git_sha}",
+        "ENV_PREFIX": env_marker["env_prefix"],
+        # Same camera resolution as the run's own renders.
+        "RENDER_DOWNSCALE_FACTOR": run_job_info["RENDER_DOWNSCALE_FACTOR"],
+    }
+
+
+def build_render_selection_record(camera_frame_indices: Sequence[int], lidar_frame_indices: Sequence[int],
+                                  selected_files: Dict[str, List[str]], split_record: Dict[str, Any],
+                                  now_utc: datetime.datetime) -> Dict[str, Any]:
+    """Contents of a render-only job's selection.json.
+
+    Args:
+        camera_frame_indices, lidar_frame_indices: Validated requests.
+        selected_files: ``validate_render_selection`` output.
+        split_record: The run's split.json (its ``membership_sha256`` ties the selection to that split).
+        now_utc: Submission time (UTC).
+
+    Returns:
+        Mapping with keys camera, lidar (sorted indices), files, source_split_membership_sha256,
+        requested_utc.
+    """
+    return {
+        "camera": sorted(int(frame_index) for frame_index in camera_frame_indices),
+        "lidar": sorted(int(frame_index) for frame_index in lidar_frame_indices),
+        "files": selected_files,
+        "source_split_membership_sha256": split_record["membership_sha256"],
+        "requested_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
 def get_head_sha() -> str:
     """Return the full SHA of HEAD.
 
@@ -1181,6 +1360,107 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     return job_id, run_id
 
 
+def read_remote_text(ssh_target: str, remote_path: str, description: str) -> str:
+    """Read one text file on the cluster with ``cat`` over ssh.
+
+    Args:
+        ssh_target: ``host`` or ``user@host``.
+        remote_path: Absolute file path.
+        description: Label for the error message.
+
+    Returns:
+        The file contents.
+
+    Raises:
+        RuntimeError: If the file cannot be read (missing run, or not yet written).
+    """
+    return run_checked(ssh_command(ssh_target, ["cat", remote_path]), description).stdout
+
+
+def submit_render(config: Dict[str, Any], run_id: str, camera_frames_text: str, lidar_sweeps_text: str,
+                  skip_gates: bool, now_utc: Optional[datetime.datetime] = None) -> Tuple[str, str]:
+    """Submit a render-only job for guard frames of a finished run (render_only.sbatch).
+
+    The job renders with the code at HEAD (which must be staged) from the run's own config.yml and
+    checkpoint, into ``<run dir>/rerenders/<label>/``. It is not added to runs/submitted.tsv: that
+    ledger lists training runs, and ``clean`` deletes ledger rows that have no run folder.
+
+    Args:
+        config: Parsed Slurm config (``render_only.time_limit``).
+        run_id: Finished run under ``<stage root>/runs/``.
+        camera_frames_text: ``--camera-frames`` list (``parse_frame_index_list`` syntax).
+        lidar_sweeps_text: ``--lidar-sweeps`` list.
+        skip_gates: True to skip the Mac-side gates.
+        now_utc: Submission time (default: now); injectable for tests.
+
+    Returns:
+        (job_id, rerender label).
+
+    Raises:
+        GateFailure: If a gate fails.
+        ValueError: On a malformed run id or frame list, a selection that is not guard frames, an
+            unsuccessful run, or a config without ``render_only.time_limit``.
+        RuntimeError: If the run's files cannot be read, the code is not staged, the environment is
+            not built, or a remote command fails.
+    """
+    # Step 1: local checks first (no ssh for a typo).
+    if not RUN_ID_PATTERN.match(run_id):
+        raise ValueError(f"malformed run id {run_id!r}")
+    camera_frame_indices = parse_frame_index_list(camera_frames_text)
+    lidar_frame_indices = parse_frame_index_list(lidar_sweeps_text)
+    time_limit = (config.get("render_only") or {}).get("time_limit")
+    if not time_limit:
+        raise ValueError("configs/slurm.yaml: render_only.time_limit is not set")
+    # Step 2: the run's own record decides: only a successful run has a verified split.json.
+    ssh_target = resolve_ssh_target(config["ssh_host"])
+    absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
+    remote_run_dir = f"{absolute_stage_root}/runs/{run_id}"
+    run_job_info = parse_job_info_text(read_remote_text(ssh_target, f"{remote_run_dir}/job_info.txt",
+                                                        f"read job_info.txt of {run_id}"))
+    if not run_succeeded(run_job_info):
+        raise ValueError(f"run {run_id} did not succeed (no end_utc + split_render_check: match); "
+                         "only finished runs can be re-rendered")
+    session = run_job_info["SESSION"]
+    # Step 3: gates (clean tree: the render code must be a commit; contract on the run's dataset).
+    if not skip_gates:
+        run_gates(session)
+    split_record = json.loads(read_remote_text(ssh_target, f"{remote_run_dir}/split.json",
+                                               f"read split.json of {run_id}"))
+    selected_files = validate_render_selection(split_record, camera_frame_indices, lidar_frame_indices)
+    # Step 4: the render code (HEAD) must be staged, and its environment built.
+    git_sha = get_head_sha()
+    remote_code_dir = f"{absolute_stage_root}/code/{git_sha}"
+    if run_command(ssh_command(ssh_target, ["test", "-d", remote_code_dir])).returncode != 0:
+        raise RuntimeError(f"code {git_sha} is not staged; run `stage --session {session}` first")
+    env_name = environment_name(config, git_sha)
+    env_marker = read_environment_marker(ssh_target, absolute_stage_root, env_name)
+    if env_marker is None:
+        raise RuntimeError(f"environment {env_name} is not built; run `build-env` first")
+    cpus, memory_gb = query_node_resources(config, ssh_target)
+    # Step 5: rerender folder (Slurm cannot write --output into a missing dir), selection, job script.
+    now_utc = now_utc or datetime.datetime.now(datetime.timezone.utc)
+    rerender_label = build_rerender_label(git_sha, now_utc)
+    remote_rerender_dir = f"{remote_run_dir}/{RERENDERS_DIRECTORY_NAME}/{rerender_label}"
+    run_checked(ssh_command(ssh_target, ["mkdir", "-p", remote_rerender_dir]), "remote rerender dir mkdir")
+    selection_record = build_render_selection_record(camera_frame_indices, lidar_frame_indices, selected_files,
+                                                     split_record, now_utc)
+    write_remote_file(ssh_target, f"{remote_rerender_dir}/{SELECTION_FILE_NAME}",
+                      json.dumps(selection_record, indent=2) + "\n")
+    job_script_path = f"{remote_rerender_dir}/{JOB_SCRIPT_NAME}"
+    write_remote_file(ssh_target, job_script_path, build_job_script(
+        build_render_job_environment(run_id, rerender_label, absolute_stage_root, run_job_info, git_sha,
+                                     env_marker),
+        f"{remote_code_dir}/{RENDER_SCRIPT_RELATIVE_PATH}"))
+    # Step 6: submit.
+    sbatch_arguments = build_sbatch_command(
+        partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
+        time_limit=str(time_limit), job_name=f"splatad-render-{session}",
+        output_path=f"{remote_rerender_dir}/slurm-%j.out", job_script_path=job_script_path)
+    job_id = submit_sbatch(ssh_target, sbatch_arguments)
+    print(f"submitted render job {job_id} run {run_id} label {rerender_label}")
+    return job_id, rerender_label
+
+
 def show_status(config: Dict[str, Any], job_id: str) -> int:
     """Print squeue and sacct for a job.
 
@@ -1267,14 +1547,15 @@ def parse_remote_run_listing(listing_text: str) -> Tuple[Dict[str, Optional[Dict
 
     Format: ``RUN<TAB><run_id>`` opens a run, followed by its job_info.txt lines between
     ``INFO_BEGIN`` and ``INFO_END`` (absent if it has none); ``ACTIVE<TAB><job script path>`` is one
-    pending or running job of the user.
+    pending or running job of the user: a run's own job (``<runs>/<run_id>/job.sbatch``) or a
+    render-only job on its checkpoint (``<runs>/<run_id>/rerenders/<label>/job.sbatch``).
 
     Args:
         listing_text: Remote stdout.
 
     Returns:
-        (runs, active run ids): run id -> parsed job_info (None if missing); the run ids whose
-        job script (``<runs>/<run_id>/job.sbatch``) belongs to a queued or running job.
+        (runs, active run ids): run id -> parsed job_info (None if missing); the run ids with a
+        queued or running job: their own, or a render-only job reading their checkpoint.
     """
     remote_runs: Dict[str, Optional[Dict[str, str]]] = {}
     active_run_ids = set()
@@ -1295,6 +1576,10 @@ def parse_remote_run_listing(listing_text: str) -> Tuple[Dict[str, Optional[Dict
             script_path = Path(line.split("\t", 1)[1].strip())
             if script_path.name == JOB_SCRIPT_NAME:
                 active_run_ids.add(script_path.parent.name)
+                # A render-only job (<run_id>/rerenders/<label>/job.sbatch) uses <run_id>'s
+                # checkpoint, so that run is active too.
+                if script_path.parent.parent.name == RERENDERS_DIRECTORY_NAME:
+                    active_run_ids.add(script_path.parent.parent.parent.name)
     return remote_runs, active_run_ids
 
 
@@ -1514,6 +1799,13 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         "clean", help="delete cancelled/failed runs and the named runs (cluster dir, fetched copy, ledger row)")
     clean_parser.add_argument("run_ids", nargs="*", help="runs to delete even if successful")
     clean_parser.add_argument("--yes", action="store_true", help="delete; without it only the plan is printed")
+    render_parser = subparsers.add_parser(
+        "render", help="render guard frames of a finished run from its checkpoint (no training)")
+    render_parser.add_argument("run_id")
+    render_parser.add_argument("--camera-frames", required=True,
+                               help="guard camera frame indices, e.g. 795,797-800 (at least 2)")
+    render_parser.add_argument("--lidar-sweeps", required=True, help="guard lidar sweep indices, e.g. 801-803")
+    render_parser.add_argument("--skip-gates", action="store_true")
     arguments = parser.parse_args(argument_list)
     # Step 2: dispatch; every expected failure becomes a message and exit code 1.
     try:
@@ -1533,6 +1825,9 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             fetch_run(config, arguments.run_id)
         elif arguments.command == "clean":
             clean_runs(config, arguments.run_ids, arguments.yes)
+        elif arguments.command == "render":
+            submit_render(config, arguments.run_id, arguments.camera_frames, arguments.lidar_sweeps,
+                          arguments.skip_gates)
         return 0
     except (GateFailure, ValueError, KeyError, RuntimeError, FileNotFoundError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

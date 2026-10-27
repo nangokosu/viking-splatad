@@ -1,4 +1,4 @@
-"""Exact train/test frame membership of one SplatAD run, rebuilt without torch (T58, T59, T60, T62).
+"""Exact train/test frame membership of one SplatAD run, rebuilt without torch (T58, T59, T60, T62, T66).
 
 SplatAD's frame selection has no randomness. ``ADDataParser._generate_dataparser_outputs``
 (neurad-studio ad_dataparser.py) does, in order:
@@ -12,6 +12,9 @@ SplatAD's frame selection has no randomness. ``ADDataParser._generate_dataparser
     3. With ``test_block_core_fraction = c < 1`` (``VikingHillDataParser``), only the central
        c of each block stays test; the block's outer frames become ``guard`` frames, in neither
        split (T62): never trained on, never rendered. config.yml records c.
+    4. Render-only jobs (scripts/slurm/render_only.sbatch) set ``render_frame_selection_file`` in a
+       copy of a finished run's config.yml: the ``test``/``eval`` split is then exactly the requested
+       guard frames (T66) instead of the cores. Train (and ``val``) never change.
 The training seed (``--machine.seed``) only orders sampling during training; it never changes
 which frames are train or test. The only seeded step in split selection, ``max_eval_frames``
 (``torch.manual_seed(123)``), is None for ns-train and forced to None by ns-render and
@@ -25,9 +28,11 @@ Two recorded values are NOT the run's split and must not be used instead:
 """
 
 import hashlib
+import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -53,6 +58,9 @@ WHOLE_BLOCK_CORE_FRACTION = 1.0
 # nerfstudio's training-time eval split name (full_images_datamanager.py:115): FullImageDatamanager
 # runs with test_mode="val" while training; ns-render and scripts/08 ask for "test".
 EVAL_WHOLE_BLOCKS_SPLIT_NAME = "val"
+# Splits the render-frame selection (T66) replaces: ns-render and scripts/08 ask for "test"; "eval"
+# is the base class's other name for the held-out split. "val" (training's eval) stays as T65 says.
+RENDER_SELECTION_SPLIT_NAMES = ("test", "eval")
 
 
 @dataclass(frozen=True)
@@ -297,6 +305,107 @@ def restrict_test_to_block_cores(
         core_positions_by_sensor[name] = (train_positions, test_positions[in_core_mask].astype(np.int64))
         guard_positions_by_sensor[name] = test_positions[~in_core_mask].astype(np.int64)
     return core_positions_by_sensor, guard_positions_by_sensor, core_bounds
+
+
+@transform("T66", "render-only selection: the test split becomes exactly the requested guard frames of a finished run")
+def select_guard_frames_for_render(
+    guard_positions: np.ndarray, frame_indices_by_position: np.ndarray, requested_frame_indices: Sequence[int]
+) -> np.ndarray:
+    """Positions of the requested frames, each of which must be a guard frame (T62) of the run.
+
+    A finished run rendered only its T62 cores; its guard frames were never trained on and never
+    rendered, so rendering them later from the same checkpoint adds held-out views without touching
+    training. Invariants: result ⊆ guard_positions (so it is disjoint from train and from the cores),
+    and train positions are not an input, so they cannot change. A requested index is accepted iff
+    every windowed position carrying it is guard (one camera or lidar per kind: one position each).
+    Cost O(N * R) for N windowed frames and R requested indices (one scan of N per request; R is
+    a few hundred at most, the guard set of a run).
+
+    Args:
+        guard_positions: T62 guard positions of one sensor kind (into its windowed frames).
+        frame_indices_by_position: int [N] frame index (file name ``<frame_index>_<ns>``) of every
+            windowed position of that kind.
+        requested_frame_indices: Frame indices to render; distinct, at least one.
+
+    Returns:
+        Sorted int64 positions of the requested frames.
+
+    Raises:
+        ValueError: If the request is empty or repeats an index, or names an index that is not in
+            the window (unknown) or not a guard frame; the message lists every offender.
+    """
+    # Step 1: the request itself: non-empty and without repeats (a repeat is a caller error).
+    requested = [int(frame_index) for frame_index in requested_frame_indices]
+    if not requested:
+        raise ValueError("render selection is empty: request at least one guard frame")
+    repeated = sorted(frame_index for frame_index, count in Counter(requested).items() if count > 1)
+    if repeated:
+        raise ValueError(f"render selection repeats frame indices {repeated}")
+    # Step 2: guard membership per windowed position (bool mask, O(N)).
+    frame_indices = np.asarray(frame_indices_by_position, dtype=np.int64)
+    is_guard_position = np.zeros(len(frame_indices), dtype=bool)
+    is_guard_position[np.asarray(guard_positions, dtype=np.int64)] = True
+    # Step 3: classify each requested index; collect offenders by reason so one error names all.
+    unknown_indices, non_guard_indices, selected_positions = [], [], []
+    for frame_index in requested:
+        matching_positions = np.flatnonzero(frame_indices == frame_index)
+        if matching_positions.size == 0:
+            unknown_indices.append(frame_index)
+        elif not is_guard_position[matching_positions].all():
+            non_guard_indices.append(frame_index)
+        else:
+            selected_positions.extend(matching_positions.tolist())
+    if unknown_indices or non_guard_indices:
+        raise ValueError(f"render selection must name guard frames only: not in the run's window "
+                         f"{unknown_indices}, in the window but not guard (train or test core) {non_guard_indices}")
+    # Step 4: sorted positions (the dataparser keeps frames in time order).
+    return np.sort(np.asarray(selected_positions, dtype=np.int64))
+
+
+def frame_indices_of_paths(frame_paths: Sequence[Path]) -> np.ndarray:
+    """Frame index of each frame file, parsed from ``<frame_index>_<timestamp_ns>.<jpg|npy>``.
+
+    Args:
+        frame_paths: Image or lidar sweep paths (the dataparser's filtered file lists).
+
+    Returns:
+        int64 [len(frame_paths)] frame indices, in input order.
+
+    Raises:
+        ValueError: If a file name does not follow the dataset's frame pattern.
+    """
+    frame_indices = []
+    for frame_path in frame_paths:
+        name_match = FRAME_FILE_PATTERN.match(Path(frame_path).name)
+        if name_match is None:
+            raise ValueError(f"{frame_path}: not a <frame_index>_<timestamp_ns> frame file")
+        frame_indices.append(int(name_match.group(1)))
+    return np.asarray(frame_indices, dtype=np.int64)
+
+
+def load_render_frame_selection(selection_path: Path) -> Dict[str, List[int]]:
+    """Read the frame indices of a render-only job's ``selection.json`` (written by submit_run.py render).
+
+    Args:
+        selection_path: JSON file with at least ``{"camera": [frame indices], "lidar": [...]}``;
+            other keys (file names, provenance) are ignored here.
+
+    Returns:
+        Sensor kind (``camera``, ``lidar``) -> requested frame indices, in file order.
+
+    Raises:
+        ValueError: If a kind is missing or its value is not a list of integers.
+    """
+    selection = json.loads(Path(selection_path).read_text())
+    frame_indices_by_kind = {}
+    for sensor_kind in SPLIT_SENSOR_KINDS:
+        frame_indices = selection.get(sensor_kind)
+        # bool is an int subclass; refuse it like any non-integer.
+        if not isinstance(frame_indices, list) or not all(
+                isinstance(frame_index, int) and not isinstance(frame_index, bool) for frame_index in frame_indices):
+            raise ValueError(f"{selection_path}: {sensor_kind!r} must be a list of integer frame indices")
+        frame_indices_by_kind[sensor_kind] = frame_indices
+    return frame_indices_by_kind
 
 
 def resolve_run_train_fraction(manifest: dict, train_fraction_override: Optional[float]) -> Tuple[float, str]:
