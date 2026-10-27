@@ -4,6 +4,7 @@ import csv
 import importlib.util
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from viking_splatad.io.nerfstudio_config import read_config_scalar
@@ -117,3 +118,35 @@ def test_plot_merges_two_event_files(tmp_path):
     test_steps = [int(row["step"]) for row in _read_csv(output_dir / "overfitting_curves.csv")
                   if row["metric"] == "psnr" and row["split"] == "test"]
     assert test_steps == [20, 40, 60, 80]
+
+
+@requires_plot_stack
+def test_all_panels_share_run_x_range_and_skip_start_up_spike(tmp_path):
+    """Every drawn axes spans 0..max step; a step-0 spike does not set the y-limits; test-only titles say so."""
+    module = _load_plot_module()
+    train_steps = np.arange(1, 101)
+    train_values = np.where(train_steps < 5, 1000.0, 10.0 + 0.01 * train_steps)
+    series = {
+        TRAIN_TAG: (train_steps, train_values),
+        TEST_TAG: (np.array([20, 40]), np.array([9.0, 9.5])),
+        "Eval Images Metrics Dict (all images)/ssim": (np.array([40]), np.array([0.6])),
+    }
+    panels = module.pair_metric_tags(series.keys())
+    figure = module.draw_figure("run", series, panels, 20, 30)
+    drawn_axes = [axes for axes in figure.axes if axes.axison]
+    assert {tuple(axes.get_xlim()) for axes in drawn_axes} == {(0, 100)}
+    psnr_axes = next(axes for axes in drawn_axes if axes.get_title() == "psnr")
+    assert psnr_axes.get_ylim()[1] < 100  # warm-up at step 30 (train extends past it) drops the 1000 spike
+    assert "ssim (no train value logged)" in {axes.get_title() for axes in drawn_axes}
+
+
+@requires_plot_stack
+def test_panel_y_limits_pure():
+    """Limits cover the values at steps >= warm-up and all test values, plus a 5% margin; constant data is widened."""
+    module = _load_plot_module()
+    steps, values = np.array([0, 10, 20]), np.array([100.0, 2.0, 4.0])
+    lower, upper = module.panel_y_limits([(steps, values)], 10, np.array([1.0]))
+    # kept values: 2, 4 and the test 1 -> range [1, 4], margin 0.05 * 3
+    assert (lower, upper) == pytest.approx((1.0 - 0.15, 4.0 + 0.15))
+    flat_lower, flat_upper = module.panel_y_limits([(steps, np.full(3, 7.0))], 0)
+    assert flat_lower < 7.0 < flat_upper
