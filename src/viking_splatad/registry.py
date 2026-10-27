@@ -37,6 +37,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # Elevation mapping = far-field beam elevations of the T51 fit (extract/no_return.py),
         # replacing T16's parallax-biased medians in the manifest.
         "T61",
+        # Test block cores (dataset/run_split.py, VikingHillDataParser.test_block_core_fraction):
+        # only the central part of each T60 block is test and rendered; the rest is guard.
+        "T62",
     }
 )
 

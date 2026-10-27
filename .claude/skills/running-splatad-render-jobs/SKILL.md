@@ -10,7 +10,7 @@ description: Use when training SplatAD and rendering camera images or lidar poin
 1. **Trains** with `ns-train splatad ... viking-data`, passing `--machine.seed` = the profile's `seed`.
 2. **Renders camera images** with `ns-render dataset`: rgb + gt-rgb jpg.
 3. **Renders lidar** with `scripts/08_render_lidar_pointcloud.py`, which calls SplatAD's `get_lidar_outputs` and then `filter_lidar_pred_and_gt(output_point_cloud=True)`.
-4. Both renders cover **every input pose** of the profile's `render_pose_source` (train+test).
+4. Both renders cover every input pose of the profile's `render_pose_source`, which is **`test` only** (user's choice 2026-10-26): training views are never re-rendered, and the test split is only the middle half of each held-out block (T62, below). That keeps the fetch small: ~240 test frames for the full May run instead of ~2400.
 
 Jobs run the **committed** code at HEAD. They need a built env: if `submit` says it is missing, follow the `building-splatad-cluster-env` skill.
 
@@ -65,16 +65,19 @@ Same seed means statistically similar runs, not identical ones. Compare B vs R w
 ## Train/test split record (successful runs only)
 **The split has no randomness, and the seed does not affect it.** SplatAD keeps the frames inside the time window (`DATASET_START/END_FRACTION`, over camera and lidar times together, inclusive). Then the test set is K contiguous time blocks, the same for camera and lidar, centred at k/(K+1) of the window, each (1−f)/K of it long (T60, `VikingHillDataParser.test_block_count`). K is the session config's `split.test_block_count` (2), exported as `TEST_BLOCK_COUNT`. f is the manifest's `session.train_fraction` (0.9) unless overridden. Runs from before T60 used neurad's per-sensor linspace split instead (every ~10th frame).
 
+**Only each block's core is test (T62).** The session config's `split.test_block_core_fraction` c (0.5), exported as `TEST_BLOCK_CORE_FRACTION` and passed as `--test-block-core-fraction`, keeps as test only the frames in [m − c·L/2, m + c·L/2) around each block's centre m. The rest of each block (a quarter on each side at c = 0.5) is **guard**: never trained on (train is unchanged), never rendered, in neither split. The guard also puts a quarter block of time between the nearest train frame and any test frame. Whole May recording (241.09 s): camera 2162 train / 118 test / 121 guard, lidar 2172 / 120 / 120; blocks 74.34–86.39 s and 154.70–166.76 s, cores 77.35–83.38 s and 157.72–163.74 s.
+
 `scripts/09_extract_run_split.py` rebuilds it on the CPU, without torch, and writes `<run dir>/split.json` and `split_frames.csv`:
 - every frame with its split, index, ns stamp and time;
-- the seed, git SHA, window, train fraction and its source, test block count and block bounds;
+- the seed, git SHA, window, train fraction and its source, test block count, block bounds, core fraction and core bounds (`test_cores_s`);
+- guard frames as split `guard` (in `frames` and in `counts`);
 - SHA-256 hashes of the dataset's `manifest.json` and `poses.npz`;
 - `membership_sha256`, a fingerprint of the split, and `render_check`.
 
 **Only document runs that successfully returned their outputs. Never write, keep or cite a split record for a failed, killed or incomplete run.** The script enforces this. It writes nothing, and deletes any earlier record, unless:
 - every render step finished and `config.yml` exists;
 - camera and lidar renders exist for every rendered split;
-- the train fractions agree (`job_info.txt`, `config.yml`, manifest), and so do the test block counts (`job_info.txt`, `config.yml`);
+- the train fractions agree (`job_info.txt`, `config.yml`, manifest), and so do the test block counts and core fractions (`job_info.txt`, `config.yml`);
 - the render file names equal the rebuilt split.
 
 Exit codes: 0 written, 1 inconsistent, 2 incomplete. `splatad_run.sbatch` runs it once, as the job's last step after the lidar render. It records `split_render_check: match`, or `FAILED (exit N)` and fails the job, before `end_utc`. So a run with `end_utc` has a verified `split.json`, and a run without one has none.
@@ -119,13 +122,13 @@ ssh <user>@comps0.cs.toronto.edu "srun --jobid=<job> --overlap -n1 -c1 bash -c \
   Use a background command, since a smoke run is ~2.7 GB.
 - **Either line missing (failed run):** don't fetch. Read the Slurm log over ssh, diagnose, and report. Fetch a failed run only if the user asks.
 Result on your machine in `runs/<run_id>/`. Every file and key of every run folder is described once, in `runs/RUN_FOLDER_GLOSSARY.md` (committed; the rest of `runs/` is gitignored). Update it whenever the job's outputs change; a test checks that it documents every lidar npz key.
-- `renders/{train,test}/{rgb,gt-rgb}/*.jpg`: one per camera pose; file names are frame index + timestamp.
-- `renders/{train,test}/lidar/<idx>_<ts_ns>.npz`: one per lidar pose, named exactly like the input sweep `data/intermediate/<session>/lidar/<sensor>/<idx>_<ts_ns>.npy`.
-- `renders/{train,test}/lidar_metrics.json`: SplatAD's built-in per-scan lidar metrics, with `mean` and `per_scan` (depth_median_l2, intensity_rmse, ray_drop_accuracy, chamfer_distance, ...).
+- `renders/test/{rgb,gt-rgb}/*.jpg`: one per test camera pose; file names are frame index + timestamp. (`renders/train/` exists only in runs from before 2026-10-26, which rendered `train+test`.)
+- `renders/test/lidar/<idx>_<ts_ns>.npz`: one per test lidar pose, named exactly like the input sweep `data/intermediate/<session>/lidar/<sensor>/<idx>_<ts_ns>.npy`.
+- `renders/test/lidar_metrics.json`: SplatAD's built-in per-scan lidar metrics, with `mean` and `per_scan` (depth_median_l2, intensity_rmse, ray_drop_accuracy, chamfer_distance, ...).
 - `train/.../config.yml`, the latest `step-*.ckpt`, `job_info.txt`, and the Slurm log.
 - `split.json` and `split_frames.csv`: the exact train/test frames. They exist only for successful runs (see "Train/test split record").
 
-A complete smoke run has 135 train + 15 test frames for camera and for lidar. Check `split_render_check: match` and `end_utc` in `job_info.txt` instead of counting files by hand. A run without them failed: don't document it.
+A complete smoke run renders only its few test-core frames (about 3–4 per block for camera and for lidar). Check `split_render_check: match` and `end_utc` in `job_info.txt` instead of counting files by hand. A run without them failed: don't document it.
 
 **Lidar npz keys** (full list in the docstring of `scripts/08_render_lidar_pointcloud.py`):
 

@@ -18,7 +18,11 @@ from typing import Dict, List, Optional, Tuple, Type, Union
 
 import numpy as np
 
-from viking_splatad.dataset.run_split import middle_block_train_eval_indices
+from viking_splatad.dataset.run_split import (
+    WHOLE_BLOCK_CORE_FRACTION,
+    middle_block_train_eval_indices,
+    restrict_test_to_block_cores,
+)
 from viking_splatad.splatad.viking_conversions import (
     OUSTER_LIDAR_TYPE_NAME,
     DatasetView,
@@ -72,6 +76,10 @@ if NERFSTUDIO_AVAILABLE:
         """None = neurad's per-sensor LINSPACE split (every ~1/(1-f)-th frame is test). K = the test
         set is K contiguous time blocks, the same for every sensor, centred at k/(K+1) of the
         window (T60). Set from the session config's split.test_block_count by submit_run.py."""
+        test_block_core_fraction: float = WHOLE_BLOCK_CORE_FRACTION
+        """Fraction c of each T60 block, around its centre, that is the eval split (T62). The rest
+        of the block is guard: not trained on, not evaluated or rendered. 1.0 = the whole block.
+        Needs test_block_count. Set from the session config's split.test_block_core_fraction."""
         time_to_center_fraction_of_readout: float = 0.5
         """Centre row is exposed this fraction of the readout after the stamp: 0.5 if the stamp
         marks readout start (assumed; unverified), 0.0 if it marks mid-readout."""
@@ -149,7 +157,7 @@ if NERFSTUDIO_AVAILABLE:
             return super()._generate_dataparser_outputs(split)
 
         def _filter_based_on_time(self, cameras, img_filenames, lidars, pc_filenames, trajectories):
-            """Base time window, then the T60 block split on the windowed float64 times.
+            """Base time window, then the T60 block split (and T62 cores) on the windowed float64 times.
 
             The blocks are computed here, not in ``_get_train_eval_indices``: that runs after
             ``_adjust_times`` has cast times to float32 and sees one sensor kind at a time, while
@@ -164,12 +172,19 @@ if NERFSTUDIO_AVAILABLE:
             """
             filtered = super()._filter_based_on_time(cameras, img_filenames, lidars, pc_filenames, trajectories)
             self._block_split_positions = None
-            if self.config.test_block_count is not None:
-                windowed_cameras, windowed_lidars = filtered[0], filtered[2]
-                self._block_split_positions, _ = middle_block_train_eval_indices(
-                    {"camera": windowed_cameras.times.reshape(-1).double().numpy(),
-                     "lidar": windowed_lidars.times.reshape(-1).double().numpy()},
-                    self.config.train_split_fraction, self.config.test_block_count)
+            if self.config.test_block_count is None:
+                # Cores are parts of T60 blocks; refuse c < 1 rather than ignore it silently.
+                if self.config.test_block_core_fraction != WHOLE_BLOCK_CORE_FRACTION:
+                    raise ValueError("test_block_core_fraction < 1 needs test_block_count")
+                return filtered
+            windowed_cameras, windowed_lidars = filtered[0], filtered[2]
+            windowed_times = {"camera": windowed_cameras.times.reshape(-1).double().numpy(),
+                              "lidar": windowed_lidars.times.reshape(-1).double().numpy()}
+            block_positions, block_bounds = middle_block_train_eval_indices(
+                windowed_times, self.config.train_split_fraction, self.config.test_block_count)
+            # T62: eval keeps only each block's core; guard frames drop out of both splits.
+            self._block_split_positions, _, _ = restrict_test_to_block_cores(
+                windowed_times, block_positions, block_bounds, self.config.test_block_core_fraction)
             return filtered
 
         def _get_train_eval_indices(self, sensors: Union["Cameras", "Lidars"]) -> Tuple["torch.Tensor", "torch.Tensor"]:

@@ -519,6 +519,36 @@ def session_test_block_count(session: str, intermediate_root: Path = INTERMEDIAT
     return block_count
 
 
+def session_test_block_core_fraction(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                                     session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> float:
+    """``split.test_block_core_fraction`` of the session config a dataset was extracted with.
+
+    Passed to viking-data as ``--test-block-core-fraction``: only the central fraction c of each
+    T60 test block is the test split (T62), so only those frames are rendered and fetched; the
+    rest of each block is guard (neither trained on nor rendered). config.yml records c for
+    ns-render, scripts/08 and scripts/09.
+
+    Args:
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        c in (0, 1].
+
+    Raises:
+        FileNotFoundError: If the session config does not exist.
+        ValueError: If the value is missing, not a YAML number, or outside (0, 1].
+    """
+    session_name, session_config = load_dataset_session_config(session, intermediate_root, session_config_directory)
+    core_fraction = session_config.get("split", {}).get("test_block_core_fraction")
+    # bool is an int subclass; refuse it (and strings) instead of coercing.
+    if isinstance(core_fraction, bool) or not isinstance(core_fraction, (int, float)) or not 0 < core_fraction <= 1:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: split.test_block_core_fraction must be a number "
+                         f"in (0, 1], got {core_fraction!r}")
+    return float(core_fraction)
+
+
 def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
                                session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> bool:
     """``splatad.add_missing_points`` of the session config a dataset was extracted with.
@@ -598,7 +628,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
                           env_marker: Dict[str, str],
                           add_missing_points: Optional[bool] = None,
                           train_split_fraction: Optional[float] = None,
-                          test_block_count: Optional[int] = None) -> Dict[str, str]:
+                          test_block_count: Optional[int] = None,
+                          test_block_core_fraction: Optional[float] = None) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
 
     Args:
@@ -615,6 +646,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
             as TRAIN_SPLIT_FRACTION. Same rule as ``add_missing_points``: None leaves it out.
         test_block_count: The session's test block count (``session_test_block_count``), exported
             as TEST_BLOCK_COUNT. Same rule as ``add_missing_points``: None leaves it out.
+        test_block_core_fraction: The session's core fraction (``session_test_block_core_fraction``),
+            exported as TEST_BLOCK_CORE_FRACTION. Same rule as ``add_missing_points``: None leaves it out.
 
     Returns:
         Mapping variable name -> string value.
@@ -652,6 +685,9 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         job_environment["TRAIN_SPLIT_FRACTION"] = repr(float(train_split_fraction))
     if test_block_count is not None:
         job_environment["TEST_BLOCK_COUNT"] = str(int(test_block_count))
+    # repr keeps every digit, so config.yml and job_info.txt hold the same float.
+    if test_block_core_fraction is not None:
+        job_environment["TEST_BLOCK_CORE_FRACTION"] = repr(float(test_block_core_fraction))
     return job_environment
 
 
@@ -1070,7 +1106,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
         build_job_environment(profile_settings, session, run_id, git_sha, absolute_stage_root, env_marker,
                               add_missing_points=session_add_missing_points(session),
                               train_split_fraction=dataset_train_fraction(session),
-                              test_block_count=session_test_block_count(session)),
+                              test_block_count=session_test_block_count(session),
+                              test_block_core_fraction=session_test_block_core_fraction(session)),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,

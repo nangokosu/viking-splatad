@@ -97,6 +97,12 @@ split:
   # apart only if train_fraction > 1/(K+1). Read by scripts/slurm/submit_run.py
   # (TEST_BLOCK_COUNT -> viking-data --test-block-count).
   test_block_count: 2
+  # Only the central half of each test block is the test split, rendered and fetched (T62; user's
+  # choice 2026-10-26: test renders only, to cut what is copied back to the Mac). The outer
+  # quarters of each block are guard frames: still never trained on (train is unchanged), not
+  # rendered. They also put a quarter block of time between test frames and the nearest train frame.
+  # Read by scripts/slurm/submit_run.py (TEST_BLOCK_CORE_FRACTION -> viking-data --test-block-core-fraction).
+  test_block_core_fraction: 0.5
 
 splatad:
   # Passed to the dataparser config; see plan contract table.

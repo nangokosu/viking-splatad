@@ -14,11 +14,14 @@ Only successful runs are documented. Nothing is written (and a stale record is r
       config.yml holds the class default 0.5);
     * the test block count agrees between job_info.txt (TEST_BLOCK_COUNT) and config.yml
       (``test_block_count``; absent from both = the LINSPACE split of runs before T60);
+    * the test block core fraction agrees between job_info.txt (TEST_BLOCK_CORE_FRACTION) and
+      config.yml (``test_block_core_fraction``; absent from both = 1.0, runs before T62);
     * the rendered file names equal the rebuilt split.
 
 Outputs, in ``<run dir>``:
     split.json        provenance (run, git SHA, seed, window, train fraction and its source,
-                      test block count and block bounds, dataset hashes), per-sensor counts, every frame with its split, the
+                      test block count, block and core bounds, dataset hashes), per-sensor counts
+                      (train / test / guard), every frame with its split (guard = in a block, outside its core), the
                       membership digest and the render check. Deterministic: re-running on the
                       same inputs writes the same bytes.
     split_frames.csv  one row per frame: sensor, kind, split, frame_index, timestamp_ns, time_s, file.
@@ -44,9 +47,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from viking_splatad.dataset.run_split import (
     SPLIT_SENSOR_KINDS,
+    GUARD_SPLIT_NAME,
     TEST_SPLIT_NAME,
     TRAIN_SPLIT_NAME,
-    build_run_split_with_blocks,
+    WHOLE_BLOCK_CORE_FRACTION,
+    build_run_split_with_cores,
     compare_with_rendered_stems,
     file_sha256,
     resolve_run_train_fraction,
@@ -218,6 +223,32 @@ def resolve_checked_test_block_count(job_info: Dict[str, str], config_path: Path
     return config_block_count
 
 
+def resolve_checked_test_block_core_fraction(job_info: Dict[str, str], config_path: Path) -> float:
+    """The run's test block core fraction (T62), after checking job_info.txt and config.yml agree.
+
+    config.yml holds what the dataparser used (``test_block_core_fraction``). Runs from before T62
+    have neither entry and used whole blocks (1.0).
+
+    Args:
+        job_info: Parsed job_info.txt.
+        config_path: The run's config.yml.
+
+    Returns:
+        c in (0, 1].
+
+    Raises:
+        RunNotDocumented: (inconsistent) if job_info.txt records a different value than config.yml.
+    """
+    config_text = read_config_scalar(config_path, "test_block_core_fraction")
+    config_core_fraction = WHOLE_BLOCK_CORE_FRACTION if config_text is None else float(config_text)
+    if "TEST_BLOCK_CORE_FRACTION" in job_info and float(job_info["TEST_BLOCK_CORE_FRACTION"]) != config_core_fraction:
+        raise RunNotDocumented(
+            f"test block core fractions disagree: job_info.txt TEST_BLOCK_CORE_FRACTION "
+            f"{job_info['TEST_BLOCK_CORE_FRACTION']}, config.yml test_block_core_fraction {config_core_fraction}",
+            EXIT_INCONSISTENT)
+    return config_core_fraction
+
+
 def remove_stale_record(run_dir: Path) -> None:
     """Delete split.json / split_frames.csv left from an earlier extraction, so no run keeps a wrong record.
 
@@ -269,15 +300,17 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
     view = open_dataset_view(dataset_dir)
     train_fraction, train_fraction_source = resolve_checked_train_fraction(job_info, config_path, view.manifest)
     test_block_count = resolve_checked_test_block_count(job_info, config_path)
+    test_block_core_fraction = resolve_checked_test_block_core_fraction(job_info, config_path)
     max_eval_text = read_config_scalar(config_path, "max_eval_frames")
     start_fraction = float(job_info["DATASET_START_FRACTION"])
     end_fraction = float(job_info["DATASET_END_FRACTION"])
 
     # Step 4: rebuild the split; the renders must name exactly its frames.
-    frames, window_bounds, test_blocks = build_run_split_with_blocks(
+    frames, window_bounds, test_blocks, test_cores = build_run_split_with_cores(
         view, start_fraction, end_fraction, train_fraction,
         max_eval_frames=None if max_eval_text is None else int(max_eval_text),
         test_block_count=test_block_count,
+        test_block_core_fraction=test_block_core_fraction,
     )
     render_check = compare_with_rendered_stems(frames, rendered_stems)
     mismatched = {check_name: check for check_name, check in render_check.items() if not check["match"]}
@@ -297,6 +330,7 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
             "frames_in_window": len({frame.file for frame in sensor_frames}),
             TRAIN_SPLIT_NAME: sum(frame.split == TRAIN_SPLIT_NAME for frame in sensor_frames),
             TEST_SPLIT_NAME: sum(frame.split == TEST_SPLIT_NAME for frame in sensor_frames),
+            GUARD_SPLIT_NAME: sum(frame.split == GUARD_SPLIT_NAME for frame in sensor_frames),
         }
 
     # Step 6: the record (sorted keys and no wall-clock values keep it byte-reproducible).
@@ -318,6 +352,8 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
             ),
             "test_block_count": test_block_count,
             "test_blocks_s": [list(block) for block in test_blocks],
+            "test_block_core_fraction": test_block_core_fraction,
+            "test_cores_s": [list(core) for core in test_cores],
             "dataset_start_fraction": start_fraction,
             "dataset_end_fraction": end_fraction,
             "window_bounds_s": None if window_bounds is None else list(window_bounds),

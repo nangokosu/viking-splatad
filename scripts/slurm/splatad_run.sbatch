@@ -23,6 +23,9 @@
 #                          config.yml records the fraction the dataparser actually uses)
 #   TEST_BLOCK_COUNT  (the session config's split.test_block_count: the test set is that many
 #                      contiguous time blocks shared by camera and lidar, T60; recorded in config.yml)
+#   TEST_BLOCK_CORE_FRACTION  (the session config's split.test_block_core_fraction: only the central
+#                              fraction of each block is the test split, T62; the rest is guard,
+#                              neither trained on nor rendered; recorded in config.yml)
 #
 # Stage layout ($STAGE_ROOT): data/<session>/, code/<sha>/ (committed repo snapshot),
 # envs/splatad-<recipe hash>/ (environment), runs/<run_id>/.
@@ -34,7 +37,7 @@ set -euo pipefail
 for required_variable in RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX \
     MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
     DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION \
-    TEST_BLOCK_COUNT; do
+    TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION; do
   if [ -z "${!required_variable:-}" ]; then
     echo "ERROR: $required_variable is not set (submit with scripts/slurm/submit_run.py)" >&2
     exit 1
@@ -60,7 +63,7 @@ mkdir -p "$RUN_DIR"
   for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX \
       MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
       DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION \
-    TEST_BLOCK_COUNT; do
+    TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION; do
     echo "$exported_variable: ${!exported_variable:-}"
   done
   echo "environment build:"; sed 's/^/  /' "$ENV_PREFIX/.build-complete"
@@ -107,7 +110,8 @@ ns-train splatad \
   --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION" \
   --add-missing-points "$ADD_MISSING_POINTS" \
   --train-split-fraction "$TRAIN_SPLIT_FRACTION" \
-  --test-block-count "$TEST_BLOCK_COUNT"
+  --test-block-count "$TEST_BLOCK_COUNT" \
+  --test-block-core-fraction "$TEST_BLOCK_CORE_FRACTION"
 TRAIN_END_SECONDS=$(date +%s)
 {
   echo "train_end_epoch_s: $TRAIN_END_SECONDS"
@@ -115,8 +119,9 @@ TRAIN_END_SECONDS=$(date +%s)
 } >> "$JOB_INFO"
 
 # ---- (e) render ---------------------------------------------------------------------------
-# The time window and the split (train fraction, test blocks) are stored in config.yml, so the
-# render covers the same poses and splits as training.
+# The time window and the split (train fraction, test blocks, block cores) are stored in
+# config.yml, so the render covers the same poses and splits as training. With
+# RENDER_POSE_SOURCE=test only the T62 block cores are rendered (guard frames are in no split).
 TRAIN_CONFIG="$RUN_DIR/train/$SESSION/splatad/$RUN_ID/config.yml"
 if [ ! -f "$TRAIN_CONFIG" ]; then
   echo "ERROR: training config not found at $TRAIN_CONFIG" >&2

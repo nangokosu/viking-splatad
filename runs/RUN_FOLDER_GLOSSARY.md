@@ -38,9 +38,11 @@ runs/<run_id>/
 
 ## Splits
 - `train`: the poses used to fit the model. Its renders show how well the model fits.
-- `test`: held-out poses. **Runs with `TEST_BLOCK_COUNT` in `job_info.txt` (since T60):** two contiguous stretches of the drive, the same for camera and lidar, so a test camera image and the lidar sweep taken with it are both held out. **Older runs:** every ~10th frame (linspace), interleaved with training frames and chosen per sensor; that measures interpolation between views 0.1 s apart.
+- `test`: held-out poses. **Runs with `TEST_BLOCK_COUNT` in `job_info.txt` (since T60):** two contiguous stretches of the drive, the same for camera and lidar, so a test camera image and the lidar sweep taken with it are both held out. **Older runs:** every ~10th frame (linspace), interleaved with training frames and chosen per sensor; that measures interpolation between views 0.1 s apart. **Runs with `TEST_BLOCK_CORE_FRACTION` < 1 (since T62):** only the middle part of each block is test.
+- `guard` (only in `split.json` / `split_frames.csv`, since T62): frames inside a test block but outside its core. Never trained on, never rendered.
 - **The split is deterministic, with no RNG.** First the time window: every camera and lidar frame with time in [t_min + D·`DATASET_START_FRACTION`, t_min + D·`DATASET_END_FRACTION`] (inclusive; t_min and D over all camera and lidar times). Then:
   - **block split (T60, `test_block_count` = K in `config.yml`):** over the windowed camera and lidar times together (t_lo, D), K test blocks [c_k − L/2, c_k + L/2) with L = D·(1−f)/K and c_k = t_lo + D·k/(K+1). K = 2 gives blocks centred at 1/3 and 2/3 of the window. Each sensor's test share is ~(1−f); counts can still differ by a frame between `rgb/` and `lidar/`.
+  - **block cores (T62, `test_block_core_fraction` = c in `config.yml`, absent = 1):** of each block [a, b) with centre m, only [m − c·(b−a)/2, m + c·(b−a)/2) stays test; the rest of the block is `guard`. Train is unchanged.
   - **linspace (older runs, `test_block_count` absent):** per sensor, ceil(n·f) evenly spaced train frames; the rest are test.
   - At f = 1.0 every frame is in both. `TRAIN_SEED` does not affect either.
 - K is the session config's `split.test_block_count`. The job passes it to `ns-train` as `--test-block-count` (`TEST_BLOCK_COUNT`), so `config.yml` records it and `ns-render` / `08` reuse the same split.
@@ -51,7 +53,7 @@ Written by `scripts/09_extract_run_split.py` (T58 window, T59 linspace or T60 bl
 - every render step finished (`lidar_render_elapsed_s` in `job_info.txt`) and `config.yml` exists;
 - every split of `RENDER_POSE_SOURCE` has camera and lidar renders;
 - `TRAIN_SPLIT_FRACTION`, `config.yml` and the manifest agree;
-- `TEST_BLOCK_COUNT` (when recorded) equals `config.yml`'s `test_block_count`;
+- `TEST_BLOCK_COUNT` (when recorded) equals `config.yml`'s `test_block_count`, and `TEST_BLOCK_CORE_FRACTION` (when recorded) equals its `test_block_core_fraction`;
 - the rendered file names equal the rebuilt split.
 
 Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run incomplete. A failed or killed run therefore has no `split.json`. To (re)write it after `fetch`: `uv run python scripts/09_extract_run_split.py --run-dir runs/<run_id>`; the dataset defaults to `data/intermediate/<SESSION>`. The output is byte-identical for the same inputs.
@@ -59,13 +61,13 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 | key (`split.json`) | meaning |
 |---|---|
 | `run` | `run_id`, `session`, `git_sha`, `train_seed`, `add_missing_points` from `job_info.txt` |
-| `selection` | `dataset_start_fraction`, `dataset_end_fraction`, `window_bounds_s` (`poses.npz` seconds; `null` = whole recording), `train_fraction` and `train_fraction_source` (`manifest.session.train_fraction` or `override`), `algorithm`, `test_block_count` (`null` = linspace) and `test_blocks_s` (block [start, end) in `poses.npz` seconds), `max_eval_frames` (always `null`) |
+| `selection` | `dataset_start_fraction`, `dataset_end_fraction`, `window_bounds_s` (`poses.npz` seconds; `null` = whole recording), `train_fraction` and `train_fraction_source` (`manifest.session.train_fraction` or `override`), `algorithm`, `test_block_count` (`null` = linspace) and `test_blocks_s` (block [start, end) in `poses.npz` seconds), `test_block_core_fraction` (1.0 = whole blocks) and `test_cores_s` (the test part of each block, [start, end) seconds), `max_eval_frames` (always `null`) |
 | `dataset` | dataset folder name, and SHA-256 of its `manifest.json` and `poses.npz` (the same split needs the same dataset) |
-| `counts` | per sensor: `kind`, `frames_in_recording`, `frames_in_window`, `train`, `test` |
+| `counts` | per sensor: `kind`, `frames_in_recording`, `frames_in_window`, `train`, `test`, `guard` (0 without T62 cores) |
 | `membership_sha256` | fingerprint of which frame is in which split. Two runs or two people with equal values used the same frames. |
 | `render_check` | per `<kind>/<split>` rendered: `match` (always true in a written record), `missing_from_renders`, `unexpected_in_renders` |
 | `frames` | one entry per frame, same columns as the CSV |
-| `seed_note`, `schema` | why the seed is recorded, and the layout version (`viking-splatad/run-split/2`; `/1` lacked `algorithm`'s T60 case, `test_block_count` and `test_blocks_s`) |
+| `seed_note`, `schema` | why the seed is recorded, and the layout version (`viking-splatad/run-split/2`; `/1` lacked `algorithm`'s T60 case, `test_block_count` and `test_blocks_s`; records written before T62 lack `test_block_core_fraction`, `test_cores_s` and the `guard` count, an additive change within `/2`) |
 
 `split_frames.csv` columns: `sensor`, `kind`, `split`, `frame_index`, `timestamp_ns`, `time_s` (`poses.npz` seconds), `file` (path inside the dataset).
 
@@ -81,12 +83,13 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 | `ENV_PREFIX`, `environment build:` | native SplatAD environment (named by recipe hash) and its build record. Runs before 2026-10-26 also have `ENV_EXPIRES_EPOCH`, the expiry of the scratch dir the env lived on. |
 | `MAX_NUM_ITERATIONS`, `STEPS_PER_SAVE` | training length and checkpoint interval |
 | `TRAIN_SEED` | `ns-train --machine.seed`. It seeds python/numpy/torch. Runs are **not** bit-identical even with the same seed (float-atomic gradient sums on the GPU). |
-| `RENDER_POSE_SOURCE`, `RENDER_DOWNSCALE_FACTOR` | rendered splits (`train+test`) and camera resolution factor (1 = native) |
+| `RENDER_POSE_SOURCE`, `RENDER_DOWNSCALE_FACTOR` | rendered splits (`test` since 2026-10-26; `train+test` before) and camera resolution factor (1 = native) |
 | `DATASET_START_FRACTION`, `DATASET_END_FRACTION` | time window as fractions of the recording's span (from the profile's `window_*` seconds) |
 | `ADD_MISSING_POINTS` | `True`/`False`, the session config's `splatad.add_missing_points` (session named by the dataset's manifest), passed to `ns-train` as `--add-missing-points`. `True` adds the recorded no-returns (`lidar_no_return/`) as 2000 m rays. Absent in runs before 2026-10-26, which all ran with `False`. |
 | `gpu (...)`, `gpu_check`, `viking_splatad_from` | GPU model, compute capability, driver; proof that CUDA and the right code were loaded |
 | `train_elapsed_s`, `render_elapsed_s`, `lidar_render_elapsed_s`, `gaussian_export_elapsed_s` | wall time of training, camera render, lidar render and Gaussian export (also `*_start_epoch_s` and `*_end_epoch_s`) |
 | `TEST_BLOCK_COUNT` | the session config's `split.test_block_count`, passed to `ns-train` as `--test-block-count`: the test set is that many time blocks shared by camera and lidar (T60). Absent in older runs (linspace split). |
+| `TEST_BLOCK_CORE_FRACTION` | the session config's `split.test_block_core_fraction`, passed to `ns-train` as `--test-block-core-fraction`: only that central fraction of each block is test (T62), the rest is guard. Absent in older runs (whole blocks). |
 | `TRAIN_SPLIT_FRACTION` | the dataset manifest's `session.train_fraction`, passed to `ns-train` as `--train-split-fraction`, so `config.yml` records it. Absent in older runs, whose `config.yml` says 0.5. |
 | `split_render_check` | `match` when `split.json` was written; `FAILED (exit N)` when the job stopped instead (1 = renders or fractions disagree, 2 = outputs missing). Then there is no `end_utc` and no `split.json`. |
 
