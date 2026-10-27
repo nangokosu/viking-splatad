@@ -34,6 +34,15 @@
 #   TRAIN_SPLIT_FRACTION_OVERRIDE  (set only when the profile has its own train_fraction; equal to
 #                                   TRAIN_SPLIT_FRACTION, passed as --train-split-fraction-override so
 #                                   the dataparser splits with it instead of the manifest's value, T27)
+#   RESUME_AFTER_TRAINING  (True only for `submit_run.py resume`: the run trained and plotted its
+#                           curves, but a later step failed; this job reruns the steps after training
+#                           in the same run dir with the code at RESUME_GIT_SHA (CODE_DIR), appending
+#                           to job_info.txt instead of replacing it. GIT_SHA stays the training commit.)
+#   RESUME_GIT_SHA  (required with RESUME_AFTER_TRAINING: the commit CODE_DIR holds)
+#
+# The ns-render step loads <run dir>/render_config/config.yml, the run's config.yml with point
+# painting off (scripts/12_prepare_rerender.py write-run-config): painting cached the whole training
+# set twice inside ns-render and OOM-killed job 222994. scripts/08 turns it off itself.
 #
 # After training, the overfitting plot script (scripts/11) writes <run dir>/overfitting/ (train-vs-test
 # curves); its outcome goes to job_info.txt (overfitting_plot:) and end_utc requires it to be written.
@@ -66,6 +75,24 @@ fi
 RUN_DIR="$STAGE_ROOT/runs/$RUN_ID"
 JOB_INFO="$RUN_DIR/job_info.txt"
 mkdir -p "$RUN_DIR"
+# Resume mode keeps the training job's record and appends this job's own details to it.
+RESUMING=False
+if [ "${RESUME_AFTER_TRAINING:-}" = True ]; then
+  RESUMING=True
+  if [ -z "${RESUME_GIT_SHA:-}" ] || [ ! -f "$JOB_INFO" ]; then
+    echo "ERROR: resume needs RESUME_GIT_SHA and the run's job_info.txt (submit_run.py resume)" >&2
+    exit 1
+  fi
+  {
+    echo "resume_start_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "resume_hostname: $(hostname)"
+    echo "resume_slurm_job_id: ${SLURM_JOB_ID:-none}"
+    echo "RESUME_GIT_SHA: $RESUME_GIT_SHA"
+    echo "resume_code_dir: $CODE_DIR"
+  } >> "$JOB_INFO"
+  cat "$JOB_INFO"
+fi
+if [ "$RESUMING" = False ]; then
 {
   echo "hostname: $(hostname)"
   echo "start_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -87,6 +114,7 @@ mkdir -p "$RUN_DIR"
   nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv,noheader
 } > "$JOB_INFO"
 cat "$JOB_INFO"
+fi
 
 # ---- (b) environment ---------------------------------------------------------------------
 # PATH, CUDA_HOME, LD_LIBRARY_PATH and the viking-data dataparser registration.
@@ -122,6 +150,8 @@ print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 # default (ADPipelineConfig.calc_fid_steps), and no training step reaches it, resumed runs included.
 # The flag is a variable-length tuple: tyro reads values until the next flag, so another flag must
 # follow it. Directly before viking-data it swallowed the subcommand name (jobs 222980, 222983).
+# A resumed run trained already (its train_* lines are in job_info.txt), so it skips (d) and (d2).
+if [ "$RESUMING" = False ]; then
 # A profile's own train fraction must also reach the dataparser as the override: it otherwise
 # resolves the manifest's fraction (T27), and the split would disagree with config.yml (scripts/09).
 TRAIN_FRACTION_OVERRIDE_ARGS=()
@@ -153,6 +183,7 @@ TRAIN_END_SECONDS=$(date +%s)
   echo "train_end_epoch_s: $TRAIN_END_SECONDS"
   echo "train_elapsed_s: $((TRAIN_END_SECONDS - TRAIN_START_SECONDS))"
 } >> "$JOB_INFO"
+fi
 
 # ---- (d2) overfitting curves ------------------------------------------------------------------
 # Train-vs-test curves from the TensorBoard log: <run dir>/overfitting/overfitting_curves.{png,csv}.
@@ -163,13 +194,25 @@ if [ ! -f "$TRAIN_CONFIG" ]; then
   echo "ERROR: training config not found at $TRAIN_CONFIG" >&2
   exit 1
 fi
-if python "$CODE_DIR/scripts/11_plot_overfitting_curves.py" \
-    --train-dir "$(dirname "$TRAIN_CONFIG")" --output-dir "$RUN_DIR/overfitting"; then
-  echo "overfitting_plot: written" >> "$JOB_INFO"
+if [ "$RESUMING" = False ]; then
+  if python "$CODE_DIR/scripts/11_plot_overfitting_curves.py" \
+      --train-dir "$(dirname "$TRAIN_CONFIG")" --output-dir "$RUN_DIR/overfitting"; then
+    echo "overfitting_plot: written" >> "$JOB_INFO"
+  else
+    # $? here is the plot script's exit code.
+    PLOT_EXIT_CODE=$?
+    echo "overfitting_plot: FAILED (exit $PLOT_EXIT_CODE)" >> "$JOB_INFO"
+  fi
 else
-  # $? here is the plot script's exit code.
-  PLOT_EXIT_CODE=$?
-  echo "overfitting_plot: FAILED (exit $PLOT_EXIT_CODE)" >> "$JOB_INFO"
+  # A resume renders the training job's final model: its last checkpoint is step N-1 (ns-train
+  # saves step max_num_iterations - 1 at the end; 9 digits is nerfstudio's step-%09d name), and
+  # its curves must already be written (submit_run.py resume checks both too, before queueing).
+  FINAL_CHECKPOINT="$(dirname "$TRAIN_CONFIG")/nerfstudio_models/step-$(printf '%09d' $((MAX_NUM_ITERATIONS - 1))).ckpt"
+  # -Fx: the whole line, literally (same test as the end_utc gate below, written so that gate stays unique).
+  if [ ! -f "$FINAL_CHECKPOINT" ] || ! grep -Fxq 'overfitting_plot: written' "$JOB_INFO"; then
+    echo "ERROR: resume needs $FINAL_CHECKPOINT and 'overfitting_plot: written' in $JOB_INFO" >&2
+    exit 1
+  fi
 fi
 
 # ---- (e) render ---------------------------------------------------------------------------
@@ -185,8 +228,13 @@ RENDER_DOWNSCALE_ARGS=()
 if awk -v factor="$RENDER_DOWNSCALE_FACTOR" 'BEGIN { exit !(factor != 1) }'; then
   RENDER_DOWNSCALE_ARGS=(--downscale-factor "$RENDER_DOWNSCALE_FACTOR")
 fi
+# ns-render has no option for it, so it loads a copy of config.yml with point painting off (header).
+RENDER_CONFIG="$RUN_DIR/render_config/config.yml"
+python "$CODE_DIR/scripts/12_prepare_rerender.py" write-run-config \
+  --train-config "$TRAIN_CONFIG" --output "$RENDER_CONFIG"
+echo "render_config: $RENDER_CONFIG" >> "$JOB_INFO"
 ns-render dataset \
-  --load-config "$TRAIN_CONFIG" \
+  --load-config "$RENDER_CONFIG" \
   --output-path "$RUN_DIR/renders" \
   --pose-source "$RENDER_POSE_SOURCE" \
   --rendered-output-names rgb gt-rgb \
@@ -248,4 +296,10 @@ if ! grep -q '^overfitting_plot: written$' "$JOB_INFO"; then
   exit 1
 fi
 echo "end_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$JOB_INFO"
-echo "done: run $RUN_ID, train $((TRAIN_END_SECONDS - TRAIN_START_SECONDS)) s, render $((RENDER_END_SECONDS - RENDER_START_SECONDS)) s, lidar render $((LIDAR_RENDER_END_SECONDS - LIDAR_RENDER_START_SECONDS)) s"
+# A resumed job did not train, so its summary names the training job's time from job_info.txt.
+if [ "$RESUMING" = True ]; then
+  TRAIN_SUMMARY="$(grep '^train_elapsed_s: ' "$JOB_INFO" | tail -n 1 | cut -d' ' -f2) s (training job; resumed)"
+else
+  TRAIN_SUMMARY="$((TRAIN_END_SECONDS - TRAIN_START_SECONDS)) s"
+fi
+echo "done: run $RUN_ID, train $TRAIN_SUMMARY, render $((RENDER_END_SECONDS - RENDER_START_SECONDS)) s, lidar render $((LIDAR_RENDER_END_SECONDS - LIDAR_RENDER_START_SECONDS)) s"

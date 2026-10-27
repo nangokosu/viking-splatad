@@ -139,6 +139,23 @@ ssh <user>@comps0.cs.toronto.edu "srun --jobid=<job> --overlap -n1 -c1 bash -c \
 - Truly stuck: the GPU is idle and nothing advances for >10 min.
 - Held with `user_env_retrieval_failed_requeued_held`, or a silent death in seconds: see the building-splatad-cluster-env table.
 
+## Render-step failure after training (recovery, not clean-up)
+A run whose `job_info.txt` has `train_elapsed_s` and `overfitting_plot: written` but no `end_utc` trained fully and failed in a later step (camera render, lidar render, Gaussian export or split record). Its checkpoint is good, so do NOT clean it and do not retrain. Diagnose from the Slurm log first. Then, with the user's approval:
+```bash
+uv run python scripts/slurm/submit_run.py stage --session <session>      # HEAD's code, with the fix
+uv run python scripts/slurm/submit_run.py resume <run_id>
+```
+- `resume` checks that the run is resumable, that no job is active on it, and that the final checkpoint `step-<MAX_NUM_ITERATIONS-1>` exists. It writes `<run dir>/resume/job.sbatch`: the run's own variables, with HEAD's `CODE_DIR`/`ENV_PREFIX` plus `RESUME_AFTER_TRAINING=True` and `RESUME_GIT_SHA`. It then submits with `render_only.time_limit`.
+- The job runs `splatad_run.sbatch` without training or plotting. It appends to `job_info.txt` (`resume_*` keys first), and its log goes to the run dir. It then writes `split.json` and `end_utc` like any run. After that the run counts as successful: fetch it as usual.
+- `clean` treats the run as active while the resume job is queued.
+
+**Point painting is off in every render** (since 2026-10-27). SplatAD's lidar data manager paints the seed points in its constructor (`paint_points`), which caches every training image and sweep in RAM. `ns-render dataset` builds the data manager twice (render.py:935 and 954–962), and its `_disable_datamanager_setup` stubs only `setup_train`/`setup_eval`, not the constructor. So the camera render held the training set twice: May Scene A, job 222994, was OOM-killed at 109 GB. Painting only seeds the colours of the initial Gaussians, and the checkpoint replaces every Gaussian parameter (`SplatADModel.load_state_dict`). So the job turns painting off for renders only:
+- `ns-render` loads `<run dir>/render_config/config.yml` (`scripts/12_prepare_rerender.py write-run-config`);
+- script 08 turns it off in its `eval_setup` callback;
+- render-only jobs' `write-config` turns it off too.
+
+Training still paints.
+
 ## Cancelled, failed or unwanted runs
 Remove every artifact of them (cluster run dir, fetched copy, ledger row) with the `cleaning-up-splatad-runs` skill (`submit_run.py clean`), never by hand.
 

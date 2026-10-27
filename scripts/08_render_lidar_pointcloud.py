@@ -343,7 +343,8 @@ def prepare_render_config(config: Any, streamline_config: Callable[[Any], Any]) 
 
     ``streamline_ad_config`` also sets ``add_missing_points = False``. That drops every no-return
     ray from the raster, so the render could not score ray drop or no-return directions. The
-    trained value is restored: rendering uses the same rays training saw.
+    trained value is restored: rendering uses the same rays training saw. Point painting is also
+    turned off (it only seeds Gaussian colours, which the checkpoint replaces).
 
     Args:
         config: The loaded run config (config.yml).
@@ -363,6 +364,10 @@ def prepare_render_config(config: Any, streamline_config: Callable[[Any], Any]) 
         dataparser_config.add_missing_points = trained_add_missing_points
     # Step 4: no eval-frame cap: every held-out scan is rendered (a cap also reseeds torch, 123).
     dataparser_config.max_eval_frames = None
+    # Step 5: no point painting: it caches every training image and sweep in RAM only to colour the
+    # seed Gaussians, which the checkpoint then replaces (scripts/12_prepare_rerender.py docstring).
+    if hasattr(config.pipeline.datamanager, "paint_points"):
+        config.pipeline.datamanager.paint_points = False
     return config
 
 

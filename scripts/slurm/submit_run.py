@@ -101,6 +101,9 @@ JOB_SCRIPT_NAME = "job.sbatch"
 # Folder inside a run dir that holds one sub-folder per render-only job (<run>/rerenders/<label>/).
 # A job script there also marks its run as active, so `clean` never deletes a checkpoint in use.
 RERENDERS_DIRECTORY_NAME = "rerenders"
+# Folder inside a run dir holding a resume job's script (<run>/resume/job.sbatch, submit_run.py
+# resume). A job script there marks its run as active too: the resume job writes into the run dir.
+RESUME_DIRECTORY_NAME = "resume"
 # Render-only job's frame selection, inside its rerender folder (read by the dataparser, T66, and by
 # scripts/12_prepare_rerender.py check).
 SELECTION_FILE_NAME = "selection.json"
@@ -1523,6 +1526,155 @@ def submit_render(config: Dict[str, Any], run_id: str, camera_frames_text: str, 
     return job_id, rerender_label
 
 
+def parse_job_script_exports(job_script_text: str) -> Dict[str, str]:
+    """Variables a generated job script exports (the inverse of ``build_job_script``).
+
+    Args:
+        job_script_text: A ``job.sbatch`` written by ``build_job_script``.
+
+    Returns:
+        name -> value, in file order. shlex undoes ``shlex.quote``, so each value is exactly what
+        the job saw.
+
+    Raises:
+        ValueError: If an export line does not hold exactly one ``NAME=value`` word.
+    """
+    exported_variables: Dict[str, str] = {}
+    for line in job_script_text.splitlines():
+        # Step 1: only the generated "export NAME=<quoted value>" lines carry variables.
+        if not line.startswith("export "):
+            continue
+        # Step 2: one shell word after "export"; split it at the first "=".
+        assignment_words = shlex.split(line[len("export "):])
+        variable_name, separator, variable_value = (assignment_words[0].partition("=")
+                                                    if len(assignment_words) == 1 else ("", "", ""))
+        if not separator or not variable_name.isidentifier():
+            raise ValueError(f"malformed export line in job script: {line!r}")
+        exported_variables[variable_name] = variable_value
+    return exported_variables
+
+
+def require_resumable(job_info: Dict[str, str]) -> None:
+    """Refuse a run that cannot be resumed after training.
+
+    Resuming reruns only the steps after training (renders, Gaussian export, split record), so
+    the run must have finished training and written its curves, and must not have succeeded.
+
+    Args:
+        job_info: The run's parsed job_info.txt.
+
+    Raises:
+        ValueError: If the run already has ``end_utc``, never finished training
+            (no ``train_elapsed_s``), or has no written overfitting plot.
+    """
+    if "end_utc" in job_info:
+        raise ValueError("the run already finished (end_utc); nothing to resume")
+    if "train_elapsed_s" not in job_info:
+        raise ValueError("the run did not finish training (no train_elapsed_s); resubmit it instead")
+    if job_info.get("overfitting_plot") != "written":
+        raise ValueError(f"overfitting_plot is {job_info.get('overfitting_plot')!r}, not 'written'; "
+                         "recover the plot first (running-splatad-render-jobs skill)")
+
+
+def build_resume_job_environment(run_exports: Dict[str, str], absolute_stage_root: str, git_sha: str,
+                                 env_marker: Dict[str, str]) -> Dict[str, str]:
+    """The resume job's variables: the run's own, with HEAD's code and the resume flag.
+
+    Args:
+        run_exports: The run's ``job.sbatch`` exports (``parse_job_script_exports``).
+        absolute_stage_root: Resolved stage root on the cluster.
+        git_sha: HEAD, whose staged code the resume job runs.
+        env_marker: Parsed marker of HEAD's environment (its path).
+
+    Returns:
+        name -> value: every run variable unchanged (GIT_SHA stays the training commit, so the
+        split record names the code that trained), CODE_DIR and ENV_PREFIX replaced by HEAD's,
+        plus RESUME_AFTER_TRAINING=True and RESUME_GIT_SHA.
+    """
+    job_environment = dict(run_exports)
+    job_environment["CODE_DIR"] = f"{absolute_stage_root}/code/{git_sha}"
+    job_environment["ENV_PREFIX"] = env_marker["env_prefix"]
+    job_environment["RESUME_AFTER_TRAINING"] = "True"
+    job_environment["RESUME_GIT_SHA"] = git_sha
+    return job_environment
+
+
+def resume_run(config: Dict[str, Any], run_id: str, skip_gates: bool) -> str:
+    """Rerun the steps after training of a run that trained but failed later (same run dir).
+
+    For a run killed in a render step (e.g. job 222994, OOM in ns-render): the job renders the
+    trained checkpoint with the code at HEAD (which must be staged), then writes the split record
+    and end_utc as a normal run would, appending to the run's job_info.txt. The job script goes to
+    ``<run dir>/resume/job.sbatch`` (``clean`` treats the run as active while it is queued); the
+    Slurm log goes to the run dir like the training job's.
+
+    Args:
+        config: Parsed Slurm config (``render_only.time_limit``: the resume runs the same render
+            steps as a render-only job, plus the CPU-only Gaussian export).
+        run_id: Run under ``<stage root>/runs/``.
+        skip_gates: True to skip the Mac-side gates.
+
+    Returns:
+        The job id.
+
+    Raises:
+        GateFailure: If a gate fails.
+        ValueError: On a malformed run id, a run that is not resumable, an active job on the run,
+            or a config without ``render_only.time_limit``.
+        RuntimeError: If the run's files cannot be read, its final checkpoint is missing, the code
+            is not staged, the environment is not built, or a remote command fails.
+    """
+    # Step 1: local checks first (no ssh for a typo).
+    if not RUN_ID_PATTERN.match(run_id):
+        raise ValueError(f"malformed run id {run_id!r}")
+    time_limit = (config.get("render_only") or {}).get("time_limit")
+    if not time_limit:
+        raise ValueError("configs/slurm.yaml: render_only.time_limit is not set")
+    # Step 2: the run's own record and job script decide.
+    ssh_target = resolve_ssh_target(config["ssh_host"])
+    absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
+    remote_run_dir = f"{absolute_stage_root}/runs/{run_id}"
+    run_job_info = parse_job_info_text(read_remote_text(ssh_target, f"{remote_run_dir}/job_info.txt",
+                                                        f"read job_info.txt of {run_id}"))
+    require_resumable(run_job_info)
+    run_exports = parse_job_script_exports(read_remote_text(ssh_target, f"{remote_run_dir}/{JOB_SCRIPT_NAME}",
+                                                            f"read {JOB_SCRIPT_NAME} of {run_id}"))
+    # Step 3: never two jobs on one run dir.
+    _, active_run_ids = list_remote_runs(ssh_target, absolute_stage_root)
+    if run_id in active_run_ids:
+        raise ValueError(f"run {run_id} has a queued or running job; wait for it or scancel it first")
+    # Step 4: the final checkpoint (step max_num_iterations - 1, nerfstudio's step-%09d name) must exist.
+    final_step = int(run_exports["MAX_NUM_ITERATIONS"]) - 1
+    checkpoint_path = (f"{remote_run_dir}/train/{run_exports['SESSION']}/splatad/{run_id}/nerfstudio_models/"
+                       f"step-{final_step:09d}.ckpt")
+    if run_command(ssh_command(ssh_target, ["test", "-f", checkpoint_path])).returncode != 0:
+        raise RuntimeError(f"final checkpoint {checkpoint_path} is missing; resubmit the run instead")
+    # Step 5: gates, then HEAD's staged code and its environment.
+    if not skip_gates:
+        run_gates(run_exports["SESSION"])
+    git_sha = get_head_sha()
+    if run_command(ssh_command(ssh_target, ["test", "-d", f"{absolute_stage_root}/code/{git_sha}"])).returncode != 0:
+        raise RuntimeError(f"code {git_sha} is not staged; run `stage --session {run_exports['SESSION']}` first")
+    env_marker = read_environment_marker(ssh_target, absolute_stage_root, environment_name(config, git_sha))
+    if env_marker is None:
+        raise RuntimeError(f"environment {environment_name(config, git_sha)} is not built; run `build-env` first")
+    cpus, memory_gb = query_node_resources(config, ssh_target)
+    # Step 6: job script in <run dir>/resume/, then submit.
+    remote_resume_dir = f"{remote_run_dir}/{RESUME_DIRECTORY_NAME}"
+    run_checked(ssh_command(ssh_target, ["mkdir", "-p", remote_resume_dir]), "remote resume dir mkdir")
+    job_script_path = f"{remote_resume_dir}/{JOB_SCRIPT_NAME}"
+    write_remote_file(ssh_target, job_script_path, build_job_script(
+        build_resume_job_environment(run_exports, absolute_stage_root, git_sha, env_marker),
+        f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
+    sbatch_arguments = build_sbatch_command(
+        partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
+        time_limit=str(time_limit), job_name=f"splatad-resume-{run_exports['SESSION']}",
+        output_path=f"{remote_run_dir}/slurm-%j.out", job_script_path=job_script_path)
+    job_id = submit_sbatch(ssh_target, sbatch_arguments)
+    print(f"submitted resume job {job_id} run {run_id} (code {git_sha[:7]})")
+    return job_id
+
+
 def show_status(config: Dict[str, Any], job_id: str) -> int:
     """Print squeue and sacct for a job.
 
@@ -1642,6 +1794,9 @@ def parse_remote_run_listing(listing_text: str) -> Tuple[Dict[str, Optional[Dict
                 # checkpoint, so that run is active too.
                 if script_path.parent.parent.name == RERENDERS_DIRECTORY_NAME:
                     active_run_ids.add(script_path.parent.parent.parent.name)
+                # A resume job (<run_id>/resume/job.sbatch) writes into <run_id> itself.
+                if script_path.parent.name == RESUME_DIRECTORY_NAME:
+                    active_run_ids.add(script_path.parent.parent.name)
     return remote_runs, active_run_ids
 
 
@@ -1868,6 +2023,10 @@ def main(argument_list: Optional[List[str]] = None) -> int:
                                help="guard camera frame indices, e.g. 795,797-800 (at least 2)")
     render_parser.add_argument("--lidar-sweeps", required=True, help="guard lidar sweep indices, e.g. 801-803")
     render_parser.add_argument("--skip-gates", action="store_true")
+    resume_parser = subparsers.add_parser(
+        "resume", help="rerun the steps after training of a run that trained but failed later")
+    resume_parser.add_argument("run_id")
+    resume_parser.add_argument("--skip-gates", action="store_true")
     arguments = parser.parse_args(argument_list)
     # Step 2: dispatch; every expected failure becomes a message and exit code 1.
     try:
@@ -1890,6 +2049,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         elif arguments.command == "render":
             submit_render(config, arguments.run_id, arguments.camera_frames, arguments.lidar_sweeps,
                           arguments.skip_gates)
+        elif arguments.command == "resume":
+            resume_run(config, arguments.run_id, arguments.skip_gates)
         return 0
     except (GateFailure, ValueError, KeyError, RuntimeError, FileNotFoundError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

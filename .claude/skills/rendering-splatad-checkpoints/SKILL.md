@@ -10,7 +10,7 @@ A run renders only its **test** split, the T62 cores (full May run: 22 camera fr
 
 How it works:
 1. `submit_run.py render` checks every index against the run's `split.json`, then writes `selection.json` and `job.sbatch` into the rerender folder.
-2. `scripts/12_prepare_rerender.py write-config` copies the run's `config.yml` into the rerender folder with the dataparser's `render_frame_selection_file` set. The run's own `config.yml` is never edited.
+2. `scripts/12_prepare_rerender.py write-config` copies the run's `config.yml` into the rerender folder with the dataparser's `render_frame_selection_file` set and `paint_points` off (painting caches the whole training set in RAM and is not needed to render; see `running-splatad-render-jobs`, "Render-step failure after training"). The run's own `config.yml` is never edited.
 3. `ns-render dataset` and `scripts/08_render_lidar_pointcloud.py` load that copy with `--pose-source test`. With the field set, the dataparser's `test`/`eval` split is exactly the selected guard frames (T66). `train` and `val` are unchanged, so the time origin and `w2m` are the run's.
 4. `12_prepare_rerender.py check` compares the rendered file names with `selection.json`.
 
