@@ -105,6 +105,12 @@ print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 # gradients with float atomics, so the same seed gives statistically similar runs only.
 # --experiment-name and --timestamp make the output path deterministic:
 # $RUN_DIR/train/$SESSION/splatad/$RUN_ID/{config.yml,nerfstudio_models/step-*.ckpt}
+# --pipeline.calc-fid-steps 99999999 turns off SplatAD's novel-view FIDs (lane/vertical shift, actor
+# edits). The splatad method config computes them at step 30000, the last step of a 30001-iteration
+# run, whenever that step is also an all-images eval (it is for stock's 2500 and our 600). The
+# actor-edit FID indexes the dynamic actors, and our scenes have none, so it raises IndexError and
+# kills the job (222951, 222952). 99999999 is unavoidably hardcoded: it is SplatAD's own "never"
+# default (ADPipelineConfig.calc_fid_steps), and no training step reaches it, resumed runs included.
 TRAIN_START_SECONDS=$(date +%s)
 echo "train_start_epoch_s: $TRAIN_START_SECONDS" >> "$JOB_INFO"
 ns-train splatad \
@@ -116,6 +122,7 @@ ns-train splatad \
   --steps-per-save "$STEPS_PER_SAVE" \
   --machine.seed "$TRAIN_SEED" \
   --steps-per-eval-all-images "$STEPS_PER_EVAL_ALL_IMAGES" \
+  --pipeline.calc-fid-steps 99999999 \
   viking-data --data "$STAGE_ROOT/data" --session-name "$SESSION" \
   --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION" \
   --add-missing-points "$ADD_MISSING_POINTS" \

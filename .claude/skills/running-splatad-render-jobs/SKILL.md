@@ -141,7 +141,14 @@ ssh <user>@comps0.cs.toronto.edu "srun --jobid=<job> --overlap -n1 -c1 bash -c \
 Remove every artifact of them (cluster run dir, fetched copy, ledger row) with the `cleaning-up-splatad-runs` skill (`submit_run.py clean`), never by hand.
 
 ## Fetch (automatic after every successful run)
-**Fetching is part of every run: don't ask first.** Right after `submit`, start a background wait for the job to leave `squeue`. Then read `job_info.txt`:
+**Fetching is part of every run: don't ask first.** Right after `submit`, start a background wait (run in the background, one per batch of jobs) for the jobs to leave `squeue`:
+```bash
+until queue=$(ssh -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 comps0.cs.toronto.edu 'squeue -h -u $USER -o %i') && ! grep -qxE '<job1>|<job2>' <<<"$queue"; do sleep 300; done; echo jobs-left-queue
+```
+- A failed ssh fails the `queue=$(...)` assignment, so the loop keeps waiting. Never pipe ssh into `grep` instead: a failure then looks like an empty queue (that falsely reported 222951/222952 done).
+- `squeue -u`, not `-j`: `-j` errors once Slurm purges the job, and the loop would never end. The ssh options make a hung connection fail instead of blocking.
+
+Then read `job_info.txt`:
 - **`overfitting_plot: written`, `split_render_check: match` and `end_utc` present (success):** fetch right away, then report the results.
   ```bash
   uv run python scripts/slurm/submit_run.py fetch <run_id>
@@ -179,6 +186,7 @@ Read the clouds with these limits in mind:
 - `test` is two held-out stretches of the drive (T60 block split, runs with `TEST_BLOCK_COUNT`); in older runs it is every ~10th frame interleaved with training frames, which measures interpolation only.
 
 ## Known traps
+- Never remove `--pipeline.calc-fid-steps 99999999` from the sbatch. SplatAD's FIDs at step 30000 edit the dynamic actors, and our scenes have none: `IndexError` in `dynamic_actors.edit_boxes2world` killed jobs 222951/222952 at the last step (the sbatch comment has the details). `ns-eval` turns the FIDs on regardless, so never use it; evaluate with `ns-render` and script 08.
 - Never pass `ns-render --downscale-factor` with viking-data: it asserts (render.py:929). The sbatch omits it when the factor is 1.
 - Never use `ns-render --render-point-clouds` for SplatAD. It calls `get_outputs_for_lidar`, which fails with "Unknown sensor type", and it writes only PNG plots. Lidar goes through `08_render_lidar_pointcloud.py`.
 - In that script, train scans are rasterised with `is_eval=True`. Without it, `_lidar_to_raster_pts` shuffles the points and keeps one per raster cell, and some returns get no ray.
