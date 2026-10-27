@@ -30,6 +30,10 @@
 #   STEPS_PER_EVAL_ALL_IMAGES  (the eval interval k = (N-1)//MINIMUM_EVAL_POINTS, T63, derived by
 #                               submit_run.py; ns-train --steps-per-eval-all-images)
 #
+# After training, the overfitting plot script (scripts/11) writes <run dir>/overfitting/ (train-vs-test
+# curves); its outcome goes to job_info.txt (overfitting_plot:) and end_utc requires it to be written.
+# split.json (scripts/09) also records what training evaluated (selection.eval_during_training_s, counts val).
+#
 # Stage layout ($STAGE_ROOT): data/<session>/, code/<sha>/ (committed repo snapshot),
 # envs/splatad-<recipe hash>/ (environment), runs/<run_id>/.
 
@@ -125,15 +129,28 @@ TRAIN_END_SECONDS=$(date +%s)
   echo "train_elapsed_s: $((TRAIN_END_SECONDS - TRAIN_START_SECONDS))"
 } >> "$JOB_INFO"
 
-# ---- (e) render ---------------------------------------------------------------------------
-# The time window and the split (train fraction, test blocks, block cores) are stored in
-# config.yml, so the render covers the same poses and splits as training. With
-# RENDER_POSE_SOURCE=test only the T62 block cores are rendered (guard frames are in no split).
+# ---- (d2) overfitting curves ------------------------------------------------------------------
+# Train-vs-test curves from the TensorBoard log: <run dir>/overfitting/overfitting_curves.{png,csv}.
+# A failure is recorded and the job continues (the renders are worth more than the figure), but
+# end_utc requires the figure (gate before end_utc).
 TRAIN_CONFIG="$RUN_DIR/train/$SESSION/splatad/$RUN_ID/config.yml"
 if [ ! -f "$TRAIN_CONFIG" ]; then
   echo "ERROR: training config not found at $TRAIN_CONFIG" >&2
   exit 1
 fi
+if python "$CODE_DIR/scripts/11_plot_overfitting_curves.py" \
+    --train-dir "$(dirname "$TRAIN_CONFIG")" --output-dir "$RUN_DIR/overfitting"; then
+  echo "overfitting_plot: written" >> "$JOB_INFO"
+else
+  # $? here is the plot script's exit code.
+  PLOT_EXIT_CODE=$?
+  echo "overfitting_plot: FAILED (exit $PLOT_EXIT_CODE)" >> "$JOB_INFO"
+fi
+
+# ---- (e) render ---------------------------------------------------------------------------
+# The time window and the split (train fraction, test blocks, block cores) are stored in
+# config.yml, so the render covers the same poses and splits as training. With
+# RENDER_POSE_SOURCE=test only the T62 block cores are rendered (guard frames are in no split).
 RENDER_START_SECONDS=$(date +%s)
 echo "render_start_epoch_s: $RENDER_START_SECONDS" >> "$JOB_INFO"
 # `ns-render dataset --downscale-factor` asserts the dataparser config has a downscale_factor
@@ -198,6 +215,11 @@ else
   # $? here is the script's exit code: 1 = renders or train fractions disagree, 2 = outputs missing.
   SPLIT_EXIT_CODE=$?
   echo "split_render_check: FAILED (exit $SPLIT_EXIT_CODE; no split record written; reason in the Slurm log)" >> "$JOB_INFO"
+  exit 1
+fi
+# The figure is part of a complete run: no end_utc without it.
+if ! grep -q '^overfitting_plot: written$' "$JOB_INFO"; then
+  echo "ERROR: overfitting curves missing (see overfitting_plot in $JOB_INFO); run not marked complete" >&2
   exit 1
 fi
 echo "end_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$JOB_INFO"

@@ -21,7 +21,9 @@ Only successful runs are documented. Nothing is written (and a stale record is r
 Outputs, in ``<run dir>``:
     split.json        provenance (run, git SHA, seed, window, train fraction and its source,
                       test block count, block and core bounds, dataset hashes), per-sensor counts
-                      (train / test / guard), every frame with its split (guard = in a block, outside its core), the
+                      (train / test / guard / val = frames evaluated during training: test + guard when
+                      config.yml has eval_whole_test_blocks, else test), the eval stretches
+                      (selection.eval_during_training_s), every frame with its split (guard = in a block, outside its core), the
                       membership digest and the render check. Deterministic: re-running on the
                       same inputs writes the same bytes.
     split_frames.csv  one row per frame: sensor, kind, split, frame_index, timestamp_ns, time_s, file.
@@ -280,6 +282,8 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
     test_block_count = resolve_checked_test_block_count(job_info, config_path)
     test_block_core_fraction = resolve_checked_test_block_core_fraction(job_info, config_path)
     max_eval_text = read_config_scalar(config_path, "max_eval_frames")
+    # Runs from before the overfitting monitor lack the field: their training eval covered the cores only.
+    eval_whole_test_blocks = read_config_scalar(config_path, "eval_whole_test_blocks") == "true"
     start_fraction = float(job_info["DATASET_START_FRACTION"])
     end_fraction = float(job_info["DATASET_END_FRACTION"])
 
@@ -295,7 +299,8 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
     if mismatched:
         raise RunNotDocumented(f"renders disagree with the rebuilt split: {mismatched}", EXIT_INCONSISTENT)
 
-    # Step 5: per-sensor counts (frames in the recording, in the window, per split).
+    # Step 5: per-sensor counts (frames in the recording, in the window, per split). "val" is what
+    # training evaluated: the whole test blocks (test + guard frames) or, for old runs, the cores (test).
     sensor_counts = {}
     for sensor in view.manifest["sensors"]:
         if sensor["kind"] not in SPLIT_SENSOR_KINDS:
@@ -310,6 +315,9 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
             TEST_SPLIT_NAME: sum(frame.split == TEST_SPLIT_NAME for frame in sensor_frames),
             GUARD_SPLIT_NAME: sum(frame.split == GUARD_SPLIT_NAME for frame in sensor_frames),
         }
+        sensor_counts[sensor["name"]]["val"] = (
+            sensor_counts[sensor["name"]][TEST_SPLIT_NAME] + sensor_counts[sensor["name"]][GUARD_SPLIT_NAME]
+            if eval_whole_test_blocks else sensor_counts[sensor["name"]][TEST_SPLIT_NAME])
 
     # Step 6: the record (sorted keys and no wall-clock values keep it byte-reproducible).
     split_record = {
@@ -332,6 +340,9 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
             "test_blocks_s": [list(block) for block in test_blocks],
             "test_block_core_fraction": test_block_core_fraction,
             "test_cores_s": [list(core) for core in test_cores],
+            "eval_whole_test_blocks": eval_whole_test_blocks,
+            # Time stretches (s) the training eval (val) covered.
+            "eval_during_training_s": [list(stretch) for stretch in (test_blocks if eval_whole_test_blocks else test_cores)],
             "dataset_start_fraction": start_fraction,
             "dataset_end_fraction": end_fraction,
             "window_bounds_s": None if window_bounds is None else list(window_bounds),
