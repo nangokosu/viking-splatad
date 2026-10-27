@@ -44,6 +44,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         "T63",
         # Train/test metric pairing from TensorBoard tags (eval/training_curves.py).
         "T64",
+        # Held-out split by requester (dataset/run_split.py, VikingHillDataParser): training eval
+        # ("val") gets the whole T60 blocks, renders keep the T62 cores.
+        "T65",
     }
 )
 

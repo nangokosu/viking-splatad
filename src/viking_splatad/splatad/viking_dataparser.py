@@ -20,6 +20,7 @@ import numpy as np
 
 from viking_splatad.dataset.run_split import (
     WHOLE_BLOCK_CORE_FRACTION,
+    core_fraction_for_split,
     middle_block_train_eval_indices,
     restrict_test_to_block_cores,
 )
@@ -80,6 +81,9 @@ if NERFSTUDIO_AVAILABLE:
         """Fraction c of each T60 block, around its centre, that is the eval split (T62). The rest
         of the block is guard: not trained on, not evaluated or rendered. 1.0 = the whole block.
         Needs test_block_count. Set from the session config's split.test_block_core_fraction."""
+        eval_whole_test_blocks: bool = False
+        """True = training's ``val`` eval covers the whole T60 blocks, guard included (T65); renders
+        (``test``/``eval``) keep the cores. Set by splatad_run.sbatch."""
         time_to_center_fraction_of_readout: float = 0.5
         """Centre row is exposed this fraction of the readout after the stamp: 0.5 if the stamp
         marks readout start (assumed; unverified), 0.0 if it marks mid-readout."""
@@ -109,16 +113,21 @@ if NERFSTUDIO_AVAILABLE:
             self._lidar_arrays = None
             # T60 positions per sensor kind ("camera"/"lidar" -> (train, test)), set after the window.
             self._block_split_positions: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None
+            # Split of the current get_dataparser_outputs call (the datamanager reuses one parser).
+            self._requested_split: str = "train"
 
         def _generate_dataparser_outputs(self, split="train"):
             """Open the dataset, register the lidar model, then run the base pipeline.
 
             Args:
-                split: "train" or "eval".
+                split: "train", "val" (training's eval), "test" (renders) or "eval"; any
+                    non-"train" split is eval for the base class.
 
             Returns:
                 ``DataparserOutputs`` from ``ADDataParser``.
             """
+            # Remember the requester: _filter_based_on_time picks whole blocks or cores from it (T65).
+            self._requested_split = split
             session_root = Path(self.config.data) / self.config.session_name
             if not self.config.session_name or not session_root.is_dir():
                 raise FileNotFoundError(f"set session_name to an existing session dir: {session_root}")
@@ -182,9 +191,11 @@ if NERFSTUDIO_AVAILABLE:
                               "lidar": windowed_lidars.times.reshape(-1).double().numpy()}
             block_positions, block_bounds = middle_block_train_eval_indices(
                 windowed_times, self.config.train_split_fraction, self.config.test_block_count)
-            # T62: eval keeps only each block's core; guard frames drop out of both splits.
+            # T65 picks c per requester; T62: eval keeps only each block's core, the guard drops out.
+            core_fraction = core_fraction_for_split(
+                self._requested_split, self.config.test_block_core_fraction, self.config.eval_whole_test_blocks)
             self._block_split_positions, _, _ = restrict_test_to_block_cores(
-                windowed_times, block_positions, block_bounds, self.config.test_block_core_fraction)
+                windowed_times, block_positions, block_bounds, core_fraction)
             return filtered
 
         def _get_train_eval_indices(self, sensors: Union["Cameras", "Lidars"]) -> Tuple["torch.Tensor", "torch.Tensor"]:
