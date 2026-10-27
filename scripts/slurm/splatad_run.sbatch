@@ -97,9 +97,9 @@ print('gpu_check:', torch.cuda.get_device_name(0), torch.cuda.get_device_capabil
 print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 
 
+# ---- (d) train --------------------------------------------------------------------------
 # --eval-whole-test-blocks True is a constant on purpose: every new run evaluates the whole test
 # stretches during training (old runs lack the field, so they keep the core-only eval).
-# ---- (d) train --------------------------------------------------------------------------
 # --machine.seed seeds python/numpy/torch (all CUDA devices) before setup (nerfstudio train.py).
 # It does not make training bit-exact: the gsplat/SplatAD and tcnn backward passes accumulate
 # gradients with float atomics, so the same seed gives statistically similar runs only.

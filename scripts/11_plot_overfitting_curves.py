@@ -10,7 +10,9 @@ shaded region while train keeps improving.
 
 Outputs, in ``--output-dir``:
     overfitting_curves.png  the figure
-    overfitting_curves.csv  header ``metric,split,step,value``; split in train, test, train_loss
+    overfitting_curves.csv  header ``metric,split,step,value``; split in train, test, train_loss.
+                            Values are the raw logged ones: nan and inf are written as Python's
+                            float text (``nan``, ``inf``); the figure's y-limits ignore them.
 
 Usage:
     python scripts/11_plot_overfitting_curves.py --train-dir <run dir>/train/<session>/splatad/<run id> \
@@ -57,6 +59,12 @@ SHADING_LABEL = "train at reduced resolution: gap not meaningful"
 PANEL_WIDTH_INCHES, PANEL_HEIGHT_INCHES, PANELS_PER_ROW = 5.0, 3.2, 3
 # Opacity of the raw train trace and of the shading (visual styling only).
 RAW_TRAIN_ALPHA, SHADING_ALPHA = 0.3, 0.15
+# More visual styling only: PNG resolution and font sizes of the legend and the suptitle.
+FIGURE_DPI, LEGEND_FONT_SIZE, TITLE_FONT_SIZE = 120, 7, 10
+# Display-only reference magnitude for the y-margin of data that is all zero (or has no finite
+# value): the margin is 5% of it, i.e. 1.0 metric unit. Any positive constant would do, because
+# nothing is measured here; it only has to make the lower and upper limit differ.
+ZERO_RANGE_REFERENCE_MAGNITUDE = 20.0
 
 
 def load_scalar_series(train_dir: Path) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
@@ -167,6 +175,8 @@ def panel_y_limits(
 
     limits = [min, max] widened by 5% of (max - min) on each side (display margin only). A zero
     range (constant data) is widened by 5% of |value| (or 1.0 at zero) so the limits differ.
+    Non-finite values (nan, inf) are dropped first, since they would make the limits NaN and
+    ``set_ylim`` raise; when nothing finite remains the limits are those of a lone zero.
 
     Args:
         warm_curves: (steps, values) of the train raw and train median curves.
@@ -179,10 +189,15 @@ def panel_y_limits(
     # Step 1: collect every value that must be visible.
     kept_values = [test_values] + [values[steps >= warm_up_step] for steps, values in warm_curves]
     all_values = np.concatenate(kept_values)
-    lowest, highest = float(all_values.min()), float(all_values.max())
+    finite_values = all_values[np.isfinite(all_values)]
+    # Step 1b: with no finite value, fall back to the zero-range path (deterministic limits).
+    if len(finite_values) == 0:
+        finite_values = np.zeros(1)
+    lowest, highest = float(finite_values.min()), float(finite_values.max())
     # Step 2: display margin, with a guard for constant data.
     value_range = highest - lowest
-    margin = 0.05 * value_range if value_range > 0 else 0.05 * (abs(lowest) if lowest != 0 else 20.0)
+    zero_range_scale = abs(lowest) if lowest != 0 else ZERO_RANGE_REFERENCE_MAGNITUDE
+    margin = 0.05 * value_range if value_range > 0 else 0.05 * zero_range_scale
     return lowest - margin, highest + margin
 
 
@@ -256,14 +271,14 @@ def draw_figure(
     # Step 4b: every panel shares the run's x-range (set after the shading, which would stretch it).
     for axes in axes_list[:panel_count]:
         axes.set_xlim(run_x_limits)
-    axes_list[0].legend(fontsize=7)
+    axes_list[0].legend(fontsize=LEGEND_FONT_SIZE)
     for unused_axes in axes_list[panel_count:]:
         unused_axes.axis("off")
     # Step 5: title states the run, the eval interval and, if skipped, why there is no shading.
     title = f"{run_name}  |  steps_per_eval_all_images = {eval_interval}"
     if shading_end_step is None:
         title += "  |  no shading (resolution_schedule / num_downscales absent from config.yml)"
-    figure.suptitle(title, fontsize=10)
+    figure.suptitle(title, fontsize=TITLE_FONT_SIZE)
     figure.tight_layout()
     return figure
 
@@ -304,7 +319,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Step 3: figure and CSV.
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     figure = draw_figure(train_dir.name, series, panels, eval_interval, shading_end_step)
-    figure.savefig(arguments.output_dir / PNG_NAME, dpi=120)
+    figure.savefig(arguments.output_dir / PNG_NAME, dpi=FIGURE_DPI)
     plt.close(figure)
     with open(arguments.output_dir / CSV_NAME, "w", newline="") as csv_handle:
         csv_writer = csv.writer(csv_handle, lineterminator="\n")

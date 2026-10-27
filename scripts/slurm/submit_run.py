@@ -656,6 +656,7 @@ def profile_eval_cadence(profile_settings: Dict[str, Any]) -> Tuple[int, int]:
     if isinstance(minimum_eval_points, bool) or not isinstance(minimum_eval_points, int):
         raise ValueError(f"profile needs an integer 'minimum_eval_points' (got {minimum_eval_points!r})")
     # Step 2: T63 derives the interval (and raises ValueError when N - 1 < P).
+    # Imported lazily so the other subcommands stay usable without the viking_splatad package.
     from viking_splatad.eval.training_curves import eval_interval_for_minimum_points
     steps_per_eval_all_images = eval_interval_for_minimum_points(
         int(profile_settings["max_num_iterations"]), minimum_eval_points)

@@ -8,9 +8,10 @@ description: Use when training SplatAD and rendering camera images or lidar poin
 ## Overview
 `scripts/slurm/submit_run.py` drives everything from your local machine (the submit host: macOS or Linux, repo root, `uv sync --extra dev` done). `splatad_run.sbatch` does these things, writing everything to `<stage root>/runs/<run_id>/` on the MSCAC workdisk (currently `/w/20262/<user>/viking-splatad`):
 1. **Trains** with `ns-train splatad ... viking-data`, passing `--machine.seed` = the profile's `seed`.
-2. **Renders camera images** with `ns-render dataset`: rgb + gt-rgb jpg.
-3. **Renders lidar** with `scripts/08_render_lidar_pointcloud.py`, which calls SplatAD's `get_lidar_outputs` and then `filter_lidar_pred_and_gt(output_point_cloud=True)`.
-4. Both renders cover every input pose of the profile's `render_pose_source`, which is **`test` only** (user's choice 2026-10-26): training views are never re-rendered, and the test split is only the middle 10% of each held-out block (T62, below). That keeps the fetch small: 22 camera frames and 24 lidar sweeps for the full May run instead of ~2400 each.
+2. **Plots train vs test curves** with `scripts/11_plot_overfitting_curves.py` (see "Overfitting monitor").
+3. **Renders camera images** with `ns-render dataset`: rgb + gt-rgb jpg.
+4. **Renders lidar** with `scripts/08_render_lidar_pointcloud.py`, which calls SplatAD's `get_lidar_outputs` and then `filter_lidar_pred_and_gt(output_point_cloud=True)`.
+5. Both renders cover every input pose of the profile's `render_pose_source`, which is **`test` only** (user's choice 2026-10-26): training views are never re-rendered, and the test split is only the middle 10% of each held-out block (T62, below). That keeps the fetch small: 22 camera frames and 24 lidar sweeps for the full May run instead of ~2400 each.
 
 Jobs run the **committed** code at HEAD. They need a built env: if `submit` says it is missing, follow the `building-splatad-cluster-env` skill.
 
@@ -115,7 +116,9 @@ Training evaluates held-out data throughout, and the job plots train against tes
   ```bash
   python scripts/11_plot_overfitting_curves.py --train-dir <run>/train/<session>/splatad/<run_id> --output-dir <run>/overfitting
   ```
-- Older runs have no `overfitting/` folder; their `split.json` lacks `selection.eval_whole_test_blocks`, `selection.eval_during_training_s` and `counts.<sensor>.val`.
+- Older runs have no `overfitting/` folder. Their `split.json` does not have `selection.eval_whole_test_blocks`, `selection.eval_during_training_s` or `counts.<sensor>.val`: they are absent in records written before this change. Re-running script 09 on an old run writes `eval_whole_test_blocks: false` and `val` = the cores (`test`), because `config.yml` has no such field.
+- **Plot-only failure (recovery, not clean-up):** a run whose `job_info.txt` has `split_render_check: match` but `overfitting_plot: FAILED (...)` is complete except for the figure, so do NOT clean it. Re-run script 11 for that run in its env on a compute node with a short interactive job (`srun ... -t 60 --pty bash`, exit right away; never on the login node), using the re-plot command above. Only when it exits 0, append to `job_info.txt`, in this order: `overfitting_plot: written`, `overfitting_plot_recovered_utc: <utc>`, `end_utc: <utc>`. Then fetch as usual.
+- Non-finite logged values (nan, inf) do not stop the plot: they are left out of the y-limits, and the CSV keeps them as Python's float text (`nan`, `inf`).
 
 ## Monitor: stuck vs progressing
 - The log, `job_info.txt` and all outputs are in the run dir: `<stage root>/runs/<run_id>/`.
