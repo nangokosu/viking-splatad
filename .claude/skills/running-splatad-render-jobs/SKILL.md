@@ -44,6 +44,7 @@ uv run python scripts/slurm/submit_run.py submit --session <session> --profile s
 - If sbatch says `Unable to open file .../code/<sha>/...`, you forgot `stage` after committing.
 - A `src/` change follows the test workflow in `CLAUDE.md`/`AGENTS.md` before you commit: new tests only; Claude Code runs the `transform-test-runner` subagent, other agents run `uv run python scripts/affected_tests.py --run`.
 - Every profile in `configs/slurm.yaml` needs an integer `seed`, or `submit` refuses.
+- **GPU type:** the profile's `gres` if set, else the top-level `gres` (A6000). The job is sized from `sinfo` rows of that GPU type only. `smoke_a4500` is `smoke` (YAML merge) on an RTX A4500 (sm_86, 20 GB, 4 CPUs, ~25 GB RAM). It fits because the smoke's ~120 images stay under neurad's 500-image limit, so the images are cached on the GPU. Full runs stay on the A6000: with more than 500 images the cache moves to CPU RAM (~20.5 GB decoded for May's 2162 training images), which leaves too little of an A4500 node's 29 GB. `resume` and `build-env` always use the top-level `gres`.
 
 Re-run the CPU preflight whenever the dataparser, extraction or window changes:
 - Script: `scripts/slurm/preflight_dataparser.py`, run in the image with `src/` bind-mounted.
@@ -103,7 +104,7 @@ It was verified against the real dataparser on `may_chunks0_1_smoke`'s smoke win
 ## Overfitting monitor (every run)
 Training evaluates held-out data throughout, and the job plots train against test, so a run shows whether the model memorises the training views.
 - **What is evaluated:** SplatAD's all-images eval, split `val` = the **whole T60 test stretches** (`--eval-whole-test-blocks`, set by the job; T65). May: 239 camera frames, 240 lidar sweeps; June: 216 / 216. The renders (`ns-render`, script 08) still use split `test` = the T62 cores.
-- **Cadence (T63):** the profile key `minimum_eval_points` (50) gives `MINIMUM_EVAL_POINTS`. The eval interval is `k = (max_num_iterations - 1) // minimum_eval_points`, exported as `STEPS_PER_EVAL_ALL_IMAGES`. 30001 steps: every 600 steps, 50 points. Smoke (3000): every 59, 50 points. `submit` refuses a profile that cannot reach the minimum.
+- **Cadence (T63):** the profile key `minimum_eval_points` (50) gives `MINIMUM_EVAL_POINTS`. The eval interval is `k = (max_num_iterations - 1) // minimum_eval_points`, exported as `STEPS_PER_EVAL_ALL_IMAGES`. Full runs (20001 steps since 2026-10-27; the first May run had 30001, every 600): every 400 steps, 50 points. Smoke (3000): every 59, 50 points. `submit` refuses a profile that cannot reach the minimum.
 - **Figure:** after training the job runs `scripts/11_plot_overfitting_curves.py`. It writes `<run dir>/overfitting/overfitting_curves.png` and `overfitting_curves.csv` (columns `metric,split,step,value`; split is `train`, `test` or `train_loss`).
   - One panel per metric: train (thin raw line plus a rolling median) and test (whole stretches, markers), and a Train Loss panel.
   - Test-only metrics (ssim, lpips, chamfer_distance, median_chamfer_distance) are titled "<metric> (no train value logged)".

@@ -48,7 +48,7 @@ scp '<user>@comps0.cs.toronto.edu:/w/20262/<user>/viking-splatad/envs/splatad-<h
 | `No space left on device` during build | Workdisk full (1.5 TB, shared by MSCAC users); env ~15-20 GB | `df -h /w/20262` on comps0; delete old runs and old `envs/splatad-*` under the stage root |
 | `cd: /w/<disk>/<user>: No such file` from `submit_run.py` | Wrong `workdisk_root`, or the per-user dir does not exist | Check `ls -d /w/*/$USER` on comps0; ask CS Lab support for the dir |
 
-Kernels compile for the node's GPU (`nvidia-smi compute_cap`); jobs request `gpu:rtx_a6000:1` (sm_86). Do not switch GPU type without rebuilding.
+Kernels compile for the node's GPU (`nvidia-smi compute_cap`); the build always requests the top-level `gres` (`gpu:rtx_a6000:1`, sm_86). A profile or `render_only` may set its own `gres` only for another sm_86 GPU (the RTX A4500 is one); any other GPU type needs a rebuild.
 
 ## Local reference image (Docker)
 `--platform linux/amd64` is required on Apple-silicon Macs and harmless on x86-64 Linux.

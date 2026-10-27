@@ -12,6 +12,10 @@ partition: gpunodes
 # CUDA kernels for the GPU of the node it runs on (nvidia-smi compute_cap), so the environment
 # is sm_86-only and every job (build and run) must land on the same GPU type.
 # The GPU type used to filter `sinfo` rows is derived from this string (its middle field).
+# This is the default for every job and the only GPU for build-env and resume. A profile or
+# render_only may override it with its own `gres`, but only with a GPU of the same compute
+# capability 8.6, so the sm_86 kernels run unchanged: the RTX A4500 nodes (gpunode15-27, 29, 30)
+# report 8.6 (render job on 2026-10-27, job_info.txt gpu_check: NVIDIA RTX A4500 (8, 6)).
 gres: gpu:rtx_a6000:1
 
 # Fraction of the matching node's RAM requested with --mem. "Most of its RAM": the remaining
@@ -63,9 +67,15 @@ render_only:
   # so even all of it is ~4 min of rendering. 2 h leaves >10x headroom for slow loads and a busy
   # workdisk while staying short enough to schedule quickly.
   time_limit: "0-02:00:00"
+  # RTX A4500 (20 GB, sm_86 like the A6000; see `gres` above), user's choice 2026-10-27: there are
+  # ~15 A4500 nodes against 2 A6000 nodes, so render jobs queue less. Rendering with painting off fits:
+  # the full May after-training render (22 camera, 24 lidar) finished on an A4500 node in ~9 min
+  # within its 27000 MB, sized by submit_run.py from sinfo as for every job.
+  gres: gpu:rtx_a4500:1
 
 profiles:
-  smoke:
+  # The anchor lets smoke_a4500 reuse every smoke setting.
+  smoke: &smoke_profile
     # Goal: shortest run that still tests the dataparser and conversion pipeline, not quality.
     # Time window, in seconds from the earliest sensor timestamp; submit_run.py converts it to
     # the dataparser's --dataset-start/end-fraction from the dataset's own timestamps.
@@ -108,25 +118,38 @@ profiles:
     render_pose_source: test
     # Full resolution: only ~150 frames, and pixel-level misalignment is what we look for.
     render_downscale_factor: 1
+  smoke_a4500:
+    # The smoke profile unchanged (YAML merge of every key above), trained on an RTX A4500 (sm_86;
+    # see `gres` above): user's choice 2026-10-27, the first training run on an A4500. ~120 training
+    # images stay under neurad's 500-image limit for GPU caching, so the image cache
+    # (~120 x 2055 x 1541 x 3 B uint8 = ~1.1 GB) is on the GPU, not in the node's smaller RAM.
+    # Its peak GPU memory and RSS tell whether full runs could fit an A4500 too.
+    <<: *smoke_profile
+    gres: gpu:rtx_a4500:1
   may_scene_a:
     # Goal: the full May Scene A model (CLAUDE.md scope: chunks 7-9 of may_short_grass, low grass),
     # trained with stock SplatAD and checked on the held-out T60 blocks.
     # No window_start_seconds / window_seconds: the whole extracted recording (~241 s), since the
     # session config already cuts it to Scene A (start/end fraction 0.0 / 1.0).
-    # SplatAD's stock iteration count (method config default), so May matches the published
-    # recipe; ~2160 training camera frames x ~14 visits each (one image per iteration).
-    max_num_iterations: 30001
+    # 20001 (last step 20000), not SplatAD's stock 30001: user's choice 2026-10-27 from the first full
+    # May run's overfitting curves, where the whole-stretch test metrics barely move after step 20000
+    # (step 20400 vs 30000: PSNR 12.69 / 13.01, SSIM 0.437 / 0.440, LPIPS 0.798 / 0.782, depth median L2
+    # 0.111 / 0.113, chamfer 2.23 / 2.10, ray drop 0.817 / 0.818). Only the outlier-sensitive mean
+    # relative depth error kept falling (8.2 -> 4.7). The learning-rate schedules keep their stock
+    # max_steps (30000), so this run is the stock recipe stopped at step 20000, the state measured.
+    # ~2160 training camera frames x ~9 visits each (one image per iteration).
+    max_num_iterations: 20001
     # At least 50 whole-stretch evals per run (the user's minimum, 2026-10-26). submit_run.py derives
-    # the eval interval k = (N-1)//50 = 600 (T63) and exports it as --steps-per-eval-all-images.
+    # the eval interval k = (N-1)//50 = 400 (T63) and exports it as --steps-per-eval-all-images.
     minimum_eval_points: 50
-    # ~15 checkpoints over the run; at the smoke's 0.22 s/iteration (job 222933: 656 s / 3000)
-    # that is one every ~7 min, so a kill at the time limit loses little.
+    # ~10 checkpoints over the run; at the full May run's 0.49 s/iteration (14717 s / 30001) that is
+    # one every ~16 min, so a kill at the time limit loses little.
     steps_per_save: 2000
     # Same seed as the smoke and as June B / R, so the three runs differ only in their data/method.
     seed: 42
-    # Estimate from job 222933 scaled linearly: train 656 s x 10 = ~1.8 h; camera and lidar renders
-    # ~100 s per 150 frames x ~24 test frames each = under a minute. ~2 h total; 6 h leaves ~3x headroom
-    # for a larger Gaussian count on a full scene, far under the 5-day limit.
+    # The full May run trained 30001 iterations in 14717 s (~4.1 h, evals included) on an A6000, so
+    # 20001 take ~2.7 h; the after-training render took ~9 min. 6 h leaves ~2x headroom, far under the
+    # 5-day limit.
     time_limit: "0-06:00:00"
     # Render only the test frames (the T62 cores of the two T60 held-out blocks), for the held-out
     # metrics in renders/test/lidar_metrics.json and for viewing. Training views are not
@@ -140,17 +163,18 @@ profiles:
     # by the user's choice (2026-10-26). Lidar-only core B needs a train-lidar-only switch, not yet here.
     # Every value below equals may_scene_a's so the two runs differ only in their data.
     # Whole extracted recording (~216 s): the session config already cuts it to Scene A.
-    # SplatAD's stock iteration count, as May; ~1940 training camera frames x ~15 visits each.
-    max_num_iterations: 30001
+    # As May: 20001 iterations (the May curves converge by step 20000; schedules unchanged);
+    # ~1940 training camera frames x ~10 visits each.
+    max_num_iterations: 20001
     # At least 50 whole-stretch evals per run (the user's minimum, 2026-10-26). submit_run.py derives
-    # the eval interval k = (N-1)//50 = 600 (T63) and exports it as --steps-per-eval-all-images.
+    # the eval interval k = (N-1)//50 = 400 (T63) and exports it as --steps-per-eval-all-images.
     minimum_eval_points: 50
-    # As May: ~15 checkpoints, one every ~7 min at ~0.22 s/iteration.
+    # As May: ~10 checkpoints.
     steps_per_save: 2000
     # Same seed as May (and as the later lidar-only B and R runs).
     seed: 42
     # As May: same iteration count on a slightly smaller recording (2153 vs 2401 camera frames),
-    # so May's ~2 h estimate is an upper bound; 6 h leaves ~3x headroom.
+    # so May's ~2.7 h (measured, scaled to 20001) is an upper bound; 6 h leaves ~2x headroom.
     time_limit: "0-06:00:00"
     # As May: render only the T62 test cores (21 camera frames, 22 lidar sweeps for June).
     render_pose_source: test

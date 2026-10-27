@@ -41,7 +41,8 @@ uv run python scripts/slurm/submit_run.py render <run_id> --camera-frames <guard
 - It prints `submitted render job <job> run <run_id> label <label>`. The label is `render-<UTC yyyymmdd-HHMMSS>-<short sha of the render code>`.
 - It runs the same gates as `submit` (pytest, contract on the run's `SESSION`, clean tree). `--skip-gates` skips them.
 - It is **not** logged in `runs/submitted.tsv`: that ledger lists training runs only.
-- Resources: the full node from `sinfo`, like a run. Time limit: `render_only.time_limit` in `configs/slurm.yaml` (2 h).
+- GPU: `render_only.gres` in `configs/slurm.yaml`, an **RTX A4500** (user's choice 2026-10-27). It is sm_86 like the A6000, so the same environment runs there, and there are many more A4500 nodes, so jobs queue less. The full May after-training render (22 camera frames, 24 lidar sweeps) took ~9 min on an A4500 node. Delete the key to go back to the default `gres` (A6000).
+- Resources: the full node of that GPU type from `sinfo`, like a run (A4500 nodes: 4 CPUs, ~25 GB at `mem_fraction` 0.9). Time limit: `render_only.time_limit` (2 h). `job_info.txt`'s `gpu_check` line shows the GPU the job got.
 
 ## Constraints
 | rule | why |

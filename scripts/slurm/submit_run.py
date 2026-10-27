@@ -1264,12 +1264,36 @@ def read_environment_marker(ssh_target: str, absolute_stage_root: str,
     return parse_environment_marker(completed.stdout)
 
 
-def query_node_resources(config: Dict[str, Any], ssh_target: str) -> Tuple[int, int]:
+def resolve_job_gres(config: Dict[str, Any], section_settings: Optional[Dict[str, Any]]) -> str:
+    """The gres spec for one kind of job: the section's own ``gres``, else the top-level ``gres``.
+
+    A section is a profile (``profiles.<name>``) or ``render_only``. The override exists for
+    GPUs of the environment's compute capability other than the build GPU (configs/slurm.yaml).
+
+    Args:
+        config: Parsed Slurm config.
+        section_settings: The profile or ``render_only`` mapping, or None when there is none.
+
+    Returns:
+        A ``gpu:<type>:<count>`` spec.
+
+    Raises:
+        ValueError: If the chosen spec is malformed (checked before any ssh).
+    """
+    # Step 1: the section's value wins; an absent or empty one falls back to the default.
+    job_gres = (section_settings or {}).get("gres") or config["gres"]
+    # Step 2: validate the form here, so a typo fails before sinfo/sbatch.
+    gres_type_from_spec(job_gres)
+    return job_gres
+
+
+def query_node_resources(config: Dict[str, Any], ssh_target: str, gres: str) -> Tuple[int, int]:
     """Size a job from live ``sinfo`` output (never guessed).
 
     Args:
         config: Parsed Slurm config.
         ssh_target: ``host`` or ``user@host``.
+        gres: The job's gres spec (``resolve_job_gres``); only nodes with that GPU type are sized.
 
     Returns:
         (cpus, memory_gb) from ``derive_node_resources``.
@@ -1277,7 +1301,7 @@ def query_node_resources(config: Dict[str, Any], ssh_target: str) -> Tuple[int, 
     sinfo_result = run_checked(ssh_command(ssh_target, [
         "sinfo", "-p", config["partition"], "-O", "NodeHost,Memory,CPUs,Gres"]), "sinfo")
     return derive_node_resources(
-        sinfo_result.stdout, gres_type_from_spec(config["gres"]), float(config["mem_fraction"]))
+        sinfo_result.stdout, gres_type_from_spec(gres), float(config["mem_fraction"]))
 
 
 def submit_sbatch(ssh_target: str, sbatch_arguments: List[str]) -> str:
@@ -1326,7 +1350,8 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
     log_dir = f"{absolute_stage_root}/envs/logs"
     run_checked(ssh_command(ssh_target, ["mkdir", "-p", log_dir]), "remote log mkdir")
     # Step 3: full-node resources from sinfo (the compile is parallel, MAX_JOBS = CPUs).
-    cpus, memory_gb = query_node_resources(config, ssh_target)
+    # The build always uses the top-level gres: it fixes the environment's compute capability.
+    cpus, memory_gb = query_node_resources(config, ssh_target, config["gres"])
     # Step 4: job script exporting the build's variables, next to the build logs.
     job_script_path = f"{log_dir}/{env_name}-job.sbatch"
     write_remote_file(ssh_target, job_script_path, build_job_script(
@@ -1380,6 +1405,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     minimum_eval_points, steps_per_eval_all_images = profile_eval_cadence(profile_settings)
     # The split fractions too (profile overrides, else the dataset's), so a bad value fails early.
     train_fraction, train_fraction_override, core_fraction = profile_split_fractions(profile_settings, session)
+    # And the GPU type (the profile's gres, else the default).
+    job_gres = resolve_job_gres(config, profile_settings)
     ssh_target = resolve_ssh_target(config["ssh_host"])
     absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
     git_sha = get_head_sha()
@@ -1390,8 +1417,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     env_marker = read_environment_marker(ssh_target, absolute_stage_root, env_name)
     if env_marker is None:
         raise RuntimeError(f"environment {env_name} is not built; run `build-env` first")
-    # Step 3: node sizes from sinfo.
-    cpus, memory_gb = query_node_resources(config, ssh_target)
+    # Step 3: node sizes from sinfo, for the nodes of the job's GPU type.
+    cpus, memory_gb = query_node_resources(config, ssh_target, job_gres)
     # Step 4: run dir first (it holds the job script, and Slurm cannot write the --output log
     # into a missing directory), then the job script exporting the run's variables.
     remote_run_dir = f"{absolute_stage_root}/runs/{run_id}"
@@ -1408,12 +1435,12 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
                               steps_per_eval_all_images=steps_per_eval_all_images),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
-        partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
+        partition=config["partition"], gres=job_gres, cpus=cpus, memory_gb=memory_gb,
         time_limit=str(profile_settings["time_limit"]), job_name=f"splatad-{session}",
         output_path=f"{remote_run_dir}/slurm-%j.out", job_script_path=job_script_path)
     # Step 5: submit.
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
-    print(f"submitted job {job_id}  run {run_id}  ({cpus} CPUs, {memory_gb}G)")
+    print(f"submitted job {job_id}  run {run_id}  ({job_gres}, {cpus} CPUs, {memory_gb}G)")
     # Step 6: append to the local ledger (header written once).
     SUBMITTED_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
     write_header = not SUBMITTED_LEDGER_PATH.exists()
@@ -1451,7 +1478,7 @@ def submit_render(config: Dict[str, Any], run_id: str, camera_frames_text: str, 
     ledger lists training runs, and ``clean`` deletes ledger rows that have no run folder.
 
     Args:
-        config: Parsed Slurm config (``render_only.time_limit``).
+        config: Parsed Slurm config (``render_only.time_limit``; optional ``render_only.gres``).
         run_id: Finished run under ``<stage root>/runs/``.
         camera_frames_text: ``--camera-frames`` list (``parse_frame_index_list`` syntax).
         lidar_sweeps_text: ``--lidar-sweeps`` list.
@@ -1476,6 +1503,8 @@ def submit_render(config: Dict[str, Any], run_id: str, camera_frames_text: str, 
     time_limit = (config.get("render_only") or {}).get("time_limit")
     if not time_limit:
         raise ValueError("configs/slurm.yaml: render_only.time_limit is not set")
+    # The GPU type: render_only.gres, else the default.
+    job_gres = resolve_job_gres(config, config.get("render_only"))
     # Step 2: the run's own record decides: only a successful run has a verified split.json.
     ssh_target = resolve_ssh_target(config["ssh_host"])
     absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
@@ -1501,7 +1530,7 @@ def submit_render(config: Dict[str, Any], run_id: str, camera_frames_text: str, 
     env_marker = read_environment_marker(ssh_target, absolute_stage_root, env_name)
     if env_marker is None:
         raise RuntimeError(f"environment {env_name} is not built; run `build-env` first")
-    cpus, memory_gb = query_node_resources(config, ssh_target)
+    cpus, memory_gb = query_node_resources(config, ssh_target, job_gres)
     # Step 5: rerender folder (Slurm cannot write --output into a missing dir), selection, job script.
     now_utc = now_utc or datetime.datetime.now(datetime.timezone.utc)
     rerender_label = build_rerender_label(git_sha, now_utc)
@@ -1518,11 +1547,12 @@ def submit_render(config: Dict[str, Any], run_id: str, camera_frames_text: str, 
         f"{remote_code_dir}/{RENDER_SCRIPT_RELATIVE_PATH}"))
     # Step 6: submit.
     sbatch_arguments = build_sbatch_command(
-        partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
+        partition=config["partition"], gres=job_gres, cpus=cpus, memory_gb=memory_gb,
         time_limit=str(time_limit), job_name=f"splatad-render-{session}",
         output_path=f"{remote_rerender_dir}/slurm-%j.out", job_script_path=job_script_path)
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
-    print(f"submitted render job {job_id} run {run_id} label {rerender_label}")
+    print(f"submitted render job {job_id} run {run_id} label {rerender_label} ({job_gres}, {cpus} CPUs, "
+          f"{memory_gb}G)")
     return job_id, rerender_label
 
 
@@ -1658,7 +1688,8 @@ def resume_run(config: Dict[str, Any], run_id: str, skip_gates: bool) -> str:
     env_marker = read_environment_marker(ssh_target, absolute_stage_root, environment_name(config, git_sha))
     if env_marker is None:
         raise RuntimeError(f"environment {environment_name(config, git_sha)} is not built; run `build-env` first")
-    cpus, memory_gb = query_node_resources(config, ssh_target)
+    # The default gres: a resume belongs to the train+render job, not to render_only.
+    cpus, memory_gb = query_node_resources(config, ssh_target, config["gres"])
     # Step 6: job script in <run dir>/resume/, then submit.
     remote_resume_dir = f"{remote_run_dir}/{RESUME_DIRECTORY_NAME}"
     run_checked(ssh_command(ssh_target, ["mkdir", "-p", remote_resume_dir]), "remote resume dir mkdir")

@@ -20,7 +20,8 @@ from typing import Dict, List, Optional
 import pytest
 import yaml
 
-from tests.unit.test_slurm_submit import PROJECT_ROOT, SYNTHETIC_SINFO_TEXT, load_submit_module
+from tests.unit.test_slurm_job_gres import MIXED_SINFO_TEXT
+from tests.unit.test_slurm_submit import PROJECT_ROOT, load_submit_module
 
 PREPARE_RERENDER_SCRIPT_PATH = PROJECT_ROOT / "scripts" / "12_prepare_rerender.py"
 RENDER_SBATCH_PATH = PROJECT_ROOT / "scripts" / "slurm" / "render_only.sbatch"
@@ -162,7 +163,8 @@ def make_fake_render_cluster(job_info_text: str, split_record: Dict, code_is_sta
         if remote_text.startswith("test -d"):
             return subprocess.CompletedProcess(command, 0 if code_is_staged else 1, stdout="", stderr="")
         if remote_text.startswith("sinfo"):
-            return subprocess.CompletedProcess(command, 0, stdout=SYNTHETIC_SINFO_TEXT, stderr="")
+            # A6000 and A4500 nodes, as on the cluster: render_only.gres may name either type.
+            return subprocess.CompletedProcess(command, 0, stdout=MIXED_SINFO_TEXT, stderr="")
         if " sbatch " in f" {remote_text} ":
             return subprocess.CompletedProcess(command, 0, stdout="5151\n", stderr="")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
