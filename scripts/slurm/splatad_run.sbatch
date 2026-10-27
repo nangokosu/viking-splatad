@@ -26,6 +26,9 @@
 #   TEST_BLOCK_CORE_FRACTION  (the session config's split.test_block_core_fraction: only the central
 #                              fraction of each block is the test split, T62; the rest is guard,
 #                              neither trained on nor rendered; recorded in config.yml)
+#   MINIMUM_EVAL_POINTS  (the profile's minimum number of whole-stretch evals per run)
+#   STEPS_PER_EVAL_ALL_IMAGES  (the eval interval k = (N-1)//MINIMUM_EVAL_POINTS, T63, derived by
+#                               submit_run.py; ns-train --steps-per-eval-all-images)
 #
 # Stage layout ($STAGE_ROOT): data/<session>/, code/<sha>/ (committed repo snapshot),
 # envs/splatad-<recipe hash>/ (environment), runs/<run_id>/.
@@ -37,7 +40,7 @@ set -euo pipefail
 for required_variable in RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX \
     MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
     DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION \
-    TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION; do
+    TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES; do
   if [ -z "${!required_variable:-}" ]; then
     echo "ERROR: $required_variable is not set (submit with scripts/slurm/submit_run.py)" >&2
     exit 1
@@ -63,7 +66,7 @@ mkdir -p "$RUN_DIR"
   for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX \
       MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
       DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION \
-    TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION; do
+    TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES; do
     echo "$exported_variable: ${!exported_variable:-}"
   done
   echo "environment build:"; sed 's/^/  /' "$ENV_PREFIX/.build-complete"
@@ -90,6 +93,8 @@ print('gpu_check:', torch.cuda.get_device_name(0), torch.cuda.get_device_capabil
 print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 
 
+# --eval-whole-test-blocks True is a constant on purpose: every new run evaluates the whole test
+# stretches during training (old runs lack the field, so they keep the core-only eval).
 # ---- (d) train --------------------------------------------------------------------------
 # --machine.seed seeds python/numpy/torch (all CUDA devices) before setup (nerfstudio train.py).
 # It does not make training bit-exact: the gsplat/SplatAD and tcnn backward passes accumulate
@@ -106,12 +111,14 @@ ns-train splatad \
   --max-num-iterations "$MAX_NUM_ITERATIONS" \
   --steps-per-save "$STEPS_PER_SAVE" \
   --machine.seed "$TRAIN_SEED" \
+  --steps-per-eval-all-images "$STEPS_PER_EVAL_ALL_IMAGES" \
   viking-data --data "$STAGE_ROOT/data" --session-name "$SESSION" \
   --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION" \
   --add-missing-points "$ADD_MISSING_POINTS" \
   --train-split-fraction "$TRAIN_SPLIT_FRACTION" \
   --test-block-count "$TEST_BLOCK_COUNT" \
-  --test-block-core-fraction "$TEST_BLOCK_CORE_FRACTION"
+  --test-block-core-fraction "$TEST_BLOCK_CORE_FRACTION" \
+  --eval-whole-test-blocks True
 TRAIN_END_SECONDS=$(date +%s)
 {
   echo "train_end_epoch_s: $TRAIN_END_SECONDS"

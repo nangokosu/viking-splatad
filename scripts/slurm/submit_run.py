@@ -637,13 +637,40 @@ def require_no_return_sidecar(dataset_dir: Path, add_missing_points: bool) -> No
         )
 
 
+def profile_eval_cadence(profile_settings: Dict[str, Any]) -> Tuple[int, int]:
+    """Minimum eval count of a profile and the eval interval that guarantees it (T63).
+
+    Args:
+        profile_settings: The chosen ``profiles.<name>`` mapping.
+
+    Returns:
+        ``(minimum_eval_points, steps_per_eval_all_images)``, where the interval is
+        k = (max_num_iterations - 1) // minimum_eval_points.
+
+    Raises:
+        ValueError: If ``minimum_eval_points`` is missing or not an int (bool refused), or if
+            T63 refuses because the run is too short for that many evals.
+    """
+    # Step 1: the minimum must be explicit, as the seed is; bool is an int subclass, so refuse it.
+    minimum_eval_points = profile_settings.get("minimum_eval_points")
+    if isinstance(minimum_eval_points, bool) or not isinstance(minimum_eval_points, int):
+        raise ValueError(f"profile needs an integer 'minimum_eval_points' (got {minimum_eval_points!r})")
+    # Step 2: T63 derives the interval (and raises ValueError when N - 1 < P).
+    from viking_splatad.eval.training_curves import eval_interval_for_minimum_points
+    steps_per_eval_all_images = eval_interval_for_minimum_points(
+        int(profile_settings["max_num_iterations"]), minimum_eval_points)
+    return minimum_eval_points, steps_per_eval_all_images
+
+
 def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id: str,
                           git_sha: str, absolute_stage_root: str,
                           env_marker: Dict[str, str],
                           add_missing_points: Optional[bool] = None,
                           train_split_fraction: Optional[float] = None,
                           test_block_count: Optional[int] = None,
-                          test_block_core_fraction: Optional[float] = None) -> Dict[str, str]:
+                          test_block_core_fraction: Optional[float] = None,
+                          minimum_eval_points: Optional[int] = None,
+                          steps_per_eval_all_images: Optional[int] = None) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
 
     Args:
@@ -662,6 +689,10 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
             as TEST_BLOCK_COUNT. Same rule as ``add_missing_points``: None leaves it out.
         test_block_core_fraction: The session's core fraction (``session_test_block_core_fraction``),
             exported as TEST_BLOCK_CORE_FRACTION. Same rule as ``add_missing_points``: None leaves it out.
+        minimum_eval_points: The profile's minimum eval count (``profile_eval_cadence``), exported as
+            MINIMUM_EVAL_POINTS. Same rule as ``add_missing_points``: None leaves it out.
+        steps_per_eval_all_images: The derived eval interval (``profile_eval_cadence``), exported as
+            STEPS_PER_EVAL_ALL_IMAGES. Same rule: None leaves it out.
 
     Returns:
         Mapping variable name -> string value.
@@ -702,6 +733,10 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
     # repr keeps every digit, so config.yml and job_info.txt hold the same float.
     if test_block_core_fraction is not None:
         job_environment["TEST_BLOCK_CORE_FRACTION"] = repr(float(test_block_core_fraction))
+    if minimum_eval_points is not None:
+        job_environment["MINIMUM_EVAL_POINTS"] = str(int(minimum_eval_points))
+    if steps_per_eval_all_images is not None:
+        job_environment["STEPS_PER_EVAL_ALL_IMAGES"] = str(int(steps_per_eval_all_images))
     return job_environment
 
 
@@ -1099,6 +1134,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     if profile not in config["profiles"]:
         raise KeyError(f"unknown profile {profile!r}; known: {sorted(config['profiles'])}")
     profile_settings = config["profiles"][profile]
+    # The eval cadence is checked before any ssh/sbatch, so a profile too short for its minimum fails early.
+    minimum_eval_points, steps_per_eval_all_images = profile_eval_cadence(profile_settings)
     ssh_target = resolve_ssh_target(config["ssh_host"])
     absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
     git_sha = get_head_sha()
@@ -1121,7 +1158,9 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
                               add_missing_points=session_add_missing_points(session),
                               train_split_fraction=dataset_train_fraction(session),
                               test_block_count=session_test_block_count(session),
-                              test_block_core_fraction=session_test_block_core_fraction(session)),
+                              test_block_core_fraction=session_test_block_core_fraction(session),
+                              minimum_eval_points=minimum_eval_points,
+                              steps_per_eval_all_images=steps_per_eval_all_images),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
