@@ -50,6 +50,12 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # Render-only jobs (dataset/run_split.py, VikingHillDataParser.render_frame_selection_file):
         # the test split becomes exactly the requested guard frames of a finished run.
         "T66",
+        # P1 semantic occupancy of rendered test lidar vs GT cuboids (eval/detection.py):
+        # per-class cuboid detection rate and neighbourhood point precision (PLAN §5, T46 part a).
+        "T45", "T46",
+        # Rendered lidar npz -> points (eval/rendered_pointcloud.py): ungated (accumulation) points
+        # rebuilt from the ray raster, and lidar-frame points -> map frame -> GT voxel grid.
+        "T67", "T68",
     }
 )
 

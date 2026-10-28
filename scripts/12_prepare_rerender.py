@@ -1,25 +1,42 @@
-"""Prepare and check a render-only job on a finished run's checkpoint (scripts/slurm/render_only.sbatch).
+"""Prepare render configs for a run's checkpoint, and check render-only jobs (render_only.sbatch).
 
 A render-only job renders guard frames (T62: inside a T60 test block, outside its core; never trained
-on, never rendered by the run) from the run's checkpoint. It never edits the run's own config.yml:
+on, never rendered by the run) from the run's checkpoint. Neither subcommand that writes a config
+ever edits the run's own config.yml:
 
-    write-config  copies the run's config.yml into the rerender folder with the dataparser's
-                  ``render_frame_selection_file`` set to the job's selection.json, so the ``test``
-                  split that ns-render and scripts/08 ask for is exactly the selected guard frames
-                  (T66). Everything else is left as it is: ``output_dir``, ``experiment_name``,
-                  ``method_name`` and ``timestamp`` still point at the run's train folder, so the
-                  run's latest checkpoint is the one loaded.
-    check         compares the rendered file names with selection.json: renders/test/rgb/*.jpg and
-                  renders/test/gt-rgb/*.jpg against the camera files, renders/test/lidar/*.npz
-                  against the lidar files.
+    write-config      copies the run's config.yml into the rerender folder with the dataparser's
+                      ``render_frame_selection_file`` set to the job's selection.json, so the ``test``
+                      split that ns-render and scripts/08 ask for is exactly the selected guard frames
+                      (T66), and with point painting off (below).
+    write-run-config  copies the run's config.yml with point painting off only, for the run's own
+                      ns-render step (splatad_run.sbatch).
+    check             compares the rendered file names with selection.json: renders/test/rgb/*.jpg and
+                      renders/test/gt-rgb/*.jpg against the camera files, renders/test/lidar/*.npz
+                      against the lidar files.
+
+In both copies ``output_dir``, ``experiment_name``, ``method_name`` and ``timestamp`` still point at
+the run's train folder, so the run's latest checkpoint is the one loaded.
+
+Point painting off: SplatAD's FullImageLidarDatamanager calls ``paint_points()`` in its constructor
+when ``paint_points`` is set. That loads every training image and sweep into RAM (``cached_train``,
+``cached_lidar_train``) to colour the seed points. ``ns-render dataset`` builds the data manager
+twice (once in ``eval_setup``, once per rendered split; render.py:935, 954-962), and its
+``_disable_datamanager_setup`` stubs only setup_train/setup_eval, not the constructor, so the
+training set was held twice and job 222994 (May Scene A) was OOM-killed. Rendering does not need
+the colours: they only seed the Gaussians, and the checkpoint replaces every Gaussian parameter
+(SplatADModel.load_state_dict resizes to the checkpoint's count, then loads), so the model rendered
+is the same.
 
 Usage (inside the job, in the cluster environment, which can unpickle nerfstudio configs):
     python scripts/12_prepare_rerender.py write-config --train-config <run>/train/<session>/splatad/<run_id>/config.yml \
         --selection <rerender dir>/selection.json --output <rerender dir>/config.yml
+    python scripts/12_prepare_rerender.py write-run-config --train-config <run>/train/<session>/splatad/<run_id>/config.yml \
+        --output <run>/render_config/config.yml
     python scripts/12_prepare_rerender.py check --rerender-dir <rerender dir>
 
 Exit codes of ``check``: 0 the renders equal the selection, 1 they differ, 2 outputs (or
 selection.json) missing. ``write-config`` exits 0, or 1 when the run's config has no guard frames.
+``write-run-config`` exits 0.
 """
 
 import argparse
@@ -75,8 +92,25 @@ def set_render_frame_selection(trainer_config: Any, selection_path: Path) -> Any
     return trainer_config
 
 
+def disable_point_painting(trainer_config: Any) -> Any:
+    """Turn off the data manager's point painting for a render (module docstring).
+
+    Args:
+        trainer_config: A loaded config.yml (nerfstudio TrainerConfig or any object with
+            ``pipeline.datamanager``).
+
+    Returns:
+        The same config object, with ``paint_points`` False when the data manager has the field
+        (data managers without it never paint, so nothing changes for them).
+    """
+    datamanager_config = trainer_config.pipeline.datamanager
+    if hasattr(datamanager_config, "paint_points"):
+        datamanager_config.paint_points = False
+    return trainer_config
+
+
 def write_render_config(train_config_path: Path, selection_path: Path, output_path: Path) -> None:
-    """Copy a run's config.yml with the render selection set.
+    """Copy a run's config.yml with the render selection set and point painting off.
 
     Loads and dumps the way nerfstudio does (eval_setup: ``yaml.load(..., Loader=yaml.Loader)``;
     save_config: ``yaml.dump(config)``), so ns-render and scripts/08 read the copy like the original.
@@ -91,6 +125,22 @@ def write_render_config(train_config_path: Path, selection_path: Path, output_pa
     """
     trainer_config = yaml.load(train_config_path.read_text(), Loader=yaml.Loader)
     trainer_config = set_render_frame_selection(trainer_config, selection_path.resolve())
+    trainer_config = disable_point_painting(trainer_config)
+    output_path.write_text(yaml.dump(trainer_config), "utf8")
+
+
+def write_run_render_config(train_config_path: Path, output_path: Path) -> None:
+    """Copy a run's config.yml with point painting off, for the run's own ns-render step.
+
+    Same load/dump as ``write_render_config``; the split is untouched, so ns-render renders the
+    run's own test frames.
+
+    Args:
+        train_config_path: The run's config.yml.
+        output_path: Where to write the copy (its folder is created if missing).
+    """
+    trainer_config = disable_point_painting(yaml.load(train_config_path.read_text(), Loader=yaml.Loader))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(yaml.dump(trainer_config), "utf8")
 
 
@@ -189,6 +239,10 @@ def main(argument_list: Optional[Sequence[str]] = None) -> int:
     write_parser.add_argument("--train-config", type=Path, required=True, help="the run's config.yml")
     write_parser.add_argument("--selection", type=Path, required=True, help="the job's selection.json")
     write_parser.add_argument("--output", type=Path, required=True, help="config.yml to write in the rerender dir")
+    run_config_parser = subparsers.add_parser("write-run-config",
+                                              help="copy the run's config.yml with point painting off")
+    run_config_parser.add_argument("--train-config", type=Path, required=True, help="the run's config.yml")
+    run_config_parser.add_argument("--output", type=Path, required=True, help="config.yml to write")
     check_parser = subparsers.add_parser("check", help="rendered file names vs selection.json")
     check_parser.add_argument("--rerender-dir", type=Path, required=True, help="<run dir>/rerenders/<label>/")
     arguments = parser.parse_args(argument_list)
@@ -199,6 +253,10 @@ def main(argument_list: Optional[Sequence[str]] = None) -> int:
             print(f"ERROR: {error}", file=sys.stderr)
             return EXIT_NO_GUARD
         print(f"wrote {arguments.output} (render_frame_selection_file = {arguments.selection.resolve()})")
+        return 0
+    if arguments.command == "write-run-config":
+        write_run_render_config(arguments.train_config, arguments.output)
+        print(f"wrote {arguments.output} (paint_points = False)")
         return 0
     return check_rerender(arguments.rerender_dir)
 

@@ -44,6 +44,7 @@ uv run python scripts/slurm/submit_run.py submit --session <session> --profile s
 - If sbatch says `Unable to open file .../code/<sha>/...`, you forgot `stage` after committing.
 - A `src/` change follows the test workflow in `CLAUDE.md`/`AGENTS.md` before you commit: new tests only; Claude Code runs the `transform-test-runner` subagent, other agents run `uv run python scripts/affected_tests.py --run`.
 - Every profile in `configs/slurm.yaml` needs an integer `seed`, or `submit` refuses.
+- **GPU type:** the profile's `gres` if set, else the top-level `gres` (A6000). The job is sized from `sinfo` rows of that GPU type only. `smoke_a4500` is `smoke` (YAML merge) on an RTX A4500 (sm_86, 20 GB, 4 CPUs, ~25 GB RAM). It fits because the smoke's ~120 images stay under neurad's 500-image limit, so the images are cached on the GPU. Full runs stay on the A6000: with more than 500 images the cache moves to CPU RAM (~20.5 GB decoded for May's 2162 training images), which leaves too little of an A4500 node's 29 GB. `resume` and `build-env` always use the top-level `gres`.
 
 Re-run the CPU preflight whenever the dataparser, extraction or window changes:
 - Script: `scripts/slurm/preflight_dataparser.py`, run in the image with `src/` bind-mounted.
@@ -68,7 +69,7 @@ Same seed means statistically similar runs, not identical ones. Compare B vs R w
 ## Train/test split record (successful runs only)
 **The split has no randomness, and the seed does not affect it.** SplatAD keeps the frames inside the time window (`DATASET_START/END_FRACTION`, over camera and lidar times together, inclusive). Then the test set is K contiguous time blocks, the same for camera and lidar, centred at k/(K+1) of the window, each (1−f)/K of it long (T60, `VikingHillDataParser.test_block_count`). K is the session config's `split.test_block_count` (2), exported as `TEST_BLOCK_COUNT`. f is the manifest's `session.train_fraction` (0.9) unless overridden. Runs from before T60 used neurad's per-sensor linspace split instead (every ~10th frame).
 
-**Only each block's core is test (T62).** The session config's `split.test_block_core_fraction` c (0.1), exported as `TEST_BLOCK_CORE_FRACTION` and passed as `--test-block-core-fraction`, keeps as test only the frames in [m − c·L/2, m + c·L/2) around each block's centre m. The rest of each block (45% on each side at c = 0.1) is **guard**: never trained on (train is unchanged), never rendered, in neither split. **The eval during training uses the whole blocks** (cores plus guard; see "Overfitting monitor"); only the renders use the cores. The guard also puts 45% of a block of time between the nearest train frame and any test frame. Whole May recording (241.09 s): camera 2162 train / 22 test / 217 guard, lidar 2172 / 24 / 216; blocks 74.34–86.39 s and 154.70–166.76 s, cores 79.76–80.97 s and 160.13–161.33 s (camera frames 795–806 and 1595–1604, lidar sweeps 798–809 and 1602–1613). The 15 s smoke window keeps only 1 camera and 1 lidar test frame.
+**Only each block's core is test (T62).** The session config's `split.test_block_core_fraction` c (0.1), exported as `TEST_BLOCK_CORE_FRACTION` and passed as `--test-block-core-fraction`, keeps as test only the frames in [m − c·L/2, m + c·L/2) around each block's centre m. The rest of each block (45% on each side at c = 0.1) is **guard**: never trained on (train is unchanged), never rendered, in neither split. **The eval during training uses the whole blocks** (cores plus guard; see "Overfitting monitor"); only the renders use the cores. The guard also puts 45% of a block of time between the nearest train frame and any test frame. Whole May recording (241.09 s): camera 2162 train / 22 test / 217 guard, lidar 2172 / 24 / 216; blocks 74.34–86.39 s and 154.70–166.76 s, cores 79.76–80.97 s and 160.13–161.33 s (camera frames 795–806 and 1595–1604, lidar sweeps 798–809 and 1602–1613). At the session's 0.9 / 0.1 the 15 s smoke window would keep only 1 camera and 1 lidar test frame, so the smoke profile sets its own split (user's choice 2026-10-27): `train_fraction: 0.8` and `test_block_core_fraction: 0.2` in `configs/slurm.yaml`, giving 1.5 s blocks with 0.3 s cores, ~3 test frames per block per sensor. A profile's `train_fraction` is exported as both `TRAIN_SPLIT_FRACTION` and `TRAIN_SPLIT_FRACTION_OVERRIDE` (viking-data `--train-split-fraction-override`), because the dataparser otherwise resolves the manifest's value (T27). Any profile may set either key (`profile_split_fractions`).
 
 `scripts/09_extract_run_split.py` rebuilds it on the CPU, without torch, and writes `<run dir>/split.json` and `split_frames.csv`:
 - every frame with its split, index, ns stamp and time;
@@ -103,7 +104,7 @@ It was verified against the real dataparser on `may_chunks0_1_smoke`'s smoke win
 ## Overfitting monitor (every run)
 Training evaluates held-out data throughout, and the job plots train against test, so a run shows whether the model memorises the training views.
 - **What is evaluated:** SplatAD's all-images eval, split `val` = the **whole T60 test stretches** (`--eval-whole-test-blocks`, set by the job; T65). May: 239 camera frames, 240 lidar sweeps; June: 216 / 216. The renders (`ns-render`, script 08) still use split `test` = the T62 cores.
-- **Cadence (T63):** the profile key `minimum_eval_points` (50) gives `MINIMUM_EVAL_POINTS`. The eval interval is `k = (max_num_iterations - 1) // minimum_eval_points`, exported as `STEPS_PER_EVAL_ALL_IMAGES`. 30001 steps: every 600 steps, 50 points. Smoke (3000): every 59, 50 points. `submit` refuses a profile that cannot reach the minimum.
+- **Cadence (T63):** the profile key `minimum_eval_points` (50) gives `MINIMUM_EVAL_POINTS`. The eval interval is `k = (max_num_iterations - 1) // minimum_eval_points`, exported as `STEPS_PER_EVAL_ALL_IMAGES`. Full runs (20001 steps since 2026-10-27; the first May run had 30001, every 600): every 400 steps, 50 points. Smoke (3000): every 59, 50 points. `submit` refuses a profile that cannot reach the minimum.
 - **Figure:** after training the job runs `scripts/11_plot_overfitting_curves.py`. It writes `<run dir>/overfitting/overfitting_curves.png` and `overfitting_curves.csv` (columns `metric,split,step,value`; split is `train`, `test` or `train_loss`).
   - One panel per metric: train (thin raw line plus a rolling median) and test (whole stretches, markers), and a Train Loss panel.
   - Test-only metrics (ssim, lpips, chamfer_distance, median_chamfer_distance) are titled "<metric> (no train value logged)".
@@ -139,6 +140,23 @@ ssh <user>@comps0.cs.toronto.edu "srun --jobid=<job> --overlap -n1 -c1 bash -c \
 - Truly stuck: the GPU is idle and nothing advances for >10 min.
 - Held with `user_env_retrieval_failed_requeued_held`, or a silent death in seconds: see the building-splatad-cluster-env table.
 
+## Render-step failure after training (recovery, not clean-up)
+A run whose `job_info.txt` has `train_elapsed_s` and `overfitting_plot: written` but no `end_utc` trained fully and failed in a later step (camera render, lidar render, Gaussian export or split record). Its checkpoint is good, so do NOT clean it and do not retrain. Diagnose from the Slurm log first. Then, with the user's approval:
+```bash
+uv run python scripts/slurm/submit_run.py stage --session <session>      # HEAD's code, with the fix
+uv run python scripts/slurm/submit_run.py resume <run_id>
+```
+- `resume` checks that the run is resumable, that no job is active on it, and that the final checkpoint `step-<MAX_NUM_ITERATIONS-1>` exists. It writes `<run dir>/resume/job.sbatch`: the run's own variables, with HEAD's `CODE_DIR`/`ENV_PREFIX` plus `RESUME_AFTER_TRAINING=True` and `RESUME_GIT_SHA`. It then submits with `render_only.time_limit`.
+- The job runs `splatad_run.sbatch` without training or plotting. It appends to `job_info.txt` (`resume_*` keys first), and its log goes to the run dir. It then writes `split.json` and `end_utc` like any run. After that the run counts as successful: fetch it as usual.
+- `clean` treats the run as active while the resume job is queued.
+
+**Point painting is off in every render** (since 2026-10-27). SplatAD's lidar data manager paints the seed points in its constructor (`paint_points`), which caches every training image and sweep in RAM. `ns-render dataset` builds the data manager twice (render.py:935 and 954–962), and its `_disable_datamanager_setup` stubs only `setup_train`/`setup_eval`, not the constructor. So the camera render held the training set twice: May Scene A, job 222994, was OOM-killed at 109 GB. Painting only seeds the colours of the initial Gaussians, and the checkpoint replaces every Gaussian parameter (`SplatADModel.load_state_dict`). So the job turns painting off for renders only:
+- `ns-render` loads `<run dir>/render_config/config.yml` (`scripts/12_prepare_rerender.py write-run-config`);
+- script 08 turns it off in its `eval_setup` callback;
+- render-only jobs' `write-config` turns it off too.
+
+Training still paints.
+
 ## Cancelled, failed or unwanted runs
 Remove every artifact of them (cluster run dir, fetched copy, ledger row) with the `cleaning-up-splatad-runs` skill (`submit_run.py clean`), never by hand.
 
@@ -165,7 +183,7 @@ Result on your machine in `runs/<run_id>/`. Every file and key of every run fold
 - `overfitting/overfitting_curves.png` and `.csv`: train-vs-test curves (see "Overfitting monitor").
 - `split.json` and `split_frames.csv`: the exact train/test frames. They exist only for successful runs (see "Train/test split record").
 
-A complete smoke run renders only its test-core frames: 1 camera frame and 1 lidar sweep. Check `overfitting_plot: written`, `split_render_check: match` and `end_utc` in `job_info.txt` instead of counting files by hand. A run without them failed: don't document it.
+A complete smoke run renders only its test-core frames: ~6 camera frames and ~6 lidar sweeps (runs before 2026-10-27: 1 of each). Check `overfitting_plot: written`, `split_render_check: match` and `end_utc` in `job_info.txt` instead of counting files by hand. A run without them failed: don't document it.
 
 **Lidar npz keys** (full list in the docstring of `scripts/08_render_lidar_pointcloud.py`):
 

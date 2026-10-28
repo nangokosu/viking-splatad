@@ -15,7 +15,10 @@ runs/<run_id>/
 │   └── overfitting_curves.csv
 ├── slurm-<job id>.out                 Slurm log (stdout + stderr of the job)
 ├── compare/                           only if you ran scripts/slurm/compare_renders.py on the Mac
+├── eval/semantic_occupancy.{json,md}  only if you ran scripts/13_eval_semantic_occupancy.py on the Mac (P1 vs GT cuboids); a render-only job gets its own rerenders/<label>/eval/
 ├── rerenders/<label>/                 one per render-only job on this run's checkpoint (guard frames); see "Render-only jobs"
+├── render_config/config.yml           config.yml with paint_points off, loaded by the ns-render step; runs since 2026-10-27
+├── resume/job.sbatch                  only for a run resumed after training (submit_run.py resume); see job_info.txt resume_* keys
 ├── train/<session>/splatad/<run_id>/
 │   ├── config.yml                     full nerfstudio config (loads the model; holds the time window)
 │   ├── dataparser_transforms.json     w2m transform (dataparser frame), scale and time offset; written by 08 (ns-train skips it for SplatAD)
@@ -94,11 +97,14 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 | `train_elapsed_s`, `render_elapsed_s`, `lidar_render_elapsed_s`, `gaussian_export_elapsed_s` | wall time of training, camera render, lidar render and Gaussian export (also `*_start_epoch_s` and `*_end_epoch_s`) |
 | `TEST_BLOCK_COUNT` | the session config's `split.test_block_count`, passed to `ns-train` as `--test-block-count`: the test set is that many time blocks shared by camera and lidar (T60). Absent in older runs (linspace split). |
 | `TEST_BLOCK_CORE_FRACTION` | the session config's `split.test_block_core_fraction`, passed to `ns-train` as `--test-block-core-fraction`: only that central fraction of each block is test (T62), the rest is guard. Absent in older runs (whole blocks). |
-| `TRAIN_SPLIT_FRACTION` | the dataset manifest's `session.train_fraction`, passed to `ns-train` as `--train-split-fraction`, so `config.yml` records it. Absent in older runs, whose `config.yml` says 0.5. |
+| `TRAIN_SPLIT_FRACTION` | the dataset manifest's `session.train_fraction`, passed to `ns-train` as `--train-split-fraction`, so `config.yml` records it. Absent in older runs, whose `config.yml` says 0.5. When the Slurm profile sets its own `train_fraction`, it is that value instead. |
+| `TRAIN_SPLIT_FRACTION_OVERRIDE` | present only when the Slurm profile sets its own `train_fraction` (e.g. smoke, 0.8): equal to `TRAIN_SPLIT_FRACTION`, passed to viking-data as `--train-split-fraction-override` so the dataparser splits with it rather than with the manifest's value. `split.json` then gives `train_fraction_source: override`. |
 | `MINIMUM_EVAL_POINTS` | the profile's `minimum_eval_points`: the least number of all-images evals per run (50). Absent in older runs. |
 | `STEPS_PER_EVAL_ALL_IMAGES` | eval interval k = (`MAX_NUM_ITERATIONS` - 1) // `MINIMUM_EVAL_POINTS` (T63), passed to `ns-train --steps-per-eval-all-images`. Absent in older runs. |
 | `overfitting_plot` | `written` when `overfitting/` was produced after training; `FAILED (exit N)` otherwise (the job still renders, then fails before `end_utc`). Absent in older runs. |
 | `overfitting_plot_recovered_utc` | Only after a plot-only failure that was repaired by hand: UTC time script 11 was re-run successfully on a compute node. Appended after `overfitting_plot: written`, before `end_utc`. Absent in normal runs. |
+| `render_config` | path of `render_config/config.yml`, the copy of `config.yml` with `paint_points: false` that `ns-render` loaded. Painting only seeds the Gaussian colours, which the checkpoint replaces, but it caches the whole training set in RAM, and `ns-render` builds its data manager twice (job 222994 was OOM-killed). Script 08 turns painting off itself and loads `config.yml`. Absent in runs before 2026-10-27. |
+| `resume_start_utc`, `resume_hostname`, `resume_slurm_job_id`, `RESUME_GIT_SHA`, `resume_code_dir` | only in a run resumed after training (`submit_run.py resume`): the training job trained and wrote its curves, then failed in a later step. A second job reran the steps after training with the code at `RESUME_GIT_SHA`, in the same run dir. These keys mark where its lines start. `GIT_SHA` stays the training commit. Keys written by both jobs (e.g. `render_start_epoch_s`, `gpu_check`) appear twice: the later one is the resume job's. |
 | `split_render_check` | `match` when `split.json` was written; `FAILED (exit N)` when the job stopped instead (1 = renders or fractions disagree, 2 = outputs missing). Then there is no `end_utc` and no `split.json`. |
 
 ## Overfitting curves (`overfitting/`)

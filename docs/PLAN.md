@@ -207,8 +207,8 @@ The radar claim concerns blocked and no-return cells. B and R should agree on se
 
 | metric | definition | role / expectation |
 |---|---|---|
-| **Detection rate per class (T45)**, P1 and P2, per seen / blocked / no-return | P1: fraction of kept cuboids with ≥ n_min ungated rendered points inside; n_min comes from the GT June lidar point density on the same cuboids at the same poses. P2: fraction of kept cuboids whose occupied-voxel fraction is ≥ f_min, reported as a curve over f_min (no single threshold tuned on GT) | **primary**: R > B on blocked/no-return in P1 or P2; R ≈ B on seen |
-| **Trunk precision / false-positive trunks (T46)**, P1 and P2 | (a) fraction of rendered points (P1) or occupied voxels (P2) in the trunk height band that fall inside a GT cuboid; (b) trunk-like vertical clusters matching no cuboid | **primary**: R ≥ B on both (radar must not invent trunks) |
+| **Detection rate per class (T45)**, P1 and P2, per seen / blocked / no-return | P1 (`scripts/13_eval_semantic_occupancy.py`, done without the seen / blocked / no-return split): fraction of kept cuboids with ≥ n_min ungated rendered points inside, plus the curve over n; n_min per class = lower quartile (`configs/eval.yaml`) of the real test sweeps' point counts in the class's hit cuboids, same session, same poses. P2: fraction of kept cuboids whose occupied-voxel fraction is ≥ f_min, reported as a curve over f_min (no single threshold tuned on GT) | **primary**: R > B on blocked/no-return in P1 or P2; R ≈ B on seen |
+| **Trunk precision / false-positive trunks (T46)**, P1 and P2 | (a) fraction of rendered points (P1) or occupied voxels (P2) near a class's cuboids (each grown horizontally by the class's median half-footprint, same z span; the hill rules out one global height band) that fall inside one (P1 done in scripts/13, per scored class, with voxel IoU/P/R in the same region); (b) trunk-like vertical clusters matching no cuboid | **primary**: R ≥ B on both (radar must not invent trunks) |
 | Present but hidden | per GT cell: occupied in P2 but no rendered point in P1 | explains P1 vs P2; expected larger for R (trunks behind grass Gaussians) |
 | Gated P1 metrics | as T45/T46 with SplatAD's ray-drop gate | report (sensor-faithful view) |
 | Lidar depth / Chamfer / ray-drop | SplatAD built-in, on eval lidars | report |
@@ -237,8 +237,10 @@ The radar claim concerns blocked and no-return cells. B and R should agree on se
 | T42 | Mahalanobis gate | a point on the q-ellipsoid is in, slightly outside is out |
 | T43 | opacity loss | hand-computed mean of −log σ(o); zero gated Gaussians gives 0 and is flagged |
 | T44 | ray expected depth (optional) | a single Gaussian on the ray gives its mean depth |
-| T45 | cuboid detection rate | points inside / outside a rotated box give the exact rate |
-| T46 | trunk precision / FP clusters | one matched and one unmatched synthetic cylinder give precision 0.5 and 1 FP |
+| T45 (done) | cuboid detection rate | points inside / outside a rotated box give the exact rate |
+| T46 | trunk precision / FP clusters | (a, done) inside and halo points of a box give the exact neighbourhood precision; (b) one matched and one unmatched synthetic cylinder give 1 FP |
+| T67 (done) | rendered raster → ungated points (accumulation ≥ threshold) | rays with known az/el/depth/time and v give the exact points; the drop-gated ray with high accumulation is kept |
+| T68 (done) | lidar-frame points → map frame → GT voxel index | a yawed pose puts a point at its known map position and voxel; far points are outside the grid |
 | T47 | BEV raster | a known point set gives exact pixel counts |
 | T49 (done) | manifest sweep period covers the per-point time of every extracted sweep | derived period kept unless a longer \|t\| is written; a synthetic chunk with stretched sweeps passes the contract after an incremental, fresh or resumed run |
 | T60 (done) | middle-block test split shared by every sensor | camera 0..12 s and lidar 0.5..11.5 s, f = 0.5, K = 2 give blocks [2.5, 5.5) and [6.5, 9.5) with the exact test frames (half-open edges); the real dataparser and scripts/09 pick identical frames |
@@ -263,7 +265,7 @@ src/viking_splatad/
   splatad/viking_conversions.py (+T39, T40)  splatad/viking_dataparser.py (radar_inputs_dir)
   +splatad/radar_model.py (T41 + losses)  +splatad/radar_method.py
   dataset/schema.py (optional radar_inputs entry)  contract/splatad_contract.py (radar checks)
-  +eval/rendered_pointcloud.py detection.py bev.py  # T45–T47
+  eval/rendered_pointcloud.py detection.py  +bev.py  # T67, T68, T45, T46 (scripts/13); T47
   +eval/gaussian_occupancy.py                       # T56 (checkpoint → gaussians.npz, torch, CPU) + T57 (grid, numpy)
 scripts/+07_build_radar_seeds.py +08_render_lidar_pointcloud.py +09_compare_runs.py +slurm/{splatad_run.sbatch,submit_run.py}
 ```
