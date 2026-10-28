@@ -90,3 +90,54 @@ Report every metric per class. The radar claim concerns **blocked** and **no ret
 | Gated render metrics, `ray_drop_accuracy`, Chamfer, depth | sensor-faithfulness of the render | report only |
 
 Adopted in PLAN §5 as two primary tests: **P1** (rendered lidar, ungated) and **P2** (Gaussian occupancy, T56–T57). R must beat B on blocked and no-return cells in at least one, and must not lose precision in either. §5 and §6 above are no longer proposals.
+
+## 8. Audit of the P1 script (open, 2026-10-27)
+An independent read-only review of `scripts/13_eval_semantic_occupancy.py` (T45, T46, T67, T68) asked two questions:
+- Are the rendered points and the GT cuboids compared in the same coordinates?
+- Are the right semantic classes scored?
+
+It was run on the May smoke run and the June run. **Nothing below is fixed yet.** The fixes in §8.4 are proposals until they are adopted in PLAN §5.
+
+Results at the time of the audit (ungated, binding):
+
+| session | trunk detection | bush detection | rock detection | trunk point precision |
+|---|---|---|---|---|
+| May (smoke) | 0.458 | 0.292 | 0.238 | 0.497 |
+| June | 0.386 | 0.256 | 0.053 | 0.467 |
+
+### 8.1 Coordinates: OK
+- **Frame chain:** each test sweep's `lidar_to_map` matches `poses.npz` to 1.5e-5 on all 52 sweeps. Voxel indexing (centre = origin + (idx + 0.5)·voxel), the quaternion order and the point-in-box test are correct. The median offset between rendered and real points is about 4 mm.
+- **Label map vs. bag map:** they agree in XY. Measured from real returns around 73 May and 47 June trunks:
+  - the offset is (+0.02, −0.04) m in May and (−0.03, −0.05) m in June;
+  - the yaw difference is ≤ 0.19°;
+  - shifting the boxes to the best-fit offset adds only 0.1–0.4% more points inside.
+
+  The ±30 cm seen in phase 1 is per-trunk labelling scatter (about 0.2 m), not a shift. This evidence is enough to close the "UNVERIFIED frame" caveat in `data/gt/*/summary.md`. That folder is gitignored, so this section is the tracked record.
+- **Box heights (minor):** May boxes start about 0.25 m above the lowest ground returns, and May bush boxes about 0.9 m above. June boxes start at the ground.
+
+### 8.2 Classes: correct ids, but trunk scores are mostly canopy (high)
+- **The ids are right:** trunk = 1, `bush_or_small_tree` = 4, rock = 3, in both labels samples. They match PLAN §5.
+- **Trunk boxes overlap canopy boxes:**
+  - 188 of 190 May trunk boxes lie inside a canopy box (class 2) for about 75% of their volume. June is the same.
+  - 77% of the trunk-neighbourhood voxels are canopy.
+  - Points inside canopy boxes make up 83% of the May trunk "false positives" and 46% of the June ones. Leaving them out raises trunk point precision from 0.50 to 0.74 in May (0.74–0.98 depending on the run).
+  - T45 detection counts foliage inside the 9–10 m tall trunk boxes as trunk.
+- **Grass at the trunk base:** in June, 21–23% of the points inside trunk boxes lie within 1 m of the box bottom, where grass and trunk can't be told apart. That band is what the research question is about, and it isn't scored on its own.
+- **Bush labelling differs between May and June:** harmless while the two sessions are never compared (CLAUDE.md: no May ↔ June mapping).
+
+### 8.3 Which boxes are scored (high)
+- **The range limit comes from one outlier:** `range_limit_from_real_points` takes the farthest real return. That is 150.8 m in May (p99.9: 38 m) and 65.8 m in June (p99.9: 33.6 m). As a result, every one of the 190 May trunks is scored, with a median distance of 32 m, and about 35% of them got no real return at all.
+- **The real-lidar ceiling is low:** the real test returns themselves reach a trunk detection rate of only about 0.49. The rendered rates therefore read much worse than they are, and the ungated rate sometimes beats the real rate.
+- **June rocks:** no real return lands in any of the 19 rock boxes. n_min falls back to 1 (`MINIMUM_POSSIBLE_POINT_COUNT`), so the June rock row means nothing.
+
+### 8.4 Proposed fixes
+| # | fix | addresses | severity |
+|---|---|---|---|
+| 1 | Range limit from the p99.9 of real ranges, not the maximum | §8.3 outlier | high |
+| 2 | Leave out points and voxels inside canopy (and other non-scored labelled) boxes in T46 and voxel precision; for detection, clip trunk boxes at the canopy bottom, or use a below-canopy height band | §8.2 canopy | high |
+| 3 | Report trunk scores separately for the band from the box bottom to about 1 m up (the under-grass band) | §8.2 grass | medium |
+| 4 | Report "n/a" for a class when the real sweeps hit none of its boxes, instead of falling back to n_min = 1 | §8.3 June rocks | medium |
+| 5 | A real-return baseline row with the same metrics, or score only the boxes the real returns hit ≥ n_min times. This reverses the earlier "no reference row" choice, which needs the user's approval. | §8.3 ceiling | high |
+| 6 | Close the frame caveat in `data/gt/*/summary.md`, citing §8.1 | §8.1 | low |
+
+The 1 m band in fix 3 and the p99.9 in fix 1 are proposals. When adopted, they get a source in `configs/eval.yaml` like the other settings.

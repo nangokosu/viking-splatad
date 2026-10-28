@@ -1,0 +1,19 @@
+# Evaluation settings shared by every session (read by scripts/13_eval_semantic_occupancy.py).
+# Session-specific inputs (GT folder, labels sample) come from configs/sessions/<session>.yaml.
+eval:
+  # PLAN §5 P1 ungated extraction: a rendered ray gives a point when its accumulation
+  # Σw_i = 1 − ∏(1 − α_i) reaches this value. 0.5 = the ray is more likely stopped than not, the
+  # same even-odds rule as SplatAD's own ray-drop gate (sigmoid(ray_drop) <= 0.5). P2 occupancy
+  # (T57) uses the same value, so P1 and P2 share one opacity cut.
+  render_accumulation_threshold: 0.5
+  # Classes scored (PLAN §5 "Classes scored"): matched on the labels file's class id, never on
+  # the name (labels/cuboids.py DEFAULT_CLASS_NAMES and the file's own names differ).
+  scored_class_ids:
+    tree_trunk: 1
+    bush_or_small_tree: 4
+    rock: 3
+  # T45 headline threshold n_min per class = this quantile of the real test sweeps' point counts in
+  # the class's hit cuboids. The lower quartile is the usual robust floor: three quarters of the
+  # objects the real lidar saw got at least this many points, so a rendered object with fewer is
+  # weaker than most real observations, without letting the sparsest outliers set the bar.
+  n_min_quantile: 0.25

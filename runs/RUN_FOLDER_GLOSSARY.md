@@ -15,6 +15,7 @@ runs/<run_id>/
 │   └── overfitting_curves.csv
 ├── slurm-<job id>.out                 Slurm log (stdout + stderr of the job)
 ├── compare/                           only if you ran scripts/slurm/compare_renders.py on the Mac
+├── eval/semantic_occupancy.{json,md}  only if you ran scripts/13_eval_semantic_occupancy.py on the Mac (P1 vs GT cuboids); a render-only job gets its own rerenders/<label>/eval/
 ├── rerenders/<label>/                 one per render-only job on this run's checkpoint (guard frames); see "Render-only jobs"
 ├── render_config/config.yml           config.yml with paint_points off, loaded by the ns-render step; runs since 2026-10-27
 ├── resume/job.sbatch                  only for a run resumed after training (submit_run.py resume); see job_info.txt resume_* keys
