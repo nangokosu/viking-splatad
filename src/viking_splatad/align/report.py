@@ -66,13 +66,17 @@ CHANNEL_COLUMN = 5
 TIME_COLUMN = 4
 # Number of columns in a sweep that carries channel ids.
 SWEEP_COLUMNS_WITH_CHANNEL = 6
+# Slack [camera periods] when testing whether a time argmax sits on the grid boundary: the grid
+# values are multiples of 0.25 (exact in binary), so 1e-12 only absorbs floating-point rounding.
+GRID_BOUNDARY_SLACK_FRAMES = 1e-12
 
 
 def select_evenly_spaced_indices(total_count: int, requested_count: int) -> np.ndarray:
     """Pick ``requested_count`` indices evenly spread over ``range(total_count)``.
 
-    Indices are round(linspace(0, total-1, k)); duplicates (only possible when k > total)
-    are removed, so the result never exceeds ``total_count`` entries.
+    Indices are round(linspace(0, total-1, k')) with k' = min(k, total). Clamping keeps the
+    spacing (total-1)/(k'-1) >= 1, so rounding cannot merge two picks and the result has
+    exactly k' entries.
 
     Args:
         total_count: Number of available frames.
@@ -83,7 +87,7 @@ def select_evenly_spaced_indices(total_count: int, requested_count: int) -> np.n
     """
     # Evenly spaced real positions, rounded to the nearest frame.
     positions = np.linspace(0, total_count - 1, num=min(requested_count, total_count))
-    # unique() sorts and removes duplicates produced by rounding.
+    # unique() returns a sorted copy; with spacing >= 1 it never drops anything (safeguard only).
     return np.unique(np.rint(positions).astype(np.int64))
 
 
@@ -270,8 +274,9 @@ def interpolate_pose(times: np.ndarray, poses: np.ndarray, query_time: float) ->
     clamped_time = float(np.clip(query_time, times[0], times[-1]))
     right_index = int(np.clip(np.searchsorted(times, clamped_time, side="right"), 1, times.size - 1))
     left_index = right_index - 1
-    # Blend fraction a = (t - t0) / (t1 - t0) in [0, 1].
+    # Blend fraction blend = (t - t0) / (t1 - t0) in [0, 1].
     blend = (clamped_time - times[left_index]) / (times[right_index] - times[left_index])
+    # Rotation: slerp between the two neighbours; translation: linear blend of their positions.
     pair_rotations = Rotation.from_matrix(poses[[left_index, right_index], :3, :3])
     rotation = Slerp([0.0, 1.0], pair_rotations)([blend]).as_matrix()[0]
     pose = np.eye(4)
@@ -333,7 +338,7 @@ def render_overlay(
 
 
 def argmax_nearest_zero(perturbations: np.ndarray, scores: np.ndarray) -> int:
-    """Index of the maximum score; exact (within 1e-12 relative) ties resolve toward zero.
+    """Index of the maximum score; near-exact ties resolve toward zero perturbation.
 
     Flat score curves (e.g. a time shift on a static scene) then report 0 instead of an
     arbitrary first element.
@@ -345,7 +350,8 @@ def argmax_nearest_zero(perturbations: np.ndarray, scores: np.ndarray) -> int:
     Returns:
         Index of the chosen maximum.
     """
-    # Floating-point equality slack: a few ulps of the largest score.
+    # Tie slack: 1e-12 times the largest |score| (absolute 1e-12 for scores below 1). This is
+    # far above float64 rounding (~2.2e-16 relative) yet far below any real score difference.
     slack = 1e-12 * max(float(np.max(np.abs(scores))), 1.0)
     tied = np.flatnonzero(scores >= scores.max() - slack)
     return int(tied[np.argmin(np.abs(perturbations[tied]))])
@@ -383,9 +389,11 @@ def _sensor_names_from_manifest(manifest: Dict[str, Any], camera_name: Optional[
     Raises:
         ValueError: If the manifest has no sensor of a required kind.
     """
+    # Group sensor names by kind in manifest order; other kinds (e.g. radar) are collected but unused.
     names_by_kind: Dict[str, List[str]] = {"camera": [], "lidar": []}
     for sensor in manifest["sensors"]:
         names_by_kind.setdefault(sensor["kind"], []).append(sensor["name"])
+    # An explicit name wins; otherwise take the first listed sensor of that kind.
     resolved_camera = camera_name or (names_by_kind["camera"][0] if names_by_kind["camera"] else None)
     resolved_lidar = lidar_name or (names_by_kind["lidar"][0] if names_by_kind["lidar"] else None)
     if resolved_camera is None or resolved_lidar is None:
@@ -463,6 +471,7 @@ def estimate_score_standard_error(
             frame_scores.append(edge_alignment_score(
                 frame_input["gray"], pixels[resampled], inside_image[resampled], frame_input["weights"][resampled]))
         replicate_scores.append(np.mean(frame_scores))
+    # Bootstrap SE = sample standard deviation (ddof=1) of the replicate means.
     return float(np.std(replicate_scores, ddof=1))
 
 
@@ -542,6 +551,7 @@ def run_sensitivity_sweep(
         Dict with the grids, scores, argmax values, informativeness and status per sweep
         (JSON-ready).
     """
+    # Yaw grid: angle of one pixel at the principal point, theta_px = atan(1 / fx), times m.
     pixel_angle = math.atan(1.0 / camera_matrix[0, 0])
     yaw_angles = np.arange(-YAW_SWEEP_MAX_PIXELS, YAW_SWEEP_MAX_PIXELS + 1) * pixel_angle
     yaw_scores = np.array([
@@ -549,18 +559,20 @@ def run_sensitivity_sweep(
             frame_input["pose_world_camera"], angle), camera_matrix)
         for angle in yaw_angles])
     camera_period = float(np.median(np.diff(camera_times)))
-    # Initial time grid; extend once when the maximum sits on either end.
+    # Initial time grid; extend once when the maximum sits on either end (|argmax| == grid edge).
     time_shift_frames, time_scores = _time_sweep(
         frame_inputs, camera_matrix, camera_times, camera_poses, TIME_SWEEP_STEPS_EACH_SIDE)
     initial_argmax = float(time_shift_frames[argmax_nearest_zero(time_shift_frames, time_scores)])
-    time_extended = abs(initial_argmax) >= time_shift_frames.max() - 1e-12
+    time_extended = abs(initial_argmax) >= time_shift_frames.max() - GRID_BOUNDARY_SLACK_FRAMES
     if time_extended:
         extended_steps = int(round(EXTENDED_TIME_SWEEP_PERIODS / TIME_SWEEP_STEP_FRAMES))
         time_shift_frames, time_scores = _time_sweep(
             frame_inputs, camera_matrix, camera_times, camera_poses, extended_steps)
+    # Final argmaxes; a time peak still on the (possibly extended) edge is unbracketed.
     yaw_best = argmax_nearest_zero(yaw_angles, yaw_scores)
     time_best = argmax_nearest_zero(time_shift_frames, time_scores)
-    time_on_boundary = abs(float(time_shift_frames[time_best])) >= time_shift_frames.max() - 1e-12
+    time_on_boundary = abs(float(time_shift_frames[time_best])) >= time_shift_frames.max() - GRID_BOUNDARY_SLACK_FRAMES
+    # Noise floor shared by both sweeps.
     standard_error = estimate_score_standard_error(frame_inputs, camera_matrix)
     yaw_information = curve_informativeness(yaw_scores, standard_error)
     time_information = curve_informativeness(time_scores, standard_error)
@@ -777,6 +789,7 @@ def generate_align_report(
     for lidar_index in picked:
         lidar_time = float(times[lidar_name][lidar_index])
         camera_index = int(available_camera_indices[nearest_camera_indices(np.array([lidar_time]), available_camera_times)[0]])
+        camera_time = float(times[camera_name][camera_index])
         sweep = np.load(lidar_files[int(lidar_index)])
         image_bgr = cv2.imread(str(camera_files[camera_index]))
         image_height, image_width = image_bgr.shape[:2]
@@ -797,7 +810,7 @@ def generate_align_report(
         frames.append({
             "lidar_frame_index": int(lidar_index),
             "camera_frame_index": camera_index,
-            "camera_lidar_time_delta": float(times[camera_name][camera_index] - lidar_time),
+            "camera_lidar_time_delta": camera_time - lidar_time,
             "points_total": int(sweep.shape[0]),
             "points_in_front": in_front_count,
             "points_inside_image": inside_count,
@@ -809,7 +822,7 @@ def generate_align_report(
         frame_inputs.append({
             "points_lidar": sweep[:, :3], "pose_world_lidar": pose_world_lidar, "gray": gray,
             "weights": weights, "pose_world_camera": pose_world_camera,
-            "camera_time": float(times[camera_name][camera_index]),
+            "camera_time": camera_time,
         })
     # Step 4: global time and motion statistics over every stamp, not only the picked frames.
     time_info = {
@@ -820,7 +833,8 @@ def generate_align_report(
     motion = compute_motion_statistics(times[lidar_name], poses[lidar_name])
     # Step 5: sensitivity sweep and verdict.
     sensitivity = run_sensitivity_sweep(frame_inputs, camera_matrix, times[camera_name], poses[camera_name])
-    verdict, reasons = decide_verdict(frames, sensitivity, float(np.median(beam_gaps)))
+    median_beam_gap = float(np.median(beam_gaps))
+    verdict, reasons = decide_verdict(frames, sensitivity, median_beam_gap)
     report = {
         "session_name": manifest.get("session", {}).get("name", dataset_dir.name),
         "camera_name": camera_name,
@@ -829,7 +843,7 @@ def generate_align_report(
         "time": time_info,
         "motion": motion,
         "sensitivity": sensitivity,
-        "median_beam_gap_radians": float(np.median(beam_gaps)),
+        "median_beam_gap_radians": median_beam_gap,
         "verdict": verdict,
         "verdict_reasons": reasons,
     }

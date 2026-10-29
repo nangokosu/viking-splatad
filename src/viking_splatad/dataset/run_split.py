@@ -1,4 +1,4 @@
-"""Exact train/test frame membership of one SplatAD run, rebuilt without torch (T58, T59, T60, T62, T66).
+"""Exact train/test frame membership of one SplatAD run, rebuilt without torch (T58, T59, T60, T62, T65, T66).
 
 SplatAD's frame selection has no randomness. ``ADDataParser._generate_dataparser_outputs``
 (neurad-studio ad_dataparser.py) does, in order:
@@ -70,7 +70,7 @@ class SplitFrame:
     Attributes:
         sensor: Sensor name (e.g. ``ids_camera``).
         kind: ``camera`` or ``lidar``.
-        split: ``train`` or ``test``.
+        split: ``train``, ``test`` or ``guard`` (T62).
         frame_index: Index in the frame file name ``<frame_index>_<timestamp_ns>.<ext>``.
         timestamp_ns: Stamp in the frame file name (identifies the frame across datasets).
         time_s: ``poses.npz`` time [s] the dataparser uses for this frame.
@@ -109,7 +109,8 @@ def time_window_masks(
     if start_fraction == FULL_RECORDING_START_FRACTION and end_fraction == FULL_RECORDING_END_FRACTION:
         return {name: np.ones(len(times), dtype=bool) for name, times in sensor_times.items()}, None
     # Step 2: min and span over all camera + lidar times together (torch.cat of both sets).
-    all_times = np.concatenate([np.asarray(times, dtype=np.float64) for times in sensor_times.values()])
+    times_by_sensor = {name: np.asarray(times, dtype=np.float64) for name, times in sensor_times.items()}
+    all_times = np.concatenate(list(times_by_sensor.values()))
     end_time = float(all_times.max())
     start_time = float(all_times.min())
     duration = end_time - start_time
@@ -117,10 +118,7 @@ def time_window_masks(
     end_time = start_time + duration * end_fraction
     start_time += duration * start_fraction
     # Step 4: inclusive mask per sensor (_filter_sensordata_on_time).
-    masks = {
-        name: (np.asarray(times, dtype=np.float64) >= start_time) & (np.asarray(times, dtype=np.float64) <= end_time)
-        for name, times in sensor_times.items()
-    }
+    masks = {name: (times >= start_time) & (times <= end_time) for name, times in times_by_sensor.items()}
     return masks, (start_time, end_time)
 
 
@@ -420,6 +418,7 @@ def resolve_run_train_fraction(manifest: dict, train_fraction_override: Optional
     Returns:
         (fraction, source) with source ``override`` or ``manifest.session.train_fraction``.
     """
+    # An explicit override wins; otherwise the manifest's session fraction (T27 precedence).
     if train_fraction_override is not None:
         return float(train_fraction_override), "override"
     return float(manifest["session"]["train_fraction"]), "manifest.session.train_fraction"
@@ -447,12 +446,12 @@ def build_run_split(
             the central c of each block is test, its other frames get split ``guard``. 1.0 = no guard.
 
     Returns:
-        (frames, bounds): frames sorted by (sensor order in the manifest, split, frame index); and
-        the window bounds from ``time_window_masks``.
+        (frames, bounds): frames ordered by sensor (manifest order), then split (train, test,
+        guard), then recording position; and the window bounds from ``time_window_masks``.
 
     Raises:
         ValueError: If a sensor's frame files and times differ in count, ``max_eval_frames``
-            is set, or c < 1 without test blocks.
+            is set, c < 1 without test blocks, or the block parameters are invalid (T60, T62).
     """
     frames, window_bounds, _, _ = build_run_split_with_cores(
         view, start_fraction, end_fraction, train_fraction, max_eval_frames, test_block_count,
@@ -548,6 +547,8 @@ def build_run_split_with_cores(
         split_positions_by_sensor, guard_positions_by_sensor, test_cores = restrict_test_to_block_cores(
             windowed_times, split_positions_by_sensor, test_blocks, test_block_core_fraction)
 
+    # Step 5: one SplitFrame per (sensor, split, windowed position), mapping windowed positions back
+    # to recording positions so file and time come from the unfiltered arrays.
     frames: List[SplitFrame] = []
     for sensor in split_sensors:
         sensor_name, sensor_kind = sensor["name"], sensor["kind"]
