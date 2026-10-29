@@ -101,8 +101,12 @@ def resolve_session_settings(config: dict) -> Dict[str, object]:
     extract_root = list(bag_dir.parents)[ancestor_names.index(EXTRACT_ROOT_DIRECTORY_NAME)]
     # Step 2: optional overrides, else documented defaults.
     archive_stem = session.get("archive_stem", DEFAULT_ARCHIVE_STEM)
-    # Step 3: sparse copy sits next to the extraction root, named after the stem without '.7z'.
-    sparse_name = archive_stem[:-len(".7z")] + ".sparse.7z" if archive_stem.endswith(".7z") else archive_stem + ".sparse"
+    # Step 3: sparse copy sits next to the extraction root: '<name>.7z' -> '<name>.sparse.7z',
+    # any other stem gets a '.sparse' suffix.
+    if archive_stem.endswith(".7z"):
+        sparse_name = archive_stem[:-len(".7z")] + ".sparse.7z"
+    else:
+        sparse_name = archive_stem + ".sparse"
     return {
         "record": str(session.get("zenodo_record", DEFAULT_ZENODO_RECORD)),
         "stem": archive_stem,
@@ -131,6 +135,27 @@ def find_chunk_entries(entries: List[ArchiveEntry], bag_name: str) -> Dict[int, 
         if match:
             chunk_entries[int(match.group(1))] = entry
     return dict(sorted(chunk_entries.items()))
+
+
+def find_calibration_entries(entries: List[ArchiveEntry], bag_name: str) -> List[ArchiveEntry]:
+    """Select the entries extracted by --fetch-calibration.
+
+    Args:
+        entries: All archive entries.
+        bag_name: Bag directory name, e.g. ``short_grass__ros2``.
+
+    Returns:
+        Entries inside a calibration directory, plus the bag's metadata file, in archive order.
+    """
+    bag_metadata_suffix = "/" + bag_name + "/" + BAG_METADATA_FILE_NAME
+    calibration_entries = []
+    for entry in entries:
+        # Prefix '/' so top-level names match the same patterns as nested ones.
+        rooted_name = "/" + entry.name
+        in_calibration_directory = any(f"/{directory}/" in rooted_name for directory in CALIBRATION_DIRECTORY_NAMES)
+        if in_calibration_directory or rooted_name.endswith(bag_metadata_suffix):
+            calibration_entries.append(entry)
+    return calibration_entries
 
 
 def describe_plan(volumes: List[VolumeInfo], range_start: int, range_end: int, folder_index: int) -> str:
@@ -183,6 +208,9 @@ def is_up_to_date(entry: ArchiveEntry, extract_root: Path) -> bool:
     Args:
         entry: Archive entry.
         extract_root: Extraction root.
+
+    Returns:
+        True when ``extract_root / entry.name`` is a file of ``entry.size`` bytes.
     """
     target_path = extract_root / entry.name
     return target_path.is_file() and target_path.stat().st_size == entry.size
@@ -260,11 +288,7 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     all_succeeded = True
     # Step 3: calibration / labels / metadata (folder 0), when requested.
     if arguments.fetch_calibration:
-        bag_prefix = "/" + settings["bag_name"] + "/"
-        calibration_entries = [
-            entry for entry in entries
-            if any(f"/{directory}/" in "/" + entry.name for directory in CALIBRATION_DIRECTORY_NAMES)
-            or ("/" + entry.name).endswith(bag_prefix + BAG_METADATA_FILE_NAME)]
+        calibration_entries = find_calibration_entries(entries, settings["bag_name"])
         if not calibration_entries:
             print("No calibration entries found in archive", file=sys.stderr)
             all_succeeded = False

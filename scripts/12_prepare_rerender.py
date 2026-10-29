@@ -123,6 +123,7 @@ def write_render_config(train_config_path: Path, selection_path: Path, output_pa
     Raises:
         ValueError: As ``set_render_frame_selection``.
     """
+    # yaml.Loader (not safe_load) is required: config.yml stores nerfstudio dataclasses as python/object tags.
     trainer_config = yaml.load(train_config_path.read_text(), Loader=yaml.Loader)
     trainer_config = set_render_frame_selection(trainer_config, selection_path.resolve())
     trainer_config = disable_point_painting(trainer_config)
@@ -194,9 +195,12 @@ def list_rendered_stems(rerender_dir: Path) -> Dict[Tuple[str, str], Optional[Li
     for sensor_kind, render_folders in RENDER_FOLDERS_BY_KIND.items():
         for folder_name, file_suffix in render_folders:
             render_folder = rerender_dir / "renders" / RENDERED_SPLIT_NAME / folder_name
-            rendered_stems[(sensor_kind, folder_name)] = (
-                sorted(rendered_path.stem for rendered_path in render_folder.glob(f"*{file_suffix}"))
-                if render_folder.is_dir() else None)
+            # None (not []) marks an absent folder, so the check can tell "not run" from "empty".
+            if not render_folder.is_dir():
+                rendered_stems[(sensor_kind, folder_name)] = None
+                continue
+            rendered_stems[(sensor_kind, folder_name)] = sorted(
+                rendered_path.stem for rendered_path in render_folder.glob(f"*{file_suffix}"))
     return rendered_stems
 
 
@@ -209,10 +213,12 @@ def check_rerender(rerender_dir: Path) -> int:
     Returns:
         EXIT_MATCH, EXIT_MISMATCH or EXIT_MISSING.
     """
+    # Step 1: without selection.json there is nothing to compare against.
     selection_path = rerender_dir / SELECTION_FILE_NAME
     if not selection_path.is_file():
         print(f"render check: {selection_path} is missing", file=sys.stderr)
         return EXIT_MISSING
+    # Step 2: compare, report every reason on stderr, and the frame counts on a match.
     selected_files_by_kind = json.loads(selection_path.read_text())["files"]
     exit_code, reasons = compare_rendered_with_selection(selected_files_by_kind, list_rendered_stems(rerender_dir))
     for reason in reasons:
@@ -233,6 +239,7 @@ def main(argument_list: Optional[Sequence[str]] = None) -> int:
     Returns:
         The subcommand's exit code (module docstring).
     """
+    # Step 1: one subparser per subcommand (module docstring).
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     subparsers = parser.add_subparsers(dest="command", required=True)
     write_parser = subparsers.add_parser("write-config", help="copy the run's config.yml with the selection set")
@@ -246,6 +253,7 @@ def main(argument_list: Optional[Sequence[str]] = None) -> int:
     check_parser = subparsers.add_parser("check", help="rendered file names vs selection.json")
     check_parser.add_argument("--rerender-dir", type=Path, required=True, help="<run dir>/rerenders/<label>/")
     arguments = parser.parse_args(argument_list)
+    # Step 2: dispatch; a config without guard frames is the only write-config failure.
     if arguments.command == "write-config":
         try:
             write_render_config(arguments.train_config, arguments.selection, arguments.output)

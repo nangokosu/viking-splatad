@@ -33,11 +33,11 @@ TRUNK_CLASS_ID = 1
 # a typical trunk (Nyquist-style minimum to resolve it at all) while keeping the grid small.
 TRUNK_DIAMETER_VOXEL_FRACTION = 0.5
 
-# Default memory budget in MiB for the voxelisation peak. 2048 MiB is a quarter of a 8 GiB
+# Default memory budget in MiB for the voxelisation peak. 2048 MiB is a quarter of an 8 GiB
 # machine, leaving ample room for the OS and the JSON/NumPy overhead on the Mac.
 DEFAULT_MAX_GRID_MB = 2048.0
 
-# Bytes bound for one MiB.
+# Bytes in one MiB (2**20, by definition of the unit).
 BYTES_PER_MB = 1024.0 * 1024.0
 
 # voxelize_cuboids keeps an int32 class grid and a float64 rank grid alive together, so the peak
@@ -98,7 +98,7 @@ def derive_default_voxel_size(cuboids: Sequence[Cuboid]) -> float:
     Raises:
         ValueError: If there is no trunk box to derive from.
     """
-    # Horizontal mean size per trunk box.
+    # Horizontal mean size per trunk box: (size_x + size_y) / 2.
     diameters = [
         0.5 * (box.dimensions_xyz[0] + box.dimensions_xyz[1])
         for box in cuboids
@@ -126,8 +126,10 @@ def plan_grid(cuboids: Sequence[Cuboid], voxel_size: float, max_grid_mb: float) 
     Raises:
         MemoryError: If the voxelisation peak would exceed the budget.
     """
+    # Step 1: shape per axis = ceil(extent / voxel_size), as voxelize_cuboids computes it.
     bounds_min, bounds_max = compute_default_bounds(cuboids, voxel_size)
     grid_shape = np.ceil((bounds_max - bounds_min) / voxel_size).astype(np.int64)
+    # Step 2: memory = voxel count x bytes per voxel (peak while voxelising, and saved uint8 grid).
     voxel_count = int(np.prod(grid_shape))
     peak_mb = voxel_count * VOXELIZE_PEAK_BYTES_PER_VOXEL / BYTES_PER_MB
     saved_mb = voxel_count * np.dtype(SAVED_CLASS_DTYPE).itemsize / BYTES_PER_MB
@@ -135,6 +137,7 @@ def plan_grid(cuboids: Sequence[Cuboid], voxel_size: float, max_grid_mb: float) 
         f"grid {tuple(int(size) for size in grid_shape)} = {voxel_count} voxels at {voxel_size:.4f} m; "
         f"peak {peak_mb:.1f} MiB, saved {saved_mb:.1f} MiB (budget {max_grid_mb:.1f} MiB)"
     )
+    # Step 3: refuse before allocating anything.
     if peak_mb > max_grid_mb:
         raise MemoryError(
             f"voxel grid would need {peak_mb:.1f} MiB (> --max-grid-mb {max_grid_mb:.1f}); "
@@ -178,8 +181,10 @@ def build_summary(
     Returns:
         Markdown text.
     """
+    # Step 1: overall extent = axis-aligned bounds of every box's 8 corners.
     all_corners = np.concatenate([compute_cuboid_geometry(box).corners for box in cuboids])
     extent_min, extent_max = all_corners.min(axis=0), all_corners.max(axis=0)
+    # Step 2: header lines, then one table row per class present.
     lines: List[str] = [
         f"# Ground-truth summary: {session_name}",
         "",
@@ -202,6 +207,7 @@ def build_summary(
             f"| {class_id} | {class_boxes[0].class_name} | {len(class_boxes)} | "
             f"{np.round(median_size, 3).tolist()} | {occupied} |"
         )
+    # Step 3: totals and the map-frame caveat.
     lines += [
         "",
         f"Total occupied voxels: {int(np.count_nonzero(grid.class_ids != EMPTY_CLASS_ID))}",
@@ -245,6 +251,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not cuboids:
         print("error: no cuboids parsed", file=sys.stderr)
         return 2
+    # Every class id must fit SAVED_CLASS_DTYPE, or the step-4 cast would wrap it silently.
     if max(box.class_id for box in cuboids) > np.iinfo(SAVED_CLASS_DTYPE).max:
         print("error: class id does not fit the saved dtype", file=sys.stderr)
         return 2
