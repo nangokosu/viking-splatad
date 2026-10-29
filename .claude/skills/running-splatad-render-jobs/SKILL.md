@@ -45,6 +45,7 @@ uv run python scripts/slurm/submit_run.py submit --session <session> --profile s
 - A `src/` change follows the test workflow in `CLAUDE.md`/`AGENTS.md` before you commit: new tests only; Claude Code runs the `transform-test-runner` subagent, other agents run `uv run python scripts/affected_tests.py --run`.
 - Every profile in `configs/slurm.yaml` needs an integer `seed`, or `submit` refuses.
 - **GPU type:** the profile's `gres` if set, else the top-level `gres` (A6000). The job is sized from `sinfo` rows of that GPU type only. `smoke_a4500` is `smoke` (YAML merge) on an RTX A4500 (sm_86, 20 GB, 4 CPUs, ~25 GB RAM). It fits because the smoke's ~120 images stay under neurad's 500-image limit, so the images are cached on the GPU. Full runs stay on the A6000: with more than 500 images the cache moves to CPU RAM (~20.5 GB decoded for May's 2162 training images), which leaves too little of an A4500 node's 29 GB. `resume` and `build-env` always use the top-level `gres`.
+- **Excluded nodes:** `excluded_nodes` in `configs/slurm.yaml` (currently `gpunode16`) becomes `--exclude=<nodes>` on every `submit`, `resume`, `render` and `build-env` sbatch, so Slurm never places a job there. gpunode16 is broken: SplatAD dies at the first training iteration with a CUDA index-out-of-bounds assert in the lidar raster step (jobs 224504, 224537, 224538, 2026-10-29), while the identical code and data run on other A4500 nodes. Never remove the entry or pass a job to that node by hand; remove it from the YAML only once CS Lab has fixed the node. Add a node the same way (one YAML line, with the job ids and error as the comment), never with a per-job flag. A run that nevertheless shows `hostname: gpunode16` in `job_info.txt` is a failed run for that reason.
 
 Re-run the CPU preflight whenever the dataparser, extraction or window changes:
 - Script: `scripts/slurm/preflight_dataparser.py`, run in the image with `src/` bind-mounted.
@@ -208,6 +209,7 @@ Read the clouds with these limits in mind:
 - `test` is two held-out stretches of the drive (T60 block split, runs with `TEST_BLOCK_COUNT`); in older runs it is every ~10th frame interleaved with training frames, which measures interpolation only.
 
 ## Known traps
+- **gpunode16 is excluded** (`excluded_nodes`, see "Excluded nodes" under Submit). If a job dies in seconds with a CUDA index-out-of-bounds assert in the lidar raster step, check `hostname` in `job_info.txt` first.
 - Never remove `--pipeline.calc-fid-steps 99999999` from the sbatch. SplatAD's FIDs at step 30000 edit the dynamic actors, and our scenes have none: `IndexError` in `dynamic_actors.edit_boxes2world` killed jobs 222951/222952 at the last step (the sbatch comment has the details). `ns-eval` turns the FIDs on regardless, so never use it; evaluate with `ns-render` and script 08.
 - Never pass `ns-render --downscale-factor` with viking-data: it asserts (render.py:929). The sbatch omits it when the factor is 1.
 - Never use `ns-render --render-point-clouds` for SplatAD. It calls `get_outputs_for_lidar`, which fails with "Unknown sensor type", and it writes only PNG plots. Lidar goes through `08_render_lidar_pointcloud.py`.
