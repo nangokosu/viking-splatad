@@ -121,7 +121,14 @@ class BeamDirectionModel:
             Plain dict of the fields.
         """
         def ring_keyed(mapping: Dict[int, float]) -> Dict[str, float]:
-            """Ring-keyed mapping with string keys (JSON object keys are strings)."""
+            """Ring-keyed mapping with string keys (JSON object keys are strings).
+
+            Args:
+                mapping: ring id -> value.
+
+            Returns:
+                str(ring id) -> float value.
+            """
             return {str(ring_id): float(value) for ring_id, value in mapping.items()}
 
         return {
@@ -147,7 +154,14 @@ class BeamDirectionModel:
             The model, ring keys restored to int.
         """
         def int_keyed(mapping: Dict[str, float]) -> Dict[int, float]:
-            """Ring-keyed mapping with int keys."""
+            """Ring-keyed mapping with int keys.
+
+            Args:
+                mapping: str(ring id) -> value, as read from JSON.
+
+            Returns:
+                int ring id -> float value.
+            """
             return {int(ring_id): float(value) for ring_id, value in mapping.items()}
 
         return cls(
@@ -189,7 +203,7 @@ def derive_beam_direction_model(
     ring: np.ndarray,
     column: np.ndarray,
     column_count: int,
-    expected_rings,
+    expected_rings: Iterable[int],
     max_median_residual_deg: float,
     residual_percentile: float,
 ) -> BeamDirectionModel:
@@ -241,7 +255,14 @@ def derive_beam_direction_model(
     step_magnitude = FULL_TURN_DEGREES / int(column_count)
 
     def concentration(step_sign: float) -> float:
-        """Mean over rings of the azimuth-residual concentration for one step sign."""
+        """Mean over rings of the azimuth-residual concentration for one step sign.
+
+        Args:
+            step_sign: Candidate sign of the column azimuth step (from COLUMN_STEP_SIGNS).
+
+        Returns:
+            Mean resultant length of the per-ring residuals, averaged over rings.
+        """
         residual = wrap_to_half_turn(azimuth - step_sign * step_magnitude * column)
         return float(np.mean([mean_resultant_length(residual[ring == ring_id]) for ring_id in ring_ids]))
 
@@ -250,30 +271,33 @@ def derive_beam_direction_model(
     elevation_far, elevation_slope, azimuth_offset, azimuth_slope = {}, {}, {}, {}
     residual_angles = np.empty(ring.size, dtype=np.float64)
     for ring_id in ring_ids:
+        ring_key = int(ring_id)
         ring_mask = ring == ring_id
+        ring_elevation = elevation[ring_mask]
+        ring_inverse_range = inverse_range[ring_mask]
         # The line is determined only if [1, 1/r] has full column rank; matrix_rank's SVD tolerance
         # also treats ranges equal up to float round-off as one range.
-        ring_inverse_range = inverse_range[ring_mask]
         design_rank = np.linalg.matrix_rank(np.column_stack([np.ones_like(ring_inverse_range), ring_inverse_range]))
         if design_rank < LINE_FIT_PARAMETER_COUNT:
-            raise ValueError(f"ring {int(ring_id)}: fewer than {LINE_FIT_PARAMETER_COUNT} distinct ranges")
+            raise ValueError(f"ring {ring_key}: fewer than {LINE_FIT_PARAMETER_COUNT} distinct ranges")
         # Elevation is never near the seam (|elevation| <= 90), so fit it directly.
-        elevation_intercept, elevation_k = fit_line_against_inverse_range(elevation[ring_mask], inverse_range[ring_mask])
+        elevation_intercept, elevation_parallax = fit_line_against_inverse_range(ring_elevation, ring_inverse_range)
         # Azimuth: remove the column ramp, centre on the circular mean, then fit the line.
         azimuth_residual = wrap_to_half_turn(azimuth[ring_mask] - column_step * column[ring_mask])
         azimuth_centre = circular_mean_degrees(azimuth_residual)
-        azimuth_intercept, azimuth_k = fit_line_against_inverse_range(
-            wrap_to_half_turn(azimuth_residual - azimuth_centre), inverse_range[ring_mask])
+        azimuth_intercept, azimuth_parallax = fit_line_against_inverse_range(
+            wrap_to_half_turn(azimuth_residual - azimuth_centre), ring_inverse_range)
         # Store far-field intercepts and parallax slopes; adding the centre back undoes the centring.
-        elevation_far[int(ring_id)], elevation_slope[int(ring_id)] = elevation_intercept, elevation_k
-        azimuth_offset[int(ring_id)] = float(wrap_to_half_turn(azimuth_centre + azimuth_intercept))
-        azimuth_slope[int(ring_id)] = azimuth_k
+        elevation_far[ring_key] = elevation_intercept
+        elevation_slope[ring_key] = elevation_parallax
+        azimuth_offset[ring_key] = float(wrap_to_half_turn(azimuth_centre + azimuth_intercept))
+        azimuth_slope[ring_key] = azimuth_parallax
         # Residual angle per return: elevation error and azimuth error scaled by cos(elevation)
         # (an azimuth error shrinks to cos(el) times its size on the unit sphere); small-angle norm.
-        elevation_error = elevation[ring_mask] - (elevation_intercept + elevation_k * inverse_range[ring_mask])
+        elevation_error = ring_elevation - (elevation_intercept + elevation_parallax * ring_inverse_range)
         azimuth_error = wrap_to_half_turn(
-            azimuth_residual - (azimuth_offset[int(ring_id)] + azimuth_k * inverse_range[ring_mask]))
-        residual_angles[ring_mask] = np.hypot(elevation_error, azimuth_error * np.cos(np.radians(elevation[ring_mask])))
+            azimuth_residual - (azimuth_offset[ring_key] + azimuth_parallax * ring_inverse_range))
+        residual_angles[ring_mask] = np.hypot(elevation_error, azimuth_error * np.cos(np.radians(ring_elevation)))
     # Step 4: gate on the median (robust to a minority of odd returns, e.g. multipath).
     median_residual = float(np.median(residual_angles))
     if median_residual > max_median_residual_deg:
@@ -327,7 +351,7 @@ def elevation_mapping_from_beam_model(model: BeamDirectionModel, channel_ids: It
         raise ValueError(f"{len(channel_ids)} channels is not a positive multiple of {CHANNELS_PER_TILE}")
     # Ascending by elevation, the order T16 documented ("sorted ascending").
     return dict(sorted(((channel, float(model.elevation_deg[channel])) for channel in channel_ids),
-                       key=lambda item: item[1]))
+                       key=lambda channel_and_elevation: channel_and_elevation[1]))
 
 
 @transform("T52", "Unit direction of Ouster (ring, column) cells in the raw sensor frame from the beam model")
@@ -404,7 +428,7 @@ def no_return_cells(
     no_return_mask = range_values == 0
     cell_index = np.flatnonzero(no_return_mask)
     # Ring from the ring field; column from the row-major cell index; time converted to seconds.
-    ring =np.asarray(fields[lidar_config["ring_field"]])[no_return_mask].astype(np.int64)
+    ring = np.asarray(fields[lidar_config["ring_field"]])[no_return_mask].astype(np.int64)
     column = (cell_index % int(column_count)).astype(np.int64)
     point_time_seconds = (
         np.asarray(fields[lidar_config["point_time_field"]])[no_return_mask].astype(np.float64)

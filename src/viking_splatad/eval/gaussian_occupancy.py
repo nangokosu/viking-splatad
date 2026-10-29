@@ -80,14 +80,12 @@ def gauss_params_from_state_dict(pipeline_state: Mapping[str, np.ndarray]) -> di
     """
     # Step 1: drop the DDP prefix, as nerfstudio's load_pipeline does.
     unprefixed_state = {
-        (state_key[len(DDP_KEY_PREFIX):] if state_key.startswith(DDP_KEY_PREFIX) else state_key): value
-        for state_key, value in pipeline_state.items()
+        state_key.removeprefix(DDP_KEY_PREFIX): value for state_key, value in pipeline_state.items()
     }
     # Step 2: the parameters by name; a missing one is a format change, so fail loudly.
-    missing_keys = [GAUSS_PARAMS_KEY_PREFIX + param_name for param_name in GAUSS_PARAM_NAMES
-                    if GAUSS_PARAMS_KEY_PREFIX + param_name not in unprefixed_state]
-    if ACTOR_SIZES_KEY not in unprefixed_state:
-        missing_keys.append(ACTOR_SIZES_KEY)
+    required_keys = [GAUSS_PARAMS_KEY_PREFIX + param_name for param_name in GAUSS_PARAM_NAMES]
+    required_keys.append(ACTOR_SIZES_KEY)
+    missing_keys = [state_key for state_key in required_keys if state_key not in unprefixed_state]
     if missing_keys:
         raise KeyError(f"checkpoint pipeline state lacks {missing_keys}")
     gauss_params = {param_name: np.asarray(unprefixed_state[GAUSS_PARAMS_KEY_PREFIX + param_name])
@@ -223,7 +221,7 @@ def latest_checkpoint_path(checkpoint_dir: Path) -> Path:
     Raises:
         FileNotFoundError: If the directory holds no checkpoint.
     """
-    # Compare steps as integers, so the choice does not depend on the zero padding.
+    # Step 1: parse each checkpoint's step as an integer, so the choice ignores the zero padding.
     steps_by_path = {}
     for candidate_path in Path(checkpoint_dir).iterdir():
         name_match = CHECKPOINT_NAME_PATTERN.match(candidate_path.name)
@@ -231,6 +229,7 @@ def latest_checkpoint_path(checkpoint_dir: Path) -> Path:
             steps_by_path[candidate_path] = int(name_match.group(1))
     if not steps_by_path:
         raise FileNotFoundError(f"no step-*.ckpt in {checkpoint_dir}")
+    # Step 2: the path with the largest step.
     return max(steps_by_path, key=steps_by_path.get)
 
 
@@ -238,7 +237,7 @@ def save_gaussians_npz(output_path: Path, gaussians: MapFrameGaussians, datapars
                        checkpoint_step: int) -> None:
     """Write ``gaussians.npz`` (keys GAUSSIANS_NPZ_KEYS) with float32 arrays and provenance.
 
-    float32 keeps μ to ~1e-7 relative precision (sub-micrometre within a few hundred metres), far
+    float32 keeps μ to ~1e-7 relative precision (an ulp of ~30 µm at a few hundred metres), far
     below any voxel size, at half the file size.
 
     Args:
@@ -250,6 +249,7 @@ def save_gaussians_npz(output_path: Path, gaussians: MapFrameGaussians, datapars
     Raises:
         ValueError: If the record's keys differ from GAUSSIANS_NPZ_KEYS.
     """
+    # Step 1: float32 arrays plus provenance (the w2m as its (3, 4) rigid part, the source step).
     record = {
         "means": gaussians.means.astype(np.float32),
         "covariances": gaussians.covariances.astype(np.float32),
@@ -258,9 +258,10 @@ def save_gaussians_npz(output_path: Path, gaussians: MapFrameGaussians, datapars
         "dataparser_transform": np.asarray(dataparser_transform, dtype=np.float32)[:3, :],
         "checkpoint_step": np.int64(checkpoint_step),
     }
-    # runs/RUN_FOLDER_GLOSSARY.md documents exactly GAUSSIANS_NPZ_KEYS.
+    # Step 2: runs/RUN_FOLDER_GLOSSARY.md documents exactly GAUSSIANS_NPZ_KEYS.
     if set(record) != set(GAUSSIANS_NPZ_KEYS):
         raise ValueError(f"npz keys {sorted(record)} differ from GAUSSIANS_NPZ_KEYS")
+    # Step 3: write the compressed archive.
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output_path, **record)
