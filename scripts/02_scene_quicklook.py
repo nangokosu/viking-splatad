@@ -54,6 +54,23 @@ TRUNK_CLASS_ID = 1
 # Track colours, cycled: this chunk first, then each overlay.
 TRACK_COLOURS_BGR = [(0, 0, 230), (230, 120, 0), (0, 160, 230), (120, 120, 120)]
 
+# Drawing styles below are legibility choices (no data defines them).
+# Contact-sheet label: font scale 1 at this thumbnail width, so the label scales with the thumbnail;
+# its text origin and stroke width are given at font scale 1 and multiplied by the scale.
+LABEL_REFERENCE_THUMBNAIL_WIDTH_PX = 400.0
+LABEL_LEFT_PX = 10
+LABEL_BASELINE_PX_AT_UNIT_SCALE = 40
+LABEL_THICKNESS_PX_AT_UNIT_SCALE = 2
+LABEL_COLOUR_BGR = (0, 255, 255)
+# Track map: margin = 1/50 (2%) of the width per side; cuboid dots at least 2 px wide.
+MAP_MARGIN_WIDTH_DIVISOR = 50
+MIN_CUBOID_DOT_RADIUS_PX = 2
+TRACK_LINE_THICKNESS_PX = 2
+TRACK_START_DOT_RADIUS_PX = 6
+LEGEND_LINE_SPACING_PX = 25
+LEGEND_FONT_SCALE = 0.7
+LEGEND_THICKNESS_PX = 2
+
 
 def parse_arguments(argument_list: Optional[Sequence[str]]) -> argparse.Namespace:
     """Parse the command line.
@@ -84,7 +101,8 @@ def build_contact_sheet(
     Args:
         chunk_path: MCAP file.
         image_topic: sensor_msgs/CompressedImage topic.
-        columns, rows: Grid size; columns * rows frames are shown.
+        columns: Grid columns.
+        rows: Grid rows; columns * rows frames are shown.
         sheet_width_px: Output width; thumbnail width = sheet_width_px // columns.
 
     Returns:
@@ -111,9 +129,11 @@ def build_contact_sheet(
         thumbnail = cv2.resize(image, (thumbnail_width, thumbnail_height), interpolation=cv2.INTER_AREA)
         offset_seconds = (stamps_ns[message_index] - stamps_ns[0]) / 1e9
         # Label size scales with the thumbnail so it stays legible at any sheet width.
-        font_scale = thumbnail_width / 400.0
-        cv2.putText(thumbnail, f"+{offset_seconds:.0f}s", (10, round(40 * font_scale)),
-                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 255), max(1, round(2 * font_scale)))
+        font_scale = thumbnail_width / LABEL_REFERENCE_THUMBNAIL_WIDTH_PX
+        cv2.putText(thumbnail, f"+{offset_seconds:.0f}s",
+                    (LABEL_LEFT_PX, round(LABEL_BASELINE_PX_AT_UNIT_SCALE * font_scale)),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, LABEL_COLOUR_BGR,
+                    max(1, round(LABEL_THICKNESS_PX_AT_UNIT_SCALE * font_scale)))
         thumbnails.append(thumbnail)
 
     # Tile row by row; pad with black if the chunk has fewer frames than requested.
@@ -162,37 +182,51 @@ def draw_track_map(
     stacked = np.vstack([xy for xy in all_xy if xy.size])
     minimum_xy, maximum_xy = stacked.min(axis=0), stacked.max(axis=0)
     # Uniform scale (pixels per metre) so distances are not distorted; margin = 2% of the width each side.
-    margin_px = map_width_px // 50
+    margin_px = map_width_px // MAP_MARGIN_WIDTH_DIVISOR
+    # The 1e-6 m floor only guards against division by zero when every point has the same x.
     pixels_per_metre = (map_width_px - 2 * margin_px) / max(maximum_xy[0] - minimum_xy[0], 1e-6)
     map_height_px = round((maximum_xy[1] - minimum_xy[1]) * pixels_per_metre) + 2 * margin_px
     canvas = np.full((map_height_px, map_width_px, 3), 255, dtype=np.uint8)
 
     def to_pixels(xy: np.ndarray) -> np.ndarray:
-        """Map-frame xy [n,2] -> integer pixel coordinates (image y grows downwards, so y is flipped)."""
+        """Convert map-frame xy to integer pixel coordinates.
+
+        column = margin + (x - x_min) * ppm; row = height - margin - (y - y_min) * ppm, the y flip
+        because image rows grow downwards while map y grows upwards.
+
+        Args:
+            xy: [n,2] map-frame positions in metres.
+
+        Returns:
+            [n,2] int32 (column, row) pixel coordinates.
+        """
         column = margin_px + (xy[:, 0] - minimum_xy[0]) * pixels_per_metre
         row = map_height_px - margin_px - (xy[:, 1] - minimum_xy[1]) * pixels_per_metre
         return np.stack([column, row], axis=1).round().astype(np.int32)
 
-    # Cuboids as filled dots whose radius is their half-width in pixels (at least 2 px to stay visible).
+    # Cuboids as filled dots (thickness -1 = filled in OpenCV) whose radius is their xy half-width
+    # in pixels, at least MIN_CUBOID_DOT_RADIUS_PX to stay visible.
     for cuboid in cuboids:
         if cuboid.class_id not in DRAWN_CLASSES:
             continue
         centre = to_pixels(np.array([cuboid.center_xyz[:2]]))[0]
-        radius_px = max(2, round(0.5 * min(cuboid.dimensions_xyz[:2]) * pixels_per_metre))
+        radius_px = max(MIN_CUBOID_DOT_RADIUS_PX, round(0.5 * min(cuboid.dimensions_xyz[:2]) * pixels_per_metre))
         cv2.circle(canvas, tuple(int(value) for value in centre), radius_px, DRAWN_CLASSES[cuboid.class_id][1], -1)
 
-    # Tracks as polylines with a start marker, plus a legend line per track.
+    # Tracks as polylines with a filled start marker, plus a legend line per track.
     for track_index, (track_name, track_xy) in enumerate(tracks):
         colour = TRACK_COLOURS_BGR[track_index % len(TRACK_COLOURS_BGR)]
         pixels = to_pixels(track_xy)
-        cv2.polylines(canvas, [pixels.reshape(-1, 1, 2)], False, colour, 2)
-        cv2.circle(canvas, tuple(int(value) for value in pixels[0]), 6, colour, -1)
-        cv2.putText(canvas, f"{track_name} (dot = start)", (margin_px, margin_px + 25 * (track_index + 1)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, colour, 2)
-    legend_row = margin_px + 25 * (len(tracks) + 1)
+        cv2.polylines(canvas, [pixels.reshape(-1, 1, 2)], False, colour, TRACK_LINE_THICKNESS_PX)
+        cv2.circle(canvas, tuple(int(value) for value in pixels[0]), TRACK_START_DOT_RADIUS_PX, colour, -1)
+        cv2.putText(canvas, f"{track_name} (dot = start)",
+                    (margin_px, margin_px + LEGEND_LINE_SPACING_PX * (track_index + 1)),
+                    cv2.FONT_HERSHEY_SIMPLEX, LEGEND_FONT_SCALE, colour, LEGEND_THICKNESS_PX)
+    # Class legend continues below the track lines.
+    legend_row = margin_px + LEGEND_LINE_SPACING_PX * (len(tracks) + 1)
     for legend_index, (class_name, colour) in enumerate(DRAWN_CLASSES.values()):
-        cv2.putText(canvas, class_name, (margin_px, legend_row + 25 * legend_index),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, colour, 2)
+        cv2.putText(canvas, class_name, (margin_px, legend_row + LEGEND_LINE_SPACING_PX * legend_index),
+                    cv2.FONT_HERSHEY_SIMPLEX, LEGEND_FONT_SCALE, colour, LEGEND_THICKNESS_PX)
     return canvas
 
 
@@ -203,7 +237,7 @@ def main(argument_list: Optional[Sequence[str]] = None) -> int:
         argument_list: Command-line arguments (default: sys.argv[1:]).
 
     Returns:
-        Process exit code (0 on success).
+        Process exit code: 0 on success, 1 if no chunk file matches ``--chunk``.
     """
     arguments = parse_arguments(argument_list)
     config = load_session_config(arguments.config)

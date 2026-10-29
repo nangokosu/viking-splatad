@@ -21,7 +21,7 @@ from viking_splatad.pipeline.bag_to_dataset import run_pipeline
 
 
 def main(argument_list: Optional[List[str]] = None) -> int:
-    """Run extraction, validation and print the report.
+    """Extract the session's chunks, validate the dataset, print the report and save it as contract_report.md.
 
     Args:
         argument_list: Command-line arguments (default: sys.argv[1:]).
@@ -37,7 +37,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     parser.add_argument("--force", action="store_true", help="discard previous outputs and re-extract")
     arguments = parser.parse_args(argument_list)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    # Step 1: load config and run the incremental pipeline.
+    # Step 1: load config and run the incremental pipeline. Without --chunks (the normal case),
+    # run_pipeline uses the session YAML's pinned window.chunk_files.
     config = load_session_config(arguments.config)
     start_time = time.perf_counter()
     result = run_pipeline(config, arguments.chunks, arguments.max_seconds, arguments.force)
@@ -47,7 +48,7 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     print(f"dropped frames: {result.skipped_counts}; extraction time {elapsed_seconds:.1f} s")
     for warning in result.warnings:
         print(f"WARNING: {warning}")
-    # Step 2: validate the dataset on disk and print/save the markdown report.
+    # Step 2: validate the dataset on disk, print the Markdown report and save it next to the data.
     report = validate_dataset(result.output_dir)
     markdown = report.to_markdown()
     print(markdown)

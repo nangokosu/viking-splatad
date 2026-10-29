@@ -15,10 +15,10 @@ from viking_splatad.contract.splatad_contract import validate_dataset
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """CLI entry point.
+    """Validate a dataset, print the contract report and optionally save it.
 
     Args:
-        argv: Argument list (default sys.argv[1:]).
+        argv: Command-line arguments (default: sys.argv[1:]).
 
     Returns:
         0 when the contract report passes, 1 otherwise.
@@ -28,10 +28,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--report", type=Path, default=None, help="optional Markdown output path")
     arguments = parser.parse_args(argv)
 
-    # Run all checks and render the report.
+    # Step 1: run all checks and print the Markdown report.
     report = validate_dataset(arguments.dataset)
     markdown = report.to_markdown()
     print(markdown)
+    # Step 2: save it only when --report is given.
     if arguments.report is not None:
         arguments.report.parent.mkdir(parents=True, exist_ok=True)
         arguments.report.write_text(markdown)

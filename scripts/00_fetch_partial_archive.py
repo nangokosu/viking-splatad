@@ -29,6 +29,12 @@ ANONYMOUS_USER_AGENT = "viking-splatad/0.1"
 SEVENZIP_START_HEADER_BYTES = 32
 # Download chunk size for streaming range responses; only a memory/throughput trade-off.
 STREAM_CHUNK_BYTES = 8 * 1024 * 1024
+# Per-request connect/read timeout in seconds: a policy choice (not derivable from data),
+# long enough for a slow Zenodo response, short enough that a dead connection fails fast.
+REQUEST_TIMEOUT_SECONDS = 60
+# Default parallel connections: a politeness choice; enough to beat the per-connection
+# throttle without hammering the server.
+DEFAULT_CONNECTION_COUNT = 8
 
 
 def fetch_range(download_url: str, first_byte: int, last_byte: int, output_handle, write_offset: int) -> int:
@@ -47,7 +53,8 @@ def fetch_range(download_url: str, first_byte: int, last_byte: int, output_handl
     request_headers = {"Range": f"bytes={first_byte}-{last_byte}", "User-Agent": ANONYMOUS_USER_AGENT}
     bytes_written = 0
     # stream=True so a multi-GB range never sits fully in memory.
-    with requests.get(download_url, headers=request_headers, stream=True, timeout=60) as response:
+    with requests.get(download_url, headers=request_headers, stream=True,
+                      timeout=REQUEST_TIMEOUT_SECONDS) as response:
         # 206 proves the server honoured the range; a 200 would silently send the whole file.
         if response.status_code != 206:
             raise RuntimeError(f"Range not honoured ({response.status_code}) for {download_url}")
@@ -75,18 +82,29 @@ def fetch_head_parallel(download_url: str, head_last_byte: int, output_path: Pat
         Total bytes written.
     """
     head_size = head_last_byte + 1
-    # Ceil division so the segments cover the whole head with no gap.
+    # Ceil division, ceil(a / b) = -(-a // b), so the segments cover the whole head with no gap.
     segment_size = -(-head_size // connection_count)
 
     def fetch_segment(segment_index: int) -> int:
-        """Fetch one segment into its offset of the output file."""
+        """Fetch one segment into its offset of the output file.
+
+        Args:
+            segment_index: Segment number in [0, connection_count).
+
+        Returns:
+            Bytes written for this segment (0 if the segment lies past the head).
+        """
         first_byte = segment_index * segment_size
+        # The last segment is clipped to the head end.
         last_byte = min(first_byte + segment_size, head_size) - 1
+        # Rounding up can leave trailing segments empty when head_size is small.
         if first_byte > last_byte:
             return 0
+        # A private handle per worker, so concurrent seeks do not interfere.
         with open(output_path, "r+b") as segment_handle:
             return fetch_range(download_url, first_byte, last_byte, segment_handle, first_byte)
 
+    # One worker per segment; the total is the sum of the segment byte counts.
     with ThreadPoolExecutor(max_workers=connection_count) as executor:
         return sum(executor.map(fetch_segment, range(connection_count)))
 
@@ -117,7 +135,7 @@ def main() -> None:
     parser.add_argument("--stem", required=True, help="archive stem, e.g. ros2_jazzy.7z")
     parser.add_argument("--head-bytes", type=int, required=True, help="bytes to fetch from archive start")
     parser.add_argument("--output", type=Path, required=True, help="sparse output file")
-    parser.add_argument("--connections", type=int, default=8,
+    parser.add_argument("--connections", type=int, default=DEFAULT_CONNECTION_COUNT,
                         help="parallel range connections for the head fetch")
     parser.add_argument("--tail-margin-bytes", type=int, default=0,
                         help="extra bytes fetched before the index to cover the encoded header stream")
@@ -126,8 +144,10 @@ def main() -> None:
     # Step 1: list volumes and sizes from the Zenodo API (JSON metadata only).
     record = requests.get(
         f"https://zenodo.org/api/records/{arguments.record}",
-        headers={"User-Agent": ANONYMOUS_USER_AGENT}, timeout=60,
+        headers={"User-Agent": ANONYMOUS_USER_AGENT}, timeout=REQUEST_TIMEOUT_SECONDS,
     ).json()
+    # Volumes are "<stem>.001", "<stem>.002", ... (7z's zero-padded suffixes), so a name sort
+    # gives volume order.
     volume_sizes_by_name = {
         file_entry["key"]: file_entry["size"]
         for file_entry in record["files"] if file_entry["key"].startswith(arguments.stem + ".")
@@ -137,7 +157,14 @@ def main() -> None:
     total_size = sum(volume_sizes)
 
     def url_of(volume_index: int) -> str:
-        """Direct download URL of one volume."""
+        """Build the direct download URL of one volume.
+
+        Args:
+            volume_index: Position of the volume in volume_names.
+
+        Returns:
+            Zenodo download URL for that volume.
+        """
         return f"https://zenodo.org/records/{arguments.record}/files/{volume_names[volume_index]}?download=1"
 
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
@@ -146,7 +173,6 @@ def main() -> None:
         output_handle.truncate(total_size)
 
         # Step 3: read start header (first 32 bytes) to learn where the index lives.
-        output_handle.seek(0)
         fetch_range(url_of(0), 0, SEVENZIP_START_HEADER_BYTES - 1, output_handle, 0)
         output_handle.flush()
         with open(arguments.output, "rb") as read_handle:
@@ -163,21 +189,25 @@ def main() -> None:
         # straddles a boundary. The 40-byte index is normally an "encoded header" pointing
         # at a compressed header stream placed just before it, so the margin must cover
         # that stream (its exact position is derived afterwards from the pointer).
-        cursor = max(0, index_virtual_start - arguments.tail_margin_bytes)
-        while cursor <= index_virtual_end:
-            volume_index, offset_in_volume = locate_volume(cursor, volume_sizes)
-            last_in_volume = min(index_virtual_end - cursor, volume_sizes[volume_index] - offset_in_volume - 1)
-            fetch_range(url_of(volume_index), offset_in_volume, offset_in_volume + last_in_volume,
-                        output_handle, cursor)
-            cursor += last_in_volume + 1
+        virtual_cursor = max(0, index_virtual_start - arguments.tail_margin_bytes)
+        while virtual_cursor <= index_virtual_end:
+            volume_index, offset_in_volume = locate_volume(virtual_cursor, volume_sizes)
+            # Span to fetch from this volume, minus one: up to the index end or the volume end,
+            # whichever comes first.
+            span_minus_one = min(index_virtual_end - virtual_cursor,
+                                 volume_sizes[volume_index] - offset_in_volume - 1)
+            fetch_range(url_of(volume_index), offset_in_volume, offset_in_volume + span_minus_one,
+                        output_handle, virtual_cursor)
+            virtual_cursor += span_minus_one + 1
 
         # Step 5: fetch the head region (data of the earliest files) from volume 0.
         head_last_byte = min(arguments.head_bytes, volume_sizes[0]) - 1
         start_time = time.time()
         # Flush index bytes first; workers reopen the file with their own handles.
         output_handle.flush()
-        written = fetch_head_parallel(url_of(0), head_last_byte, arguments.output, arguments.connections)
-        print(f"head: {written} bytes in {time.time() - start_time:.0f}s", flush=True)
+        head_bytes_written = fetch_head_parallel(url_of(0), head_last_byte, arguments.output,
+                                                 arguments.connections)
+        print(f"head: {head_bytes_written} bytes in {time.time() - start_time:.0f}s", flush=True)
     print(f"sparse archive: {arguments.output} (virtual size {total_size})")
 
 

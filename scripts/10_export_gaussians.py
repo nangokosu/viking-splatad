@@ -37,10 +37,10 @@ CHECKPOINT_DIR_NAME = "nerfstudio_models"
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    """Command-line interface.
+    """Build the command-line parser (--train-dir, --output-path).
 
     Returns:
-        The parser.
+        The argument parser.
     """
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--train-dir", type=Path, required=True,
@@ -50,10 +50,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def main(argument_list: Optional[List[str]] = None) -> int:
-    """Export the latest checkpoint's Gaussians.
+    """Export the latest checkpoint's Gaussians to --output-path in the map frame.
 
     Args:
-        argument_list: CLI arguments (None = sys.argv).
+        argument_list: CLI arguments (None = sys.argv[1:]).
 
     Returns:
         Process exit code (0 on success).
@@ -76,13 +76,14 @@ def main(argument_list: Optional[List[str]] = None) -> int:
 
     loaded_state = torch.load(checkpoint_path, map_location="cpu")
     # Only the tensors T56 reads go to numpy (others, e.g. decoder weights, are not needed).
-    needed_key_suffixes = tuple([GAUSS_PARAMS_KEY_PREFIX + param_name for param_name in GAUSS_PARAM_NAMES]
-                                + [ACTOR_SIZES_KEY])
+    # str.endswith accepts a tuple and matches any of its suffixes.
+    needed_key_suffixes = tuple(GAUSS_PARAMS_KEY_PREFIX + param_name for param_name in GAUSS_PARAM_NAMES)
+    needed_key_suffixes += (ACTOR_SIZES_KEY,)
     pipeline_state = {state_key: value.detach().cpu().numpy()
                       for state_key, value in loaded_state["pipeline"].items()
                       if state_key.endswith(needed_key_suffixes)}
     gauss_params = gauss_params_from_state_dict(pipeline_state)
-    # Step 3: the frame the means are stored in.
+    # Step 3: the dataparser transform and scale that map the stored means back to the map frame.
     with open(arguments.train_dir / DATAPARSER_TRANSFORMS_FILE_NAME, encoding="utf-8") as transforms_file:
         dataparser_transforms = json.load(transforms_file)
     dataparser_transform = np.asarray(dataparser_transforms["transform"], dtype=np.float64)
