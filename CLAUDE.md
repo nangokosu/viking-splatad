@@ -52,6 +52,16 @@ Source: https://support.cs.toronto.edu/systems/slurmresource.html
 7. **Monitor:** `squeue -u $USER`, then `sacct` after the job ends. `scancel <id>` if it's stuck.
 8. **Clean up:** `submit_run.py fetch <run_id>` copies a run's results (the latest checkpoint only) from the workdisk onto the Mac. Delete cancelled, failed or unwanted runs with `submit_run.py clean [<run_id> ...]` (dry run first, then `--yes`; see the `cleaning-up-splatad-runs` skill), never by hand.
 
+## Run tracking (every session start)
+At the start of every session, before other work, run `uv run python scripts/slurm/submit_run.py runs`. It is read-only: it reconciles `runs/submitted.tsv`, the cluster run folders, your `squeue` and the fetched copies in `runs/`. For each run that needs attention it prints the status, its jobs (state, pending reason, Slurm's start estimate), the furthest `job_info.txt` milestone and the next action. Report the result to the user in a few lines, then act on each status:
+- `active`: start one background wait on all active jobs (the loop in `running-splatad-render-jobs`, "Fetch"), since a wait from an earlier session is gone.
+- `fetch`: fetch it in the background, without asking (standing instruction).
+- `failed` / `stale-ledger`: read the Slurm log, diagnose and report, then clean it up (`cleaning-up-splatad-runs`) without asking (standing instruction, 2026-10-29).
+- `resumable` / `plot-recovery`: diagnose and report. Resume or recover only with the user's approval.
+- `done` runs are hidden (`--all` lists them).
+
+If the cluster cannot be reached, say so and carry on. Never infer from a failed ssh that the queue is empty.
+
 ## Session summary (read at start, overwrite at end)
 - **Start of session:** the last session's summary is imported below. Treat it as the current state and verify file/flag names it mentions before relying on them.
 - **End of session** (when the user wraps up, or after the last task of the session): **overwrite** `docs/SESSION_SUMMARY.md`; never append. It contains only:

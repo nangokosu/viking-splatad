@@ -6,6 +6,7 @@ Usage:
     uv run python scripts/slurm/submit_run.py stage  --session S
     uv run python scripts/slurm/submit_run.py submit --session S --profile smoke [--skip-gates]
     uv run python scripts/slurm/submit_run.py status <job_id>
+    uv run python scripts/slurm/submit_run.py runs   [--all]
     uv run python scripts/slurm/submit_run.py fetch  <run_id>
     uv run python scripts/slurm/submit_run.py clean  [<run_id> ...] [--yes]
     uv run python scripts/slurm/submit_run.py render <run_id> --camera-frames 795,797-800 --lidar-sweeps 801 [--skip-gates]
@@ -106,6 +107,18 @@ RERENDERS_DIRECTORY_NAME = "rerenders"
 # Folder inside a run dir holding a resume job's script (<run>/resume/job.sbatch, submit_run.py
 # resume). A job script there marks its run as active too: the resume job writes into the run dir.
 RESUME_DIRECTORY_NAME = "resume"
+# job_info.txt keys that mark a run's progress, in the order splatad_run.sbatch writes them. The last
+# one present is the run's milestone in `runs`: start_utc = job started, train_start_epoch_s = training
+# started, ..., end_utc = every step finished.
+RUN_MILESTONE_KEYS = ("start_utc", "gpu_check", "train_start_epoch_s", "train_elapsed_s", "overfitting_plot",
+                      "render_elapsed_s", "lidar_render_elapsed_s", "gaussian_export_elapsed_s",
+                      "split_render_check", "end_utc")
+# job_info.txt's overfitting_plot value when the figure was written (splatad_run.sbatch).
+WRITTEN_PLOT_VALUE = "written"
+# squeue -o fields for `runs`: job id, state, pending reason, (estimated) start time, batch script
+# path. Space-separated: the first four never contain spaces, and the path is last, so a split with
+# at most len - 1 cuts keeps a path with spaces whole.
+SQUEUE_TRACK_FIELDS = ("%i", "%T", "%r", "%S", "%o")
 # Render-only job's frame selection, inside its rerender folder (read by the dataparser, T66, and by
 # scripts/12_prepare_rerender.py check).
 SELECTION_FILE_NAME = "selection.json"
@@ -2107,6 +2120,178 @@ def clean_runs(config: Dict[str, Any], named_run_ids: Sequence[str], confirmed: 
     return plan
 
 
+def job_script_owner(script_path_text: str) -> Optional[Tuple[str, str]]:
+    """The run a queued/running job belongs to, and the job's kind, from its batch script path.
+
+    Layouts (see ``parse_remote_run_listing``): ``<runs>/<run_id>/job.sbatch`` (train+render),
+    ``<runs>/<run_id>/rerenders/<label>/job.sbatch`` (render-only), ``<runs>/<run_id>/resume/job.sbatch``.
+
+    Args:
+        script_path_text: squeue's ``%o`` field.
+
+    Returns:
+        (run id, kind: ``train``, ``render`` or ``resume``), or None for a job that is not a run's
+        (e.g. an environment build or another script).
+    """
+    script_path = Path(script_path_text.strip())
+    if script_path.name != JOB_SCRIPT_NAME:
+        return None
+    # Check the nested layouts first: their run folder sits one or two levels higher.
+    if script_path.parent.parent.name == RERENDERS_DIRECTORY_NAME:
+        return script_path.parent.parent.parent.name, "render"
+    if script_path.parent.name == RESUME_DIRECTORY_NAME:
+        return script_path.parent.parent.name, "resume"
+    return script_path.parent.name, "train"
+
+
+def parse_tracked_jobs(squeue_text: str) -> List[Dict[str, str]]:
+    """Parse ``squeue -h -o "<SQUEUE_TRACK_FIELDS>"`` output into the user's run jobs.
+
+    Args:
+        squeue_text: squeue stdout, one job per line.
+
+    Returns:
+        One dict per job that belongs to a run: job_id, state, reason, start (squeue's start time:
+        actual when running, Slurm's estimate when pending, ``N/A`` if unknown), run_id, kind.
+        Other jobs (env builds) and malformed lines are left out.
+    """
+    tracked_jobs = []
+    for line in squeue_text.splitlines():
+        # maxsplit = fields - 1: the script path (last) may contain spaces.
+        fields = line.split(None, len(SQUEUE_TRACK_FIELDS) - 1)
+        if len(fields) != len(SQUEUE_TRACK_FIELDS):
+            continue
+        job_id, state, reason, start, script_path_text = fields
+        owner = job_script_owner(script_path_text)
+        if owner is None:
+            continue
+        tracked_jobs.append({"job_id": job_id, "state": state, "reason": reason, "start": start,
+                             "run_id": owner[0], "kind": owner[1]})
+    return tracked_jobs
+
+
+def run_milestone(job_info: Optional[Dict[str, str]]) -> str:
+    """The last progress key a run's job_info.txt has reached (``RUN_MILESTONE_KEYS`` order).
+
+    Args:
+        job_info: Parsed job_info.txt, or None when the run has none.
+
+    Returns:
+        ``key: value`` of the furthest milestone, ``no job_info.txt`` if there is none, or
+        ``no milestone`` if the file has none of the keys.
+    """
+    if job_info is None:
+        return "no job_info.txt"
+    reached_keys = [key for key in RUN_MILESTONE_KEYS if key in job_info]
+    return f"{reached_keys[-1]}: {job_info[reached_keys[-1]]}" if reached_keys else "no milestone"
+
+
+def plan_run_tracking(ledger_rows: List[Dict[str, str]], remote_runs: Dict[str, Optional[Dict[str, str]]],
+                      tracked_jobs: List[Dict[str, str]],
+                      local_runs: Dict[str, Optional[Dict[str, str]]]) -> List[Dict[str, Any]]:
+    """Classify every known run and name the next action (pure: no I/O).
+
+    Rules, first match wins (actions follow the running-splatad-render-jobs and
+    cleaning-up-splatad-runs skills):
+        1. a queued or running job on the run -> ``active``: keep a background wait on it;
+        2. proof of success (``run_succeeded``, cluster copy preferred over the fetched one):
+           fetched copy also successful -> ``done``, else ``fetch``;
+        3. ``split_render_check: match`` but no written plot -> ``plot-recovery``;
+        4. trained (``train_elapsed_s``) with the plot written -> ``resumable`` (resume needs the
+           user's approval);
+        5. in the ledger only (no folder anywhere) -> ``stale-ledger``: clean;
+        6. otherwise -> ``failed``: read the Slurm log, diagnose, clean.
+
+    Args:
+        ledger_rows: From ``read_ledger``.
+        remote_runs: From ``list_remote_runs``.
+        tracked_jobs: From ``parse_tracked_jobs``.
+        local_runs: From ``list_local_runs``.
+
+    Returns:
+        One dict per run, sorted by run id: run_id, status, jobs (``<kind> <job id> <STATE> ...``
+        texts), milestone, action, on_cluster, on_mac.
+    """
+    # Step 1: every run id known anywhere, and the jobs grouped by run.
+    jobs_by_run: Dict[str, List[Dict[str, str]]] = {}
+    for job in tracked_jobs:
+        jobs_by_run.setdefault(job["run_id"], []).append(job)
+    known_run_ids = {row["run_id"] for row in ledger_rows} | set(remote_runs) | set(local_runs) | set(jobs_by_run)
+    # Step 2: one status per run, rules in docstring order.
+    tracking_plan = []
+    for run_id in sorted(known_run_ids):
+        # Same record choice as plan_cleanup: the cluster copy is the job's own record.
+        job_info = remote_runs.get(run_id) if run_id in remote_runs else local_runs.get(run_id)
+        job_texts = []
+        for job in jobs_by_run.get(run_id, []):
+            # A pending job shows why it waits and Slurm's start estimate; a running one its start.
+            detail = f" ({job['reason']}, est. start {job['start']})" if job["state"] == "PENDING" else (
+                f" (since {job['start']})")
+            job_texts.append(f"{job['kind']} {job['job_id']} {job['state']}{detail}")
+        if run_id in jobs_by_run:
+            status, action = "active", "wait: keep one background wait on the job(s); fetch when they leave the queue"
+        elif run_succeeded(job_info):
+            fetched = run_succeeded(local_runs.get(run_id))
+            status, action = ("done", "none") if fetched else ("fetch", f"submit_run.py fetch {run_id}")
+        elif job_info and job_info.get("split_render_check") == SUCCESS_SPLIT_CHECK_VALUE:
+            status, action = "plot-recovery", "re-run script 11, then append end_utc (skill: Plot-only failure)"
+        elif job_info and "train_elapsed_s" in job_info and job_info.get("overfitting_plot") == WRITTEN_PLOT_VALUE:
+            status, action = "resumable", f"diagnose the Slurm log; resume {run_id} only with the user's approval"
+        elif run_id not in remote_runs and run_id not in local_runs:
+            status, action = "stale-ledger", "submit_run.py clean (ledger row only)"
+        else:
+            status, action = "failed", "read the Slurm log, diagnose, report, then submit_run.py clean"
+        tracking_plan.append({"run_id": run_id, "status": status, "jobs": job_texts,
+                              "milestone": run_milestone(job_info), "action": action,
+                              "on_cluster": run_id in remote_runs, "on_mac": run_id in local_runs})
+    return tracking_plan
+
+
+def track_runs(config: Dict[str, Any], show_done: bool, local_runs_root: Path = LOCAL_RUNS_ROOT,
+               ledger_path: Path = SUBMITTED_LEDGER_PATH) -> List[Dict[str, Any]]:
+    """Print every pending, running or unfinished run with its milestone and next action.
+
+    The session-start check (CLAUDE.md "Run tracking"): reconciles the local ledger, the cluster's
+    run folders, the user's squeue and the fetched copies in two ssh calls. Read-only.
+
+    Args:
+        config: Parsed Slurm config.
+        show_done: Also list runs that succeeded and are fetched (hidden by default).
+        local_runs_root: Local runs/ folder.
+        ledger_path: Local ledger.
+
+    Returns:
+        The plan from ``plan_run_tracking`` (all runs, done included).
+
+    Raises:
+        RuntimeError: If the cluster cannot be listed (then nothing is known about active jobs).
+    """
+    # Step 1: cluster state (run folders, then the user's jobs with state, reason and start time).
+    ssh_target = resolve_ssh_target(config["ssh_host"])
+    absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
+    remote_runs, _ = list_remote_runs(ssh_target, absolute_stage_root)
+    squeue_format = " ".join(SQUEUE_TRACK_FIELDS)
+    squeue_output = run_checked(ssh_command(ssh_target, [
+        "bash", "-c", f'squeue -h -u "$(id -un)" -o "{squeue_format}"']), "squeue for run tracking").stdout
+    # Step 2: classify against the ledger and the fetched copies.
+    tracking_plan = plan_run_tracking(read_ledger(ledger_path), remote_runs, parse_tracked_jobs(squeue_output),
+                                      list_local_runs(local_runs_root))
+    # Step 3: print the runs that need attention (and the done ones on request).
+    shown_runs = [entry for entry in tracking_plan if show_done or entry["status"] != "done"]
+    for entry in shown_runs:
+        places = [place for place, present in (("cluster", entry["on_cluster"]), ("mac", entry["on_mac"]))
+                  if present]
+        print(f"{entry['status']:<13} {entry['run_id']}  [{', '.join(places) or 'ledger only'}]")
+        for job_text in entry["jobs"]:
+            print(f"    job:       {job_text}")
+        print(f"    milestone: {entry['milestone']}")
+        print(f"    next:      {entry['action']}")
+    hidden_count = len(tracking_plan) - len(shown_runs)
+    print(f"{len(shown_runs)} run(s) listed" + (f", {hidden_count} done and fetched hidden (--all to list)"
+                                                if hidden_count else ""))
+    return tracking_plan
+
+
 def main(argument_list: Optional[List[str]] = None) -> int:
     """CLI entry point.
 
@@ -2132,6 +2317,9 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     submit_parser.add_argument("--skip-gates", action="store_true")
     status_parser = subparsers.add_parser("status", help="squeue + sacct for a job")
     status_parser.add_argument("job_id")
+    runs_parser = subparsers.add_parser(
+        "runs", help="pending/running/unfinished runs with milestone and next action (session-start check)")
+    runs_parser.add_argument("--all", action="store_true", help="also list runs that are done and fetched")
     fetch_parser = subparsers.add_parser("fetch", help="copy a run back (latest checkpoint only)")
     fetch_parser.add_argument("run_id")
     clean_parser = subparsers.add_parser(
@@ -2164,6 +2352,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             submit_run(config, arguments.session, arguments.profile, arguments.skip_gates)
         elif arguments.command == "status":
             return 0 if show_status(config, arguments.job_id) == 0 else 1
+        elif arguments.command == "runs":
+            track_runs(config, arguments.all)
         elif arguments.command == "fetch":
             fetch_run(config, arguments.run_id)
         elif arguments.command == "clean":

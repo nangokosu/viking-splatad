@@ -127,6 +127,7 @@ Training evaluates held-out data throughout, and the job plots train against tes
 - Non-finite logged values (nan, inf) do not stop the plot: they are left out of the y-limits, and the CSV keeps them as Python's float text (`nan`, `inf`).
 
 ## Monitor: stuck vs progressing
+- **Overview of every run:** `uv run python scripts/slurm/submit_run.py runs` (read-only; `--all` also lists done runs). For each run it gives the status (`active`, `fetch`, `failed`, `resumable`, `plot-recovery`, `stale-ledger`, `done`), its jobs with their pending reason and Slurm's start estimate, the furthest `job_info.txt` milestone, and the next action. CLAUDE.md runs it at every session start.
 - The log, `job_info.txt` and all outputs are in the run dir: `<stage root>/runs/<run_id>/`.
 - Milestones, in order: `gpu_check` → `train_elapsed_s` → `overfitting_plot: written` → `render_elapsed_s` (camera) → `lidar_render_elapsed_s` → `split_render_check: match` (`split.json` written) → `end_utc`.
 - `overfitting_plot: FAILED (exit N)` does not stop the job (the renders still run), but the job then fails before `end_utc`.
