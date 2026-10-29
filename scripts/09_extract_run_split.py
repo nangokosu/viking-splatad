@@ -34,8 +34,9 @@ Usage:
     # On the cluster (the last step of splatad_run.sbatch, after every render):
     python scripts/09_extract_run_split.py --run-dir <run dir> --dataset-dir <stage>/data/<session>
 
-Exit code 0 when the record was written; 1 when the renders or the train fractions disagree with
-the rebuilt split; 2 when the run did not complete (failed runs are never documented).
+Exit code 0 when the record was written; 1 when the renders disagree with the rebuilt split or the
+recorded split settings (train fraction, test block count, core fraction) disagree; 2 when the run
+did not complete (failed runs are never documented).
 """
 
 import argparse
@@ -77,7 +78,7 @@ REQUIRED_JOB_INFO_KEYS = ("RUN_ID", "SESSION", "DATASET_START_FRACTION", "DATASE
 RENDERS_COMPLETE_JOB_INFO_KEY = "lidar_render_elapsed_s"
 # Separator of the splits in RENDER_POSE_SOURCE (e.g. "train+test").
 POSE_SOURCE_SEPARATOR = "+"
-# Exit codes: written, inconsistent (renders or fractions disagree), run not complete.
+# Exit codes: written, inconsistent (renders or recorded split settings disagree), run not complete.
 EXIT_WRITTEN, EXIT_INCONSISTENT, EXIT_INCOMPLETE = 0, 1, 2
 # Render folder per sensor kind and the file extension each renderer writes there.
 RENDER_FOLDER_BY_KIND = {"camera": ("rgb", ".jpg"), "lidar": ("lidar", ".npz")}
@@ -250,7 +251,8 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
         (split.json content, frames).
 
     Raises:
-        RunNotDocumented: When the run is incomplete or its renders/fractions disagree.
+        RunNotDocumented: When the run is incomplete, or its renders or recorded split settings
+            (train fraction, test block count, core fraction) disagree.
     """
     # Step 1: the run must have finished every render step.
     job_info_path = run_dir / "job_info.txt"
@@ -307,17 +309,18 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
     for sensor in view.manifest["sensors"]:
         if sensor["kind"] not in SPLIT_SENSOR_KINDS:
             continue
-        sensor_frames = [frame for frame in frames if frame.sensor == sensor["name"]]
-        sensor_counts[sensor["name"]] = {
+        sensor_name = sensor["name"]
+        sensor_frames = [frame for frame in frames if frame.sensor == sensor_name]
+        counts_of_sensor = {
             "kind": sensor["kind"],
-            "frames_in_recording": len(view.sensor_times[sensor["name"]]),
+            "frames_in_recording": len(view.sensor_times[sensor_name]),
             # At fraction 1.0 a frame is in both splits, so count distinct files.
             "frames_in_window": len({frame.file for frame in sensor_frames}),
             TRAIN_SPLIT_NAME: sum(frame.split == TRAIN_SPLIT_NAME for frame in sensor_frames),
             TEST_SPLIT_NAME: sum(frame.split == TEST_SPLIT_NAME for frame in sensor_frames),
             GUARD_SPLIT_NAME: sum(frame.split == GUARD_SPLIT_NAME for frame in sensor_frames),
         }
-        counts_of_sensor = sensor_counts[sensor["name"]]
+        sensor_counts[sensor_name] = counts_of_sensor
         counts_of_sensor["val"] = (
             counts_of_sensor[TEST_SPLIT_NAME] + counts_of_sensor[GUARD_SPLIT_NAME]
             if eval_whole_test_blocks else counts_of_sensor[TEST_SPLIT_NAME])
