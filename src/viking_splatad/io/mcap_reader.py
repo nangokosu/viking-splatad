@@ -23,6 +23,7 @@ def allow_legacy_field_names() -> None:
     Returns:
         None. Effect is process-wide.
     """
+    # Re-assigning the same compiled pattern on repeat calls is a no-op, hence idempotent.
     rosidl_parser.VALID_FIELD_NAME_PATTERN = PERMISSIVE_FIELD_NAME_PATTERN
 
 

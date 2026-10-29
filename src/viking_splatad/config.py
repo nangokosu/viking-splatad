@@ -52,7 +52,8 @@ def load_session_config(config_path: Union[str, Path]) -> Dict[str, Any]:
         is an absolute Path (relative values are resolved against the project root).
 
     Raises:
-        ValueError: If a required top-level or session key is missing (message names it).
+        ValueError: If the YAML's top level is not a mapping, or a required top-level
+            or session key is missing (message names it).
     """
     # Step 1: parse the YAML.
     config = yaml.safe_load(Path(config_path).read_text())

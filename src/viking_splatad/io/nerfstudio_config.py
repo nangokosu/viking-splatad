@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-# YAML literal nerfstudio writes for None.
+# Spellings of None in config.yml: the two YAML null forms plus Python's repr.
 YAML_NULL_LITERALS = ("null", "~", "None")
 
 
@@ -26,6 +26,10 @@ def read_config_scalar(config_path: Path, field_name: str) -> Optional[str]:
         return None
     # Step 2: match "<indent>field: value" on one line; the value is a single token.
     field_match = re.search(rf"^\s*{re.escape(field_name)}:\s*(\S+)\s*$", config_path.read_text(), flags=re.MULTILINE)
-    if field_match is None or field_match.group(1) in YAML_NULL_LITERALS:
+    if field_match is None:
         return None
-    return field_match.group(1)
+    # Step 3: a YAML null reads as None; any other token is returned verbatim.
+    field_value = field_match.group(1)
+    if field_value in YAML_NULL_LITERALS:
+        return None
+    return field_value

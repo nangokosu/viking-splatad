@@ -94,12 +94,24 @@ def transform(transform_id: str, description: str) -> Callable:
     """
 
     def register(function: Callable) -> Callable:
+        """Record ``function`` in TRANSFORM_REGISTRY under ``transform_id``.
+
+        Args:
+            function: The conversion/calibration function being decorated.
+
+        Returns:
+            ``function`` itself, unwrapped.
+
+        Raises:
+            ValueError: If the id is unknown or held by a different function.
+        """
         # Guard against typos: only ids promised by the plan may be registered.
         if transform_id not in PLANNED_TRANSFORM_IDS:
             raise ValueError(f"Unknown transform id {transform_id!r}")
         qualified_name = f"{function.__module__}.{function.__qualname__}"
         existing_spec = TRANSFORM_REGISTRY.get(transform_id)
-        # One id <-> one implementation, so a test maps unambiguously to code.
+        # One id <-> one implementation, so a test maps unambiguously to code. Re-registering
+        # the same qualified name (e.g. a module re-import) is allowed.
         if existing_spec is not None and existing_spec.qualified_name != qualified_name:
             raise ValueError(
                 f"{transform_id} already registered by {existing_spec.qualified_name}"

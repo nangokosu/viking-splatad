@@ -31,9 +31,9 @@ def radar_cloud_to_array(
         if field_name not in decoded_fields:
             raise KeyError(f"Radar cloud has no field {field_name!r}")
     # Step 2: column-stack requested fields as float32 -> [n, k].
-    stacked = np.stack(
+    stacked_fields = np.stack(
         [np.asarray(decoded_fields[field_name], dtype=np.float32) for field_name in field_names],
         axis=1,
     )
     # Step 3: keep rows whose every requested value is finite.
-    return stacked[np.all(np.isfinite(stacked), axis=1)]
+    return stacked_fields[np.all(np.isfinite(stacked_fields), axis=1)]
