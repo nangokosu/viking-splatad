@@ -417,6 +417,12 @@ def check_azimuth_tiles(dataset: IntermediateDataset) -> CheckResult:
     """
     lidar = dataset.lidar
     problems = []
+    # A zero, negative or non-finite resolution has no meaningful bin count (2*pi/0 is
+    # infinite and int() of it overflows), so report it as a failed check instead of raising.
+    if not (np.isfinite(lidar.azimuth_resolution) and lidar.azimuth_resolution > 0):
+        return _result("azimuth_tile_integral", [
+            f"azimuth resolution {lidar.azimuth_resolution} must be finite and positive"
+        ])
     # Number of azimuth bins around a full turn: B = 2*pi / resolution.
     bin_count = 2.0 * np.pi / lidar.azimuth_resolution
     nearest_bin_count = np.rint(bin_count)
@@ -448,7 +454,11 @@ def check_no_returns(dataset: IntermediateDataset) -> CheckResult:
     problems = []
     valid_channels = np.array(sorted(dataset.lidar.elevation_mapping), dtype=np.float64)
     # Columns per ring = full turn / azimuth resolution (an integer, see check_azimuth_tiles).
-    columns_per_ring = int(np.rint(2.0 * np.pi / dataset.lidar.azimuth_resolution))
+    # An invalid resolution is already failed by check_azimuth_tiles; skip the sidecar column bound.
+    if np.isfinite(dataset.lidar.azimuth_resolution) and dataset.lidar.azimuth_resolution > 0:
+        columns_per_ring = int(np.rint(2.0 * np.pi / dataset.lidar.azimuth_resolution))
+    else:
+        return _result("lidar_no_return_sidecar", problems)
     for name, no_return_stream in dataset.no_return_streams.items():
         stream = dataset.streams[name]
         # Step 1: one file per sweep, matched by index and stamp.

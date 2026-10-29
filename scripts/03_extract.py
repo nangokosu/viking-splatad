@@ -2,9 +2,12 @@
 
 Usage:
     uv run python scripts/03_extract.py --config configs/sessions/may_short_grass.yaml \
-        [--max-seconds N] [--chunks file1.mcap ...] [--force]
+        [--max-seconds N] [--force]
 
-Re-running after downloading another chunk adds only the new chunk's frames.
+Chunks come from the session YAML's pinned window.chunk_files. Do NOT pass --chunks: the
+camera/lidar parameters are derived from the first chunk processed and cached in derived.json,
+so a different chunk set silently changes the dataset. Never reuse an old output directory.
+Re-running after downloading a pinned chunk adds only that chunk's frames.
 Exit status is non-zero when any contract check fails.
 """
 
@@ -33,7 +36,10 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     parser.add_argument("--config", required=True, type=Path, help="session YAML")
     parser.add_argument("--max-seconds", type=float, default=None,
                         help="only extract the first N seconds of the session (debug runs)")
-    parser.add_argument("--chunks", nargs="+", default=None, help="chunk file names overriding the config")
+    parser.add_argument("--chunks", nargs="+", default=None,
+                        help="DO NOT USE for real runs: overrides the session YAML's pinned "
+                        "window.chunk_files, but derived.json caches parameters from the first chunk "
+                        "processed, so a different chunk set silently changes the dataset")
     parser.add_argument("--force", action="store_true", help="discard previous outputs and re-extract")
     arguments = parser.parse_args(argument_list)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")

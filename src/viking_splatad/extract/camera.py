@@ -282,7 +282,12 @@ def rolling_shutter_parameters(timestamp_convention: str, readout_seconds: float
       start_of_exposure: stamp = first row    -> +readout/2
       center:            stamp = centre row   -> 0
       end_of_readout:    stamp = last row     -> -readout/2
-    (PandaSet uses readout 0.03 and -0.01.) Readout 0 disables rolling shutter.
+    Readout 0 disables rolling shutter. Example: readout 0.03 s with end_of_readout
+    returns (0.03, -0.015).
+    neurad-studio's PandaSet parser hardcodes rolling_shutter_time 0.03 and
+    time_to_center_pixel -0.01 (pandaset_dataparser.py, in the Docker image). That
+    offset is -readout/3, a dataset-specific value none of these conventions
+    produces; ours come from the stamp convention alone.
 
     Args:
         timestamp_convention: One of SUPPORTED_TIMESTAMP_CONVENTIONS.

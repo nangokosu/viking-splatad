@@ -138,7 +138,10 @@ def patch_lidars_source(source: str) -> str:
     )
     # 4) branch in every accessor: cut each function body out and patch its final else.
     for function_name, registry_key in PATCHED_FUNCTIONS:
-        function_start = source.index(f"def {function_name}(")
+        function_start = source.find(f"def {function_name}(")
+        # ``find`` returns -1 for a missing definition: report it as drift, not as a bare ValueError.
+        if function_start == -1:
+            raise PatchError(f"anchor 'def {function_name}(' for '{function_name} branch' not found, expected 1")
         # The accessor ends where the next top-level ``def`` begins (two blank lines), or at end of file.
         next_top_level = source.find("\n\n\ndef ", function_start)
         function_end = len(source) if next_top_level == -1 else next_top_level

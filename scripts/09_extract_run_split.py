@@ -356,6 +356,9 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
             "window_bounds_s": None if window_bounds is None else list(window_bounds),
             "train_fraction": train_fraction,
             "train_fraction_source": train_fraction_source,
+            # Always None by construction: build_run_split_with_cores raises when config.yml sets
+            # max_eval_frames (the torch.randperm eval subset is not reproduced), so no record is
+            # written for such a run. Not a lost value; the job exports no such setting either.
             "max_eval_frames": None,
         },
         "dataset": {

@@ -123,3 +123,13 @@ def test_patched_neurad_module_returns_registered_values():
         assert lidars_module.LIDAR_MODEL_TO_TYPE["OUSTER_OS0_32"] is ouster_type
     finally:
         registry.pop(ouster_type, None)
+
+
+@pytest.mark.covers("T28")
+def test_patch_raises_patch_error_naming_missing_accessor_anchor():
+    """A source lacking an accessor definition raises PatchError (not ValueError) naming that anchor."""
+    # Rename one accessor so every earlier anchor still matches and only the accessor lookup fails.
+    missing_accessor_name = "get_lidar_relovution_time"
+    drifted_source = UPSTREAM_STAND_IN.replace(f"def {missing_accessor_name}(", "def get_lidar_revolution_time(")
+    with pytest.raises(PatchError, match=missing_accessor_name):
+        patch_lidars_source(drifted_source)

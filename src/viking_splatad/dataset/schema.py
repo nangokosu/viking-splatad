@@ -45,7 +45,13 @@ def values_equal(left: Any, right: Any) -> bool:
         return len(left) == len(right) and all(
             values_equal(left_item, right_item) for left_item, right_item in zip(left, right)
         )
-    if isinstance(left, numbers.Real) and isinstance(right, numbers.Real):
+    # bool subclasses int, so it is excluded here and compared by type and value below.
+    if (
+        isinstance(left, numbers.Real)
+        and isinstance(right, numbers.Real)
+        and not isinstance(left, bool)
+        and not isinstance(right, bool)
+    ):
         # np.float64 vs float is immaterial, but int vs float must stay distinguishable
         # (the contract requires integer image sizes).
         return (
