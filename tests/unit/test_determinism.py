@@ -36,7 +36,7 @@ def test_single_worker_executor_overrides_requested_workers_and_keeps_order():
 
 
 def test_enable_deterministic_mode_patches_pool_and_torch_flags(monkeypatch):
-    """The lidar module's pool is replaced and the three torch switches are set as documented."""
+    """The lidar module's pool is replaced and the cuDNN switches are set and use_deterministic_algorithms is not called."""
     recorded_calls = []
     # Stand-in torch with the attributes enable_deterministic_mode touches; benchmark starts True
     # like nerfstudio's train.py leaves it.
@@ -56,7 +56,8 @@ def test_enable_deterministic_mode_patches_pool_and_torch_flags(monkeypatch):
     assert fake_lidar_module.ThreadPoolExecutor is determinism.single_worker_executor
     assert fake_cudnn.benchmark is False
     assert fake_cudnn.deterministic is True
-    assert recorded_calls == [(True, True), (True, True)]
+    # torch.use_deterministic_algorithms must never be called: it crashes gsplat's MCMC relocation.
+    assert recorded_calls == []
 
 
 def test_sbatch_exports_determinism_variables_before_training():

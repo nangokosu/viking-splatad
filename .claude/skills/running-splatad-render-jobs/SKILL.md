@@ -61,7 +61,7 @@ Re-run the CPU preflight whenever the dataparser, extraction or window changes:
 
 The seed alone does not make runs reproducible. The training step also turns off the removable sources (`src/viking_splatad/splatad/determinism.py`, gated by `VIKING_DETERMINISTIC=1`, which `splatad_run.sbatch` exports for training only; no env rebuild needed):
 - **RNG race in the lidar cache:** neurad's `full_images_lidar_datamanager.py` draws `torch.randperm` from the global generator inside a 2-thread pool, so the draw order (and every later random draw) depended on thread scheduling. The pool now has one worker.
-- **Kernel choice:** `cudnn.benchmark=False`, `cudnn.deterministic=True`, `torch.use_deterministic_algorithms(True, warn_only=True)` (an op without a deterministic version warns, so check the Slurm log for such warnings).
+- **Kernel choice:** `cudnn.benchmark=False`, `cudnn.deterministic=True`. `torch.use_deterministic_algorithms` is deliberately NOT used: it crashed every smoke run at the first MCMC relocation (jobs 224547/224548, step ~590, `INTERNAL ASSERT FAILED` in `Indexing.cu` from gsplat's `v[sampled_idxs] = 0`), and gsplat's `bincount`/`cumsum` have no deterministic version anyway.
 - **Environment:** `PYTHONHASHSEED=$TRAIN_SEED` and `CUBLAS_WORKSPACE_CONFIG=:4096:8`.
 
 It still does **not** make runs bit-identical: the gsplat/SplatAD backward kernels and the tcnn lidar decoder sum gradients with `gpuAtomicAdd` in a hardware-dependent order. Expect two same-seed runs to agree closely at first and then drift. Treat the gap between two identical runs as the noise floor when comparing B vs R, and don't read small metric gaps as signal without repeats.
@@ -176,7 +176,7 @@ Then read `job_info.txt`:
   uv run python scripts/slurm/submit_run.py fetch <run_id>
   ```
   Use a background command, since a smoke run is ~2.7 GB.
-- **Any of the three missing (failed run):** don't fetch. Read the Slurm log over ssh, diagnose, and report. Fetch a failed run only if the user asks.
+- **Any of the three missing (failed run):** don't fetch. Read the Slurm log over ssh, diagnose, and report. Then clean the run up at once with the `cleaning-up-splatad-runs` skill, without asking (standing instruction, 2026-10-29), unless it is resumable (see "Render-step failure after training"). Fetch a failed run only if the user asks, and then do not clean it.
 Result on your machine in `runs/<run_id>/`. Every file and key of every run folder is described once, in `runs/RUN_FOLDER_GLOSSARY.md` (committed; the rest of `runs/` is gitignored). Update it whenever the job's outputs change; a test checks that it documents every lidar npz key.
 - `renders/test/{rgb,gt-rgb}/*.jpg`: one per test camera pose; file names are frame index + timestamp. (`renders/train/` exists only in runs from before 2026-10-26, which rendered `train+test`.)
 - `renders/test/lidar/<idx>_<ts_ns>.npz`: one per test lidar pose, named exactly like the input sweep `data/intermediate/<session>/lidar/<sensor>/<idx>_<ts_ns>.npy`.

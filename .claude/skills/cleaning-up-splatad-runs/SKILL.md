@@ -6,7 +6,7 @@ description: Use when SplatAD Slurm runs were cancelled (by the user, by Slurm a
 # Cleaning up SplatAD runs
 
 ## Overview
-A run leaves artifacts in three places: `<stage root>/runs/<run_id>/` on the cluster workdisk, its fetched copy `runs/<run_id>/` on your machine, and its row in `runs/submitted.tsv`. `submit_run.py clean` removes all three, for every run that did not succeed, plus any runs you name. Never delete them by hand with `rm -rf`: the command decides from each run's own record and never touches a job that is still queued or running.
+A run leaves artifacts in three places: `<stage root>/runs/<run_id>/` on the cluster workdisk, its fetched copy `runs/<run_id>/` on your machine, and its row in `runs/submitted.tsv`. `submit_run.py clean` removes all three, for every run that did not succeed, plus any runs you name. **Failed runs are cleaned up automatically, without asking the user (standing instruction, 2026-10-29):** as soon as a job has left the queue and its failure is diagnosed and reported, delete it. Never delete by hand with `rm -rf`: the command decides from each run's own record and never touches a job that is still queued or running.
 
 ## What gets deleted
 | run | action |
@@ -24,10 +24,15 @@ The cluster copy of `job_info.txt` decides; the fetched copy is used only when t
    uv run python scripts/slurm/submit_run.py clean                 # cancelled/failed runs only
    uv run python scripts/slurm/submit_run.py clean <run_id> ...    # plus these runs
    ```
-2. **Show the user the `DELETE` lines.** If they are exactly the runs the user asked to remove (cancelled/failed ones, or the runs they named), go to step 3. If the list has a run the user did not expect, ask before deleting. Deletion cannot be undone, and a fetched run may be the only copy of its renders.
+2. **Read the failure first.** The Slurm log and `job_info.txt` die with the run, so diagnose (read the log tail, find the error and the node) and put the cause in your report before step 3.
+   - **Failed, cancelled or incomplete runs the command lists on its own** (no run ids passed): go straight to step 3, no permission needed.
+   - **Exception, do NOT clean: a resumable run** (`job_info.txt` has `train_elapsed_s` and `overfitting_plot: written` but no `end_utc`). It trained fully; follow "Render-step failure after training" in `running-splatad-render-jobs`.
+   - **Ask first** only if the list contains a run the user did not expect, in particular a successful run (one you would only delete because the user named it). Deletion cannot be undone, and a fetched run may be the only copy of its renders.
 3. **Delete:** the same command plus `--yes`. Then report what was deleted and what was kept.
 
 Only pass a successful run's id when the user named that run. An "ERROR: ... scancel it first" means the job is still queued or running: ask the user whether to `scancel` it. Never cancel a job on your own.
+
+In the final report, list the deleted failed runs with the cause of each failure.
 
 ## After deleting
 - `runs/RUN_FOLDER_GLOSSARY.md` and the ledger header stay.

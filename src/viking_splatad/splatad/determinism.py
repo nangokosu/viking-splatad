@@ -9,9 +9,11 @@ are removable and are switched off here; the third is not:
    order, MCMC noise) shifts. One worker runs the sweeps in submission order, so the stream is a
    function of the seed only.
 2. **cuDNN / PyTorch kernel choice (removed).** ``cudnn.benchmark`` autotunes by timing, and some
-   PyTorch ops pick a non-deterministic kernel. ``cudnn.deterministic`` and
-   ``torch.use_deterministic_algorithms`` fix the choice (``warn_only``: an op without a
-   deterministic version warns instead of killing the job).
+   PyTorch ops pick a non-deterministic kernel. ``cudnn.deterministic`` fixes the cuDNN choice.
+   ``torch.use_deterministic_algorithms`` is deliberately NOT called: it routes gsplat's
+   ``v[sampled_idxs] = 0`` (MCMC relocation) through PyTorch's deterministic ``index_put_``, which
+   hits an INTERNAL ASSERT in ``Indexing.cu`` and killed every smoke run at step ~590 (jobs
+   224547/224548); gsplat's ``bincount``/``cumsum`` have no deterministic version anyway.
 3. **CUDA float atomics (NOT removed).** The gsplat/SplatAD backward kernels and the tcnn lidar
    decoder add gradients with ``atomicAdd`` in a hardware-dependent order. Float addition is not
    associative, so runs drift at the last-bit level and MCMC/Adam amplify it. Only a kernel rewrite
@@ -77,8 +79,7 @@ def enable_deterministic_mode() -> None:
     # Switch 1: the lidar cache's pool -> one worker (module attribute is looked up at call time).
     lidar_datamanager = importlib.import_module(LIDAR_DATAMANAGER_MODULE)
     setattr(lidar_datamanager, EXECUTOR_ATTRIBUTE, single_worker_executor)
-    # Switch 2: fixed kernel choice. train.py sets benchmark=True at import; undo it here.
+    # Switch 2: fixed cuDNN kernel choice. train.py sets benchmark=True at import; undo it here.
+    # (No torch.use_deterministic_algorithms: it crashes MCMC relocation, see the module docstring.)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
-    # warn_only: ops without a deterministic implementation warn instead of raising.
-    torch.use_deterministic_algorithms(True, warn_only=True)
