@@ -20,6 +20,7 @@ Plan: `docs/PLAN.md`. SplatAD internals: `docs/research/splatad_extension_points
 3. **Values:** every number is computed, measured or derived from config/data, never hardcoded or guessed. When a hardcoded value is truly unavoidable, a comment justifies it.
 4. **Bash:** simple single or `&&`/`;`-chained commands rather than `for`/`while`/`if` constructs when an equivalent simpler form exists.
 5. **Personal information:** never put an email, name, account ID, cluster username, password or token into repo files or outbound requests (headers, URLs, query strings, bodies). Each user's Slurm login stays on their own machine (see "GPU training on Slurm", step 2). `tests/test_no_personal_info.py` scans tracked files for the running user's own identifiers.
+6. **Machine-specific settings:** never commit settings that only apply to one person's machine (absolute paths such as `additionalDirectories` entries, personal permission allowlist entries, local tool or editor config) unless the user explicitly asks. Keep them uncommitted or in a gitignored local file (e.g. `.claude/settings.local.json`). Before committing a settings file, read its diff and drop the machine-specific lines.
 
 ## Project rules
 1. Every conversion/calibration function is decorated `@transform("T<n>", "<description>")` (see `src/viking_splatad/registry.py`).
