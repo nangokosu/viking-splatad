@@ -17,7 +17,7 @@ Layout under ``root``::
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 import cv2
 import numpy as np
@@ -61,6 +61,39 @@ def _array_to_list(array: Any) -> Any:
         Nested list, or None if ``array`` is None.
     """
     return None if array is None else np.asarray(array).tolist()
+
+
+def _pose_key(sensor_name: str, array_name: str) -> str:
+    """Build the ``poses.npz`` key of one per-sensor array.
+
+    Args:
+        sensor_name: Sensor stream name.
+        array_name: "times" or "poses_world_sensor".
+
+    Returns:
+        ``<sensor_name><POSE_KEY_SEPARATOR><array_name>``.
+    """
+    return f"{sensor_name}{POSE_KEY_SEPARATOR}{array_name}"
+
+
+def _list_frame_files(frame_directory: Path) -> List[Tuple[int, int, Path]]:
+    """List the frame files of one sensor directory, ordered by frame index.
+
+    Files whose name does not match ``FRAME_FILE_PATTERN`` are ignored.
+
+    Args:
+        frame_directory: ``<root>/<kind>/<sensor>`` directory.
+
+    Returns:
+        (frame index, timestamp ns, path) records, sorted by index (then timestamp, then path,
+        which only matters if two files share an index).
+    """
+    # Parse index and timestamp out of each matching file name, then sort the records.
+    return sorted(
+        (int(match.group(1)), int(match.group(2)), path)
+        for path in frame_directory.iterdir()
+        if (match := FRAME_FILE_PATTERN.match(path.name))
+    )
 
 
 def _manifest_dict(dataset: IntermediateDataset) -> Dict[str, Any]:
@@ -161,8 +194,8 @@ def write_dataset(root: Path, dataset: IntermediateDataset) -> None:
     # 2) poses + times, keyed per sensor
     pose_arrays = {}
     for name, stream in dataset.streams.items():
-        pose_arrays[f"{name}{POSE_KEY_SEPARATOR}times"] = stream.times
-        pose_arrays[f"{name}{POSE_KEY_SEPARATOR}poses_world_sensor"] = stream.poses_world_sensor
+        pose_arrays[_pose_key(name, "times")] = stream.times
+        pose_arrays[_pose_key(name, "poses_world_sensor")] = stream.poses_world_sensor
     np.savez(root / "poses.npz", **pose_arrays)
     # 3) frames, one directory per sensor
     for name, stream in dataset.streams.items():
@@ -210,13 +243,7 @@ def read_dataset(root: Path) -> IntermediateDataset:
     streams = {}
     for sensor in manifest["sensors"]:
         name, kind = sensor["name"], sensor["kind"]
-        # Collect (index, timestamp, path) from the file names, ordered by index.
-        frame_files = []
-        for path in (root / kind / name).iterdir():
-            match = FRAME_FILE_PATTERN.match(path.name)
-            if match:
-                frame_files.append((int(match.group(1)), int(match.group(2)), path))
-        frame_files.sort(key=lambda record: record[0])
+        frame_files = _list_frame_files(root / kind / name)
         # Load frame content in index order (cv2.imread yields BGR, matching what was written).
         frames = [
             cv2.imread(str(path)) if kind == "camera" else np.load(path)
@@ -225,8 +252,8 @@ def read_dataset(root: Path) -> IntermediateDataset:
         streams[name] = SensorStream(
             sensor_name=name,
             kind=kind,
-            times=pose_archive[f"{name}{POSE_KEY_SEPARATOR}times"],
-            poses_world_sensor=pose_archive[f"{name}{POSE_KEY_SEPARATOR}poses_world_sensor"],
+            times=pose_archive[_pose_key(name, "times")],
+            poses_world_sensor=pose_archive[_pose_key(name, "poses_world_sensor")],
             frame_indices=np.array([record[0] for record in frame_files], dtype=np.int64),
             frame_timestamps_ns=np.array([record[1] for record in frame_files], dtype=np.int64),
             frames=frames,
@@ -242,11 +269,7 @@ def read_dataset(root: Path) -> IntermediateDataset:
         no_return_directory = root / NO_RETURN_DIRECTORY / sensor["name"]
         if sensor["kind"] != "lidar" or not no_return_directory.is_dir():
             continue
-        no_return_files = sorted(
-            (int(match.group(1)), int(match.group(2)), path)
-            for path in no_return_directory.iterdir()
-            if (match := FRAME_FILE_PATTERN.match(path.name))
-        )
+        no_return_files = _list_frame_files(no_return_directory)
         no_return_streams[sensor["name"]] = NoReturnStream(
             frame_indices=np.array([record[0] for record in no_return_files], dtype=np.int64),
             frame_timestamps_ns=np.array([record[1] for record in no_return_files], dtype=np.int64),

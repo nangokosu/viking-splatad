@@ -208,7 +208,10 @@ if NERFSTUDIO_AVAILABLE:
                 if self.config.test_block_core_fraction != WHOLE_BLOCK_CORE_FRACTION:
                     raise ValueError("test_block_core_fraction < 1 needs test_block_count")
                 return filtered
-            windowed_cameras, windowed_lidars = filtered[0], filtered[2]
+            # Base output order: (cameras, image paths, lidars, sweep paths, trajectories).
+            windowed_cameras, windowed_image_paths = filtered[0], filtered[1]
+            windowed_lidars, windowed_sweep_paths = filtered[2], filtered[3]
+            # float64 copies of the windowed times, flattened per sensor kind, for T60.
             windowed_times = {"camera": windowed_cameras.times.reshape(-1).double().numpy(),
                               "lidar": windowed_lidars.times.reshape(-1).double().numpy()}
             block_positions, block_bounds = middle_block_train_eval_indices(
@@ -222,10 +225,10 @@ if NERFSTUDIO_AVAILABLE:
             # exactly the requested guard frames; train positions are kept as they are.
             if selection_file is not None and self._requested_split in RENDER_SELECTION_SPLIT_NAMES:
                 requested_by_kind = load_render_frame_selection(Path(selection_file))
-                # Frame index of each windowed position, from its file name (filtered[1] images,
-                # filtered[3] sweeps; same order as the windowed cameras / lidars).
-                frame_indices_by_kind = {"camera": frame_indices_of_paths(filtered[1]),
-                                         "lidar": frame_indices_of_paths(filtered[3])}
+                # Frame index of each windowed position, from its file name (paths are in the same
+                # order as the windowed cameras / lidars).
+                frame_indices_by_kind = {"camera": frame_indices_of_paths(windowed_image_paths),
+                                         "lidar": frame_indices_of_paths(windowed_sweep_paths)}
                 for sensor_kind, (train_positions, _) in list(self._block_split_positions.items()):
                     selected_positions = select_guard_frames_for_render(
                         guard_positions_by_kind[sensor_kind], frame_indices_by_kind[sensor_kind],
@@ -315,10 +318,11 @@ if NERFSTUDIO_AVAILABLE:
             # Ego filter from the manifest: sphere radius or box (one of them is the identity).
             model = self._lidar_arrays.model
             point_clouds = []
-            for path in filepaths:
-                sweep = load_lidar_sweep(path, model.min_lidar_radius, model.ego_box_half_extents)
+            for sweep_path in filepaths:
+                sweep = load_lidar_sweep(sweep_path, model.min_lidar_radius, model.ego_box_half_extents)
                 if self.config.add_missing_points:
-                    no_return_path = no_return_path_for_sweep(path)
+                    # Placeholder rows keep the sweep's column count so the concatenation is valid.
+                    no_return_path = no_return_path_for_sweep(sweep_path)
                     if not no_return_path.is_file():
                         raise FileNotFoundError(
                             f"{no_return_path} missing: add_missing_points needs the no-return sidecar "
@@ -331,8 +335,14 @@ if NERFSTUDIO_AVAILABLE:
             return point_clouds
 
         def _add_sensor_velocities(self, cameras, lidars) -> None:
-            """Base velocities, then overwrite rolling-shutter metadata from the manifest."""
+            """Base velocities, then overwrite rolling-shutter metadata from the manifest.
+
+            Args:
+                cameras: Windowed ``Cameras``; its metadata is updated in place.
+                lidars: Windowed ``Lidars`` (base class only).
+            """
             super()._add_sensor_velocities(cameras, lidars)
+            # One (frame_count, 1) column per metadata key, every frame sharing the manifest value.
             frame_count = len(cameras)
             cameras.metadata["rolling_shutter_time"] = torch.full(
                 (frame_count, 1), self._camera_arrays.rolling_shutter_seconds)
@@ -340,7 +350,11 @@ if NERFSTUDIO_AVAILABLE:
                 (frame_count, 1), self._camera_arrays.time_to_center_pixel_seconds)
 
         def _get_actor_trajectories(self) -> List[Dict]:
-            """No actors: cuboids stay out of SplatAD inputs."""
+            """No actors: cuboids stay out of SplatAD inputs (project rule 6).
+
+            Returns:
+                An empty list.
+            """
             return []
 
     # Object neurad's plugin loader expects (it rejects a bare config class).

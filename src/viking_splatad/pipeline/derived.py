@@ -220,8 +220,10 @@ def derive_lidar_parameters(
     # (sweep-length jitter), so the manifest raises it to cover every written sweep (T49).
     longest_point_time = max(float(sample.point_time_seconds.max()) for sample in samples)
     stamp_spacings_ns = np.diff(np.array([sample.stamp_ns for sample in samples], dtype=np.int64))
+    # Drop duplicate or out-of-order stamps; with no positive spacing left (e.g. a single sweep)
+    # the spacing term is 0 and the period falls back to the longest point time.
     stamp_spacings_ns = stamp_spacings_ns[stamp_spacings_ns > 0]
-    median_spacing = (
+    median_spacing_seconds = (
         float(np.median(stamp_spacings_ns)) / NANOSECONDS_PER_SECOND if stamp_spacings_ns.size else 0.0
     )
     return {
@@ -235,5 +237,5 @@ def derive_lidar_parameters(
         "azimuth_resolution_deg": float(azimuth_resolution_deg),
         "azimuth_tile_width": int(azimuth_tile_width),
         "columns_per_ring": columns_per_ring,
-        "sweep_period_seconds": max(median_spacing, longest_point_time),
+        "sweep_period_seconds": max(median_spacing_seconds, longest_point_time),
     }

@@ -91,8 +91,10 @@ def _replace_once(source: str, anchor: str, replacement: str, description: str) 
     Raises:
         PatchError: If the anchor is absent or ambiguous.
     """
-    if source.count(anchor) != 1:
-        raise PatchError(f"anchor for '{description}' found {source.count(anchor)}x, expected 1")
+    # Exactly one hit, so ``str.replace`` cannot touch anything else.
+    anchor_count = source.count(anchor)
+    if anchor_count != 1:
+        raise PatchError(f"anchor for '{description}' found {anchor_count}x, expected 1")
     return source.replace(anchor, replacement)
 
 
@@ -137,17 +139,20 @@ def patch_lidars_source(source: str) -> str:
     # 4) branch in every accessor: cut each function body out and patch its final else.
     for function_name, registry_key in PATCHED_FUNCTIONS:
         function_start = source.index(f"def {function_name}(")
-        # The accessor ends at the next top-level statement (or end of file).
+        # The accessor ends where the next top-level ``def`` begins (two blank lines), or at end of file.
         next_top_level = source.find("\n\n\ndef ", function_start)
         function_end = len(source) if next_top_level == -1 else next_top_level
-        body = source[function_start:function_end]
-        branch = (
+        function_body = source[function_start:function_end]
+        # The new branch returns the registered model's value for this accessor.
+        ouster_branch = (
             "    elif lidar_type == LidarType.OUSTER_OS0_32:\n"
             f'        return _get_registered_lidar_model(lidar_type)["{registry_key}"]\n'
         )
-        source = source[:function_start] + _replace_once(
-            body, ELSE_ANCHOR, branch + ELSE_ANCHOR, f"{function_name} branch"
-        ) + source[function_end:]
+        # Insert the branch before the body's final else, then splice the body back in.
+        patched_body = _replace_once(
+            function_body, ELSE_ANCHOR, ouster_branch + ELSE_ANCHOR, f"{function_name} branch"
+        )
+        source = source[:function_start] + patched_body + source[function_end:]
     return source
 
 
@@ -161,15 +166,21 @@ def apply_to_checkout(neurad_root: Path) -> bool:
         True if the file changed, False if it was already patched.
     """
     lidars_path = Path(neurad_root) / LIDARS_RELATIVE_PATH
-    original = lidars_path.read_text()
-    patched = patch_lidars_source(original)
-    if patched != original:
-        lidars_path.write_text(patched)
-    return patched != original
+    original_source = lidars_path.read_text()
+    patched_source = patch_lidars_source(original_source)
+    # Write only on change, so an already patched file keeps its mtime.
+    changed = patched_source != original_source
+    if changed:
+        lidars_path.write_text(patched_source)
+    return changed
 
 
 def main() -> None:
-    """CLI: ``python -m viking_splatad.splatad.patches.apply_ouster_patch <neurad_root>``."""
+    """CLI: ``python -m viking_splatad.splatad.patches.apply_ouster_patch <neurad_root>``.
+
+    Prints ``patched`` or ``already patched``.
+    """
+    # The module docstring's first line doubles as the CLI description.
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("neurad_root", type=Path)
     arguments = parser.parse_args()
