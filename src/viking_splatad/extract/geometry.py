@@ -46,6 +46,7 @@ def apply_opencv_to_nerfstudio(camera_to_world: np.ndarray) -> np.ndarray:
     Returns:
         Array of the same shape and dtype family with flipped rotation block.
     """
+    # Copy so the caller's array is untouched, then flip the rotation block in place.
     flipped = np.array(camera_to_world, copy=True)
     flipped[:3, :3] = flipped[:3, :3] @ OPENCV_TO_NERFSTUDIO.astype(flipped.dtype)
     return flipped

@@ -88,10 +88,13 @@ def decode_pointcloud2(
         np.frombuffer(data, dtype=point_dtype, count=width, offset=row_index * row_step)
         for row_index in range(height)
     ]
-    structured = np.concatenate(row_arrays) if row_arrays else np.empty(0, dtype=point_dtype)
+    if row_arrays:
+        structured_points = np.concatenate(row_arrays)
+    else:
+        structured_points = np.empty(0, dtype=point_dtype)
     # Step 3: convert each column to native byte order for downstream numpy/torch use.
     return {
-        name: structured[name].astype(structured[name].dtype.newbyteorder("="))
+        name: structured_points[name].astype(structured_points[name].dtype.newbyteorder("="))
         for name in names
     }
 
@@ -159,10 +162,16 @@ def normalise_intensity(
         ValueError: If the derived scale is not positive.
     """
     # Pool all scans so one global scale keeps intensities comparable across scans.
-    all_values = np.concatenate([np.asarray(scan, dtype=np.float64).ravel() for scan in intensity_scans])
+    all_values = np.concatenate(
+        [np.asarray(scan, dtype=np.float64).ravel() for scan in intensity_scans]
+    )
     # NaN/inf must not influence the percentile.
     finite_values = all_values[np.isfinite(all_values)]
-    scale = float(dtype_max) if dtype_max is not None else float(np.percentile(finite_values, percentile))
+    # A known sensor maximum wins; otherwise use the robust data-derived percentile.
+    if dtype_max is not None:
+        scale = float(dtype_max)
+    else:
+        scale = float(np.percentile(finite_values, percentile))
     # `not scale > 0` also rejects NaN.
     if not scale > 0:
         raise ValueError(f"Non-positive intensity scale {scale}")
@@ -172,7 +181,8 @@ def normalise_intensity(
         # Divide by scale, so scale maps to 1.0.
         scaled = np.asarray(scan, dtype=np.float64) / scale
         # Clipped = finite values that fall outside the unit interval.
-        clipped_count += int(np.count_nonzero(np.isfinite(scaled) & ((scaled > 1.0) | (scaled < 0.0))))
+        outside_unit_mask = (scaled > 1.0) | (scaled < 0.0)
+        clipped_count += int(np.count_nonzero(np.isfinite(scaled) & outside_unit_mask))
         normalised_scans.append(np.clip(scaled, 0.0, 1.0).astype(np.float32))
     # Denominator is finite values only, matching how clipped_count is counted.
     total_count = int(finite_values.size)
@@ -200,6 +210,7 @@ def assign_channels(
     Raises:
         ValueError: If a ring is not a key, or neither input is given.
     """
+    # Keys and values share dict order, so equal positions in both refer to the same beam.
     channel_keys = np.array(list(elevation_mapping.keys()), dtype=np.int64)
     # Preferred path: ring ids are already channel keys; validate and pass through.
     if ring is not None:
@@ -213,7 +224,8 @@ def assign_channels(
     channel_elevations = np.array(list(elevation_mapping.values()), dtype=np.float64)
     # Nearest beam: argmin |elevation - beam elevation| over the beam axis.
     # Builds an [n, n_beams] distance matrix: O(n * n_beams) time and memory.
-    distance_to_beams = np.abs(np.asarray(elevation_deg, dtype=np.float64)[:, None] - channel_elevations[None, :])
+    point_elevations = np.asarray(elevation_deg, dtype=np.float64)
+    distance_to_beams = np.abs(point_elevations[:, None] - channel_elevations[None, :])
     return channel_keys[np.argmin(distance_to_beams, axis=1)]
 
 

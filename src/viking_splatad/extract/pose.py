@@ -27,7 +27,12 @@ class Trajectory:
     quaternions_xyzw: np.ndarray
 
     def __post_init__(self) -> None:
-        """Validate shapes and monotonic timestamps; coerce to float64 arrays."""
+        """Coerce fields to float64 arrays and validate count, shapes and monotonic timestamps.
+
+        Raises:
+            ValueError: Fewer than two samples, mismatched shapes, or timestamps not
+                strictly increasing.
+        """
         self.timestamps = np.asarray(self.timestamps, dtype=np.float64)
         self.positions = np.asarray(self.positions, dtype=np.float64)
         self.quaternions_xyzw = np.asarray(self.quaternions_xyzw, dtype=np.float64)
@@ -64,6 +69,7 @@ def interpolate_pose_se3(
     Raises:
         ValueError: If a query is outside the span and extrapolation is not allowed.
     """
+    # Reject (or allow, when extrapolating) queries outside the sampled span.
     query_times = np.atleast_1d(np.asarray(query_times, dtype=np.float64))
     first_time, last_time = trajectory.timestamps[0], trajectory.timestamps[-1]
     out_of_range = (query_times < first_time) | (query_times > last_time)
@@ -80,6 +86,7 @@ def interpolate_pose_se3(
         len(trajectory.timestamps) - 1,
     )
     left_index = right_index - 1
+    # Blend fraction a = (t - t0) / (t1 - t0), in [0, 1] on the bracketing segment.
     segment_duration = trajectory.timestamps[right_index] - trajectory.timestamps[left_index]
     blend_fraction = (clamped_times - trajectory.timestamps[left_index]) / segment_duration
     # Linear translation.
@@ -126,15 +133,17 @@ def compose_tf_chain(edges: Sequence[TfEdge]) -> np.ndarray:
     """
     composed = np.eye(4)
     for edge in edges:
-        edge_matrix = np.eye(4)
-        edge_matrix[:3, :3] = Rotation.from_quat(edge.quaternion_xyzw).as_matrix()
-        edge_matrix[:3, 3] = edge.translation
-        # Rigid inverse is exact and better conditioned than a general inverse.
+        # Step 1: the edge's rotation and translation as float64.
+        edge_rotation = Rotation.from_quat(edge.quaternion_xyzw).as_matrix()
+        edge_translation = np.asarray(edge.translation, dtype=np.float64)
+        # Step 2: rigid inverse [R^T, -R^T t] for inverted edges; exact and better
+        # conditioned than a general 4x4 inverse.
         if edge.invert:
-            rotation_transposed = edge_matrix[:3, :3].T
-            edge_matrix = np.eye(4)
-            edge_matrix[:3, :3] = rotation_transposed
-            edge_matrix[:3, 3] = -rotation_transposed @ np.asarray(edge.translation, dtype=np.float64)
+            edge_rotation, edge_translation = edge_rotation.T, -edge_rotation.T @ edge_translation
+        # Step 3: assemble the homogeneous edge matrix and right-multiply (root -> leaf).
+        edge_matrix = np.eye(4)
+        edge_matrix[:3, :3] = edge_rotation
+        edge_matrix[:3, 3] = edge_translation
         composed = composed @ edge_matrix
     return composed
 
@@ -174,8 +183,10 @@ def check_world_z_up(up_vector_world: np.ndarray, tolerance_radians: float) -> f
     Raises:
         ValueError: If tilt exceeds the tolerance.
     """
+    # Normalise so the dot product below is the cosine of the tilt.
     unit_up = np.asarray(up_vector_world, dtype=np.float64)
     unit_up = unit_up / np.linalg.norm(unit_up)
+    # World +z is fixed by definition: this check tests exactly that convention.
     world_z_axis = np.array([0.0, 0.0, 1.0])
     # Clip guards arccos against rounding just outside [-1, 1].
     tilt_radians = float(np.arccos(np.clip(unit_up @ world_z_axis, -1.0, 1.0)))
