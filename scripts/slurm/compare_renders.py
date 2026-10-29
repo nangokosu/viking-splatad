@@ -99,10 +99,10 @@ def compare_split(split_dir: Path, raw_camera_dir: Optional[Path], sheet_path: P
     # gt-rgb should be the extracted frame up to JPEG re-encoding (high PSNR, ~50 dB);
     # a low value means the dataparser fed SplatAD a different image than we extracted.
     if raw_camera_dir is not None:
-        first_name = rendered_paths[0].name
-        gt_versus_raw = peak_signal_to_noise_ratio(read_image(split_dir / "gt-rgb" / first_name),
-                                                   read_image(raw_camera_dir / first_name))
-        print(f"{split_dir.name}: gt-rgb vs raw extracted frame {first_name}: {gt_versus_raw:.2f} dB")
+        first_frame_name = rendered_paths[0].name
+        gt_versus_raw = peak_signal_to_noise_ratio(read_image(split_dir / "gt-rgb" / first_frame_name),
+                                                   read_image(raw_camera_dir / first_frame_name))
+        print(f"{split_dir.name}: gt-rgb vs raw extracted frame {first_frame_name}: {gt_versus_raw:.2f} dB")
     # Sheet rows: render | real, each at half resolution to keep the file viewable.
     sheet_rows = []
     for frame_index in start_middle_end_indices(len(rendered_paths)):

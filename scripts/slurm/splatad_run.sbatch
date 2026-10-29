@@ -102,7 +102,7 @@ if [ "$RESUMING" = False ]; then
   for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX \
       MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
       DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION \
-    TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES; do
+      TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES; do
     echo "$exported_variable: ${!exported_variable:-}"
   done
   # Recorded only when set, so runs without a profile override keep their old job_info.txt keys.
@@ -133,7 +133,6 @@ assert torch.cuda.is_available(), 'CUDA not available'; \
 print('gpu_check:', torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0)); \
 print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 
-
 # ---- (d) train --------------------------------------------------------------------------
 # --eval-whole-test-blocks True is a constant on purpose: every new run evaluates the whole test
 # stretches during training (old runs lack the field, so they keep the core-only eval).
@@ -151,6 +150,7 @@ print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 # The flag is a variable-length tuple: tyro reads values until the next flag, so another flag must
 # follow it. Directly before viking-data it swallowed the subcommand name (jobs 222980, 222983).
 # A resumed run trained already (its train_* lines are in job_info.txt), so it skips (d) and (d2).
+# The block body stays unindented: tests locate the command as a line starting "ns-train splatad".
 if [ "$RESUMING" = False ]; then
 # A profile's own train fraction must also reach the dataparser as the override: it otherwise
 # resolves the manifest's fraction (T27), and the split would disagree with config.yml (scripts/09).
