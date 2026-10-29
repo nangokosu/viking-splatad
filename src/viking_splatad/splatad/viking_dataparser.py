@@ -28,6 +28,10 @@ from viking_splatad.dataset.run_split import (
     restrict_test_to_block_cores,
     select_guard_frames_for_render,
 )
+from viking_splatad.splatad.determinism import (
+    deterministic_mode_requested,
+    enable_deterministic_mode,
+)
 from viking_splatad.splatad.viking_conversions import (
     OUSTER_LIDAR_TYPE_NAME,
     DatasetView,
@@ -136,6 +140,10 @@ if NERFSTUDIO_AVAILABLE:
             Returns:
                 ``DataparserOutputs`` from ``ADDataParser``.
             """
+            # Reproducibility switches (VIKING_DETERMINISTIC=1, training step only). Here, because the
+            # RNGs are already seeded and the lidar cache has not started (see determinism.py).
+            if deterministic_mode_requested():
+                enable_deterministic_mode()
             # Remember the requester: _filter_based_on_time picks whole blocks or cores from it (T65).
             self._requested_split = split
             session_root = Path(self.config.data) / self.config.session_name

@@ -138,7 +138,12 @@ print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 # stretches during training (old runs lack the field, so they keep the core-only eval).
 # --machine.seed seeds python/numpy/torch (all CUDA devices) before setup (nerfstudio train.py).
 # It does not make training bit-exact: the gsplat/SplatAD and tcnn backward passes accumulate
-# gradients with float atomics, so the same seed gives statistically similar runs only.
+# gradients with float atomics, so the same seed gives runs that agree closely and then drift.
+# The removable sources are switched off (src/viking_splatad/splatad/determinism.py, gated by
+# VIKING_DETERMINISTIC=1): the lidar cache's 2-thread RNG race, cudnn.benchmark, and PyTorch's
+# non-deterministic kernels. PYTHONHASHSEED (Python hash order) and CUBLAS_WORKSPACE_CONFIG
+# (deterministic cuBLAS workspaces; the value is torch's documented one) must be set before the
+# interpreter / CUDA start, so they are exported here, for the training step only.
 # --experiment-name and --timestamp make the output path deterministic:
 # $RUN_DIR/train/$SESSION/splatad/$RUN_ID/{config.yml,nerfstudio_models/step-*.ckpt}
 # --pipeline.calc-fid-steps 99999999 turns off SplatAD's novel-view FIDs (lane/vertical shift, actor
@@ -160,6 +165,7 @@ if [ -n "${TRAIN_SPLIT_FRACTION_OVERRIDE:-}" ]; then
 fi
 TRAIN_START_SECONDS=$(date +%s)
 echo "train_start_epoch_s: $TRAIN_START_SECONDS" >> "$JOB_INFO"
+export VIKING_DETERMINISTIC=1 PYTHONHASHSEED="$TRAIN_SEED" CUBLAS_WORKSPACE_CONFIG=:4096:8
 ns-train splatad \
   --vis tensorboard \
   --output-dir "$RUN_DIR/train" \

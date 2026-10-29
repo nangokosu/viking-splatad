@@ -59,12 +59,14 @@ Re-run the CPU preflight whenever the dataparser, extraction or window changes:
 ## Seed and reproducibility
 `seed` seeds Python, NumPy and torch (all CUDA devices) before setup (nerfstudio `train.py`). It covers Gaussian init, sensor sampling order, random background, and MCMC relocation and noise.
 
-It does **not** make runs bit-identical:
-- the gsplat/SplatAD backward kernels sum gradients with `gpuAtomicAdd`;
-- so does the tcnn lidar decoder;
-- nerfstudio sets `cudnn.benchmark=True`.
+The seed alone does not make runs reproducible. The training step also turns off the removable sources (`src/viking_splatad/splatad/determinism.py`, gated by `VIKING_DETERMINISTIC=1`, which `splatad_run.sbatch` exports for training only; no env rebuild needed):
+- **RNG race in the lidar cache:** neurad's `full_images_lidar_datamanager.py` draws `torch.randperm` from the global generator inside a 2-thread pool, so the draw order (and every later random draw) depended on thread scheduling. The pool now has one worker.
+- **Kernel choice:** `cudnn.benchmark=False`, `cudnn.deterministic=True`, `torch.use_deterministic_algorithms(True, warn_only=True)` (an op without a deterministic version warns, so check the Slurm log for such warnings).
+- **Environment:** `PYTHONHASHSEED=$TRAIN_SEED` and `CUBLAS_WORKSPACE_CONFIG=:4096:8`.
 
-Same seed means statistically similar runs, not identical ones. Compare B vs R with the same seed, and don't read small metric gaps as signal without repeats.
+It still does **not** make runs bit-identical: the gsplat/SplatAD backward kernels and the tcnn lidar decoder sum gradients with `gpuAtomicAdd` in a hardware-dependent order. Expect two same-seed runs to agree closely at first and then drift. Treat the gap between two identical runs as the noise floor when comparing B vs R, and don't read small metric gaps as signal without repeats.
+
+The effect of these switches has not been measured yet: compare two identical smoke runs before relying on it. Runs from before the switches (up to job 224505) had the race.
 
 ## Train/test split record (successful runs only)
 **The split has no randomness, and the seed does not affect it.** SplatAD keeps the frames inside the time window (`DATASET_START/END_FRACTION`, over camera and lidar times together, inclusive). Then the test set is K contiguous time blocks, the same for camera and lidar, centred at k/(K+1) of the window, each (1−f)/K of it long (T60, `VikingHillDataParser.test_block_count`). K is the session config's `split.test_block_count` (2), exported as `TEST_BLOCK_COUNT`. f is the manifest's `session.train_fraction` (0.9) unless overridden. Runs from before T60 used neurad's per-sensor linspace split instead (every ~10th frame).
