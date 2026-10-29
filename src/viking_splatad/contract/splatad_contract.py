@@ -54,15 +54,27 @@ class ContractReport:
 
     @property
     def passed(self) -> bool:
-        """True when every check passed."""
+        """Overall verdict.
+
+        Returns:
+            True when every check passed (vacuously True for an empty report).
+        """
         return all(result.passed for result in self.results)
 
     def failed_check_names(self) -> List[str]:
-        """Names of failed checks, in execution order."""
+        """List the failed checks.
+
+        Returns:
+            Names of failed checks, in execution order.
+        """
         return [result.name for result in self.results if not result.passed]
 
     def to_markdown(self) -> str:
-        """Render the report as a Markdown table with an overall verdict."""
+        """Render the report as a Markdown table with an overall verdict.
+
+        Returns:
+            Markdown text: a verdict heading, then one table row per check, newline-terminated.
+        """
         lines = [
             f"# SplatAD contract report: {'PASS' if self.passed else 'FAIL'}",
             "",
@@ -88,7 +100,7 @@ def _result(name: str, problems: List[str]) -> CheckResult:
     return CheckResult(name, not problems, "ok" if not problems else "; ".join(problems))
 
 
-def _lidar_streams(dataset: IntermediateDataset):
+def _lidar_streams(dataset: IntermediateDataset) -> list:
     """Select lidar streams.
 
     Args:
@@ -129,15 +141,18 @@ def check_poses(dataset: IntermediateDataset) -> CheckResult:
     problems = []
     for name, stream in dataset.streams.items():
         poses = stream.poses_world_sensor
+        # Step 1: shape. A homogeneous rigid transform is 4x4 by definition.
         if poses.ndim != 3 or poses.shape[1:] != (4, 4):
             problems.append(f"{name}: pose shape {poses.shape} is not [N,4,4]")
             continue
+        # Step 2: count. Interpolating motion needs at least two poses (SplatAD requirement).
         if poses.shape[0] < 2:
             problems.append(f"{name}: {poses.shape[0]} poses (<2)")
-        # The 3x4 float32 pose block must stay finite after the cast.
+        # Step 3: finiteness. The 3x4 float32 pose block must stay finite after the cast.
         as_float32 = poses[:, :3, :].astype(np.float32)
         if not (np.isfinite(poses).all() and np.isfinite(as_float32).all()):
             problems.append(f"{name}: non-finite pose values")
+        # Step 4: the last row of a homogeneous rigid transform is [0, 0, 0, 1] by definition.
         elif not np.allclose(poses[:, 3, :], [0.0, 0.0, 0.0, 1.0]):
             problems.append(f"{name}: last pose row is not [0,0,0,1]")
     return _result("poses_finite_and_count", problems)
@@ -238,6 +253,7 @@ def check_times(dataset: IntermediateDataset) -> CheckResult:
     problems = []
     for name, stream in dataset.streams.items():
         times = stream.times
+        # Checked in order; only the first failing property is reported per sensor.
         if times.dtype != np.float64:
             problems.append(f"{name}: times dtype {times.dtype}")
         elif not np.isfinite(times).all():
@@ -403,11 +419,12 @@ def check_azimuth_tiles(dataset: IntermediateDataset) -> CheckResult:
     problems = []
     # Number of azimuth bins around a full turn: B = 2*pi / resolution.
     bin_count = 2.0 * np.pi / lidar.azimuth_resolution
+    nearest_bin_count = np.rint(bin_count)
     # Integrality is checked first; only then is divisibility by the tile width meaningful.
-    if not np.isclose(bin_count, np.rint(bin_count), rtol=AZIMUTH_INTEGER_RTOL, atol=0.0):
+    if not np.isclose(bin_count, nearest_bin_count, rtol=AZIMUTH_INTEGER_RTOL, atol=0.0):
         problems.append(f"2*pi/resolution = {bin_count} is not an integer")
-    elif int(np.rint(bin_count)) % lidar.azimuth_tile_width != 0:
-        problems.append(f"{int(np.rint(bin_count))} bins not divisible by tile width {lidar.azimuth_tile_width}")
+    elif int(nearest_bin_count) % lidar.azimuth_tile_width != 0:
+        problems.append(f"{int(nearest_bin_count)} bins not divisible by tile width {lidar.azimuth_tile_width}")
     return _result("azimuth_tile_integral", problems)
 
 
@@ -442,18 +459,20 @@ def check_no_returns(dataset: IntermediateDataset) -> CheckResult:
                 "(indices/stamps differ)"
             )
             continue
-        # Step 2: content of each file.
+        # Step 2: content of each file (layout, finiteness, then per-column bounds).
         for frame_number, rows in enumerate(no_return_stream.frames):
             label = f"{name}[{frame_number}]"
             if rows.dtype != np.float32 or rows.ndim != 2 or rows.shape[1] != NO_RETURN_ROW_WIDTH:
                 problems.append(f"{label}: {rows.dtype} {rows.shape}")
                 continue
+            # An empty file (a sweep with no no-return cell) is valid and has nothing to bound.
             if rows.shape[0] == 0:
                 continue
             values = rows.astype(np.float64)
             if not np.isfinite(values).all():
                 problems.append(f"{label}: non-finite values")
                 continue
+            # Directions must be unit vectors: | ||d|| - 1 | within float32 round-off.
             norms = np.linalg.norm(values[:, NO_RETURN_DIRECTION_COLUMNS], axis=1)
             if np.abs(norms - 1.0).max() > NO_RETURN_UNIT_NORM_TOLERANCE:
                 problems.append(f"{label}: direction not unit length")
@@ -461,6 +480,7 @@ def check_no_returns(dataset: IntermediateDataset) -> CheckResult:
                 problems.append(f"{label}: |t| > sweep period")
             if not np.isin(values[:, NO_RETURN_CHANNEL_COLUMN], valid_channels).all():
                 problems.append(f"{label}: channel not in elevation mapping")
+            # Azimuth cell columns must be integers in [0, columns_per_ring).
             cell_columns = values[:, NO_RETURN_CELL_COLUMN]
             if not (np.all(cell_columns == np.rint(cell_columns)) and cell_columns.min() >= 0
                     and cell_columns.max() < columns_per_ring):

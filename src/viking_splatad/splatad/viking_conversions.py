@@ -331,6 +331,33 @@ def _stack_with_first_axis(arrays: List[np.ndarray], empty_shape: tuple, dtype) 
     return np.concatenate(arrays, axis=0) if arrays else np.zeros(empty_shape, dtype=dtype)
 
 
+def _sensor_stream(
+    view: DatasetView, sensor_name: str, frame_label: str
+) -> Tuple[np.ndarray, np.ndarray, List[Path]]:
+    """Fetch one sensor's poses, times and frame paths and check they have equal length.
+
+    Args:
+        view: Dataset view.
+        sensor_name: Stream name.
+        frame_label: Plural noun for the frames in the error message ("images", "sweeps").
+
+    Returns:
+        ``(poses [N,4,4], times [N], frame paths [N])``.
+
+    Raises:
+        KeyError: If the sensor is not in the dataset.
+        ValueError: If the three counts differ.
+    """
+    poses = view.sensor_poses[sensor_name]
+    times = view.sensor_times[sensor_name]
+    paths = view.sensor_frame_paths[sensor_name]
+    if not (len(poses) == len(times) == len(paths)):
+        raise ValueError(
+            f"{sensor_name}: {len(poses)} poses, {len(times)} times, {len(paths)} {frame_label}"
+        )
+    return poses, times, paths
+
+
 @transform(
     "T27",
     "Dataset -> neurad-studio sensor arrays: OPENCV_TO_NERFSTUDIO flip once, int sizes, "
@@ -374,14 +401,7 @@ def build_sensor_arrays(
         "c2w", "times", "fx", "fy", "cx", "cy", "width", "height", "sensor_index", "paths")}
     readout_seconds = 0.0
     for camera_index, camera_name in enumerate(camera_names):
-        poses, times, paths = (
-            view.sensor_poses[camera_name], view.sensor_times[camera_name],
-            view.sensor_frame_paths[camera_name],
-        )
-        if not (len(poses) == len(times) == len(paths)):
-            raise ValueError(
-                f"{camera_name}: {len(poses)} poses, {len(times)} times, {len(paths)} images"
-            )
+        poses, times, paths = _sensor_stream(view, camera_name, "images")
         intrinsics = manifest["cameras"][camera_name]
         frame_count = len(times)
         # Flip each OpenCV-axes pose to nerfstudio axes, keep the top 3x4 block as float32.
@@ -389,8 +409,8 @@ def build_sensor_arrays(
         per_camera["c2w"].append(flipped[:, :3, :].astype(np.float32))
         per_camera["times"].append(times)
         # Intrinsics are per camera (images are pre-undistorted), repeated per image.
-        for key, field_name in (("fx", "fx"), ("fy", "fy"), ("cx", "cx"), ("cy", "cy")):
-            per_camera[key].append(np.full(frame_count, intrinsics[field_name], dtype=np.float32))
+        for intrinsic_key in ("fx", "fy", "cx", "cy"):
+            per_camera[intrinsic_key].append(np.full(frame_count, intrinsics[intrinsic_key], dtype=np.float32))
         per_camera["width"].append(np.full(frame_count, int(intrinsics["width"]), dtype=np.int32))
         per_camera["height"].append(np.full(frame_count, int(intrinsics["height"]), dtype=np.int32))
         per_camera["sensor_index"].append(np.full((frame_count, 1), camera_index, dtype=np.int32))
@@ -417,14 +437,7 @@ def build_sensor_arrays(
     # ---- lidars ----
     per_lidar = {key: [] for key in ("l2w", "times", "sensor_index", "paths")}
     for lidar_index, lidar_name in enumerate(lidar_names):
-        poses, times, paths = (
-            view.sensor_poses[lidar_name], view.sensor_times[lidar_name],
-            view.sensor_frame_paths[lidar_name],
-        )
-        if not (len(poses) == len(times) == len(paths)):
-            raise ValueError(
-                f"{lidar_name}: {len(poses)} poses, {len(times)} times, {len(paths)} sweeps"
-            )
+        poses, times, paths = _sensor_stream(view, lidar_name, "sweeps")
         # Lidar frame is x-forward, y-left, z-up, which neurad uses as is: no axis flip.
         per_lidar["l2w"].append(poses[:, :3, :].astype(np.float32))
         per_lidar["times"].append(times)
@@ -450,4 +463,5 @@ def resolve_train_fraction(view: DatasetView, override: Optional[float]) -> floa
     Returns:
         Train fraction in (0, 1].
     """
+    # None means "no override", so the session's recorded fraction applies.
     return float(view.manifest["session"]["train_fraction"] if override is None else override)
