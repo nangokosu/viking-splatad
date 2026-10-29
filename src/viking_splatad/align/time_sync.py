@@ -66,12 +66,19 @@ def estimate_time_offset(
     grid_times = np.arange(grid_start, grid_stop + grid_step, grid_step)
 
     def resample_zero_mean(sample_times: np.ndarray, sample_values: np.ndarray) -> np.ndarray:
-        """Linear-resample onto the grid, remove the in-support mean, zero outside support."""
+        """Linear-resample onto the grid, remove the in-support mean, zero outside support.
+
+        Args:
+            sample_times: [K] float64 seconds of one stream, increasing.
+            sample_values: [K] signal values at ``sample_times``.
+
+        Returns:
+            [G] values on ``grid_times``: zero-mean inside the stream's span, 0 outside it.
+        """
         resampled = np.interp(grid_times, sample_times, sample_values)
         inside_support = (grid_times >= sample_times[0]) & (grid_times <= sample_times[-1])
         # Zero-mean inside the support so DC does not dominate the correlation.
-        resampled = np.where(inside_support, resampled - resampled[inside_support].mean(), 0.0)
-        return resampled
+        return np.where(inside_support, resampled - resampled[inside_support].mean(), 0.0)
 
     grid_a = resample_zero_mean(times_a, values_a)
     grid_b = resample_zero_mean(times_b, values_b)
@@ -99,6 +106,7 @@ def estimate_time_offset(
         if curvature_denominator != 0.0:
             fractional_lag = 0.5 * (left - right) / curvature_denominator
 
+    # Offset = refined lag x grid step; confidence = peak height above the window's typical |corr|.
     offset_seconds = float((lag_samples[peak_index] + fractional_lag) * grid_step)
     confidence = float(
         correlation[peak_index] - np.median(np.abs(correlation[window_indices]))

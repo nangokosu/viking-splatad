@@ -39,7 +39,7 @@ def eval_interval_for_minimum_points(max_num_iterations: int, minimum_eval_point
         The interval k (>= 1).
 
     Raises:
-        ValueError: If N - 1 < P, i.e. even k = 1 cannot give P evals.
+        ValueError: If P < 1, or N - 1 < P (even k = 1 cannot give P evals).
     """
     # Step 1: usable eval steps are 1..N-1.
     usable_steps = max_num_iterations - 1
@@ -97,12 +97,14 @@ def pair_metric_tags(scalar_tags: Iterable[str]) -> List[MetricPanel]:
     for metric in test_metrics:
         if metric in NON_QUALITY_METRICS:
             continue
-        # Step 2: attach the train tag when the run logged one.
+        # Step 2: attach the train tag when the run logged one, and group the panel by that.
         train_tag = TRAIN_METRIC_PREFIX + metric
-        panel = MetricPanel(
-            metric, train_tag if train_tag in tag_set else None, TEST_METRIC_PREFIX + metric
-        )
-        (panels_paired if panel.train_tag else panels_test_only).append(panel)
+        test_tag = TEST_METRIC_PREFIX + metric
+        if train_tag in tag_set:
+            panels_paired.append(MetricPanel(metric, train_tag, test_tag))
+        else:
+            panels_test_only.append(MetricPanel(metric, None, test_tag))
+    # Step 3: paired panels first, then test-only ones (each already sorted by metric).
     return panels_paired + panels_test_only
 
 
@@ -147,12 +149,15 @@ def rolling_median(values: np.ndarray, window: int) -> np.ndarray:
 def reduced_resolution_end_step(resolution_schedule: int, num_downscales: int) -> int:
     """Step where training reaches full resolution: schedule x number of downscales.
 
+    The image downscale factor is 2^max(D - floor(step / S), 0), which first reaches 1 at
+    step = S * D.
+
     Args:
-        resolution_schedule: Steps per downscale level.
-        num_downscales: Number of downscale levels.
+        resolution_schedule: Steps per downscale level S.
+        num_downscales: Number of downscale levels D.
 
     Returns:
-        Last step of the reduced-resolution phase (end of the shaded region).
+        First full-resolution step; the shaded reduced-resolution region is [0, this step).
     """
     return resolution_schedule * num_downscales
 

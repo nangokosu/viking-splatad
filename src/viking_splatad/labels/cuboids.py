@@ -86,7 +86,8 @@ def _looks_like_cuboid_list(candidate: Any) -> bool:
         candidate: Any JSON node.
 
     Returns:
-        Whether every element is a dict with ``position`` and ``dimensions``.
+        Whether it is a non-empty list whose every element is a dict with
+        ``position`` and ``dimensions``.
     """
     return (
         isinstance(candidate, list)
@@ -105,11 +106,15 @@ def _collect_annotation_lists(node: Any, path: str, found: List[Tuple[str, list]
         node: Current JSON node.
         path: Slash-joined keys/indices leading to ``node``.
         found: Output list, appended in document order.
+
+    Returns:
+        None; results are appended to ``found``.
     """
     # A matching list is a leaf of the search: do not descend into annotations.
     if _looks_like_cuboid_list(node):
         found.append((path, node))
         return
+    # Otherwise descend into containers, extending the path with each key or index.
     if isinstance(node, dict):
         for key, child in node.items():
             _collect_annotation_lists(child, f"{path}/{key}", found)
@@ -130,8 +135,9 @@ def find_annotation_list(
     candidate, e.g. ``dataset/samples/0/labels/ground-truth/attributes/annotations``,
     ``annotations`` or the document itself being the list. Candidates are filtered
     to paths containing ``labelset_name`` (when any do) and ``sample_key`` (e.g.
-    ``"5cm_map_2024_05_dense.ply"``; matched against the path or the enclosing
-    ``name`` fields' path text). Exactly one candidate must remain.
+    ``"5cm_map_2024_05_dense.ply"``; matched as a substring of the path, or, if no
+    path matches, of the ``name`` field of any ancestor dict). Exactly one candidate
+    must remain.
 
     Args:
         document: Parsed JSON.
@@ -153,16 +159,17 @@ def find_annotation_list(
         )
     # Prefer candidates under the requested labelset, but stay tolerant if absent.
     if labelset_name is not None:
-        in_labelset = [item for item in candidates if f"/{labelset_name}" in item[0]]
+        in_labelset = [(path, annotations) for path, annotations in candidates if f"/{labelset_name}" in path]
         if in_labelset:
             candidates = in_labelset
     # Sample selection: the key may be a dict key on the path or a sample "name".
     if sample_key is not None:
-        selected = [item for item in candidates if sample_key in item[0]]
+        selected = [(path, annotations) for path, annotations in candidates if sample_key in path]
         if not selected:
             selected = [
-                item for item in candidates
-                if _path_has_name(document, item[0], sample_key)
+                (path, annotations)
+                for path, annotations in candidates
+                if _path_has_name(document, path, sample_key)
             ]
         candidates = selected
     if len(candidates) != 1:
@@ -185,14 +192,16 @@ def _path_has_name(document: Any, path: str, name_fragment: str) -> bool:
         True if some ancestor's ``name`` string contains ``name_fragment``.
     """
     node = document
-    # Path starts with "/" so the first split element is empty.
-    for step in path.split("/")[1:]:
+    # Walk from the root along the path; the path starts with "/", so the first
+    # split element is empty and is skipped.
+    for path_step in path.split("/")[1:]:
         if isinstance(node, dict):
+            # Check this ancestor's name before stepping into its child.
             if isinstance(node.get("name"), str) and name_fragment in node["name"]:
                 return True
-            node = node[step]
+            node = node[path_step]
         elif isinstance(node, list):
-            node = node[int(step)]
+            node = node[int(path_step)]
     return False
 
 
@@ -209,14 +218,17 @@ def _quaternion_from_annotation(annotation: dict) -> Tuple[float, float, float, 
     """
     rotation = annotation.get("rotation")
     if rotation is not None:
-        raw = np.array([rotation["qx"], rotation["qy"], rotation["qz"], rotation["qw"]], dtype=np.float64)
+        raw_quaternion = np.array(
+            [rotation["qx"], rotation["qy"], rotation["qz"], rotation["qw"]], dtype=np.float64
+        )
     else:
-        # Yaw-only: axis-angle about z gives (0, 0, sin(yaw/2), cos(yaw/2)).
+        # Yaw-only: axis-angle about z gives (0, 0, sin(yaw/2), cos(yaw/2)); a
+        # missing yaw means no rotation.
         yaw = float(annotation.get("yaw", 0.0))
-        raw = np.array([0.0, 0.0, np.sin(yaw / 2.0), np.cos(yaw / 2.0)])
+        raw_quaternion = np.array([0.0, 0.0, np.sin(yaw / 2.0), np.cos(yaw / 2.0)])
     # Normalise so rotation-matrix conversion is exactly orthonormal.
-    unit = raw / np.linalg.norm(raw)
-    return tuple(float(component) for component in unit)
+    unit_quaternion = raw_quaternion / np.linalg.norm(raw_quaternion)
+    return tuple(float(component) for component in unit_quaternion)
 
 
 @transform("T29", "Parse Segments.ai cuboid JSON into typed Cuboid dataclasses")
@@ -242,6 +254,7 @@ def parse_cuboids(
     """
     name_table = DEFAULT_CLASS_NAMES if class_names is None else class_names
     annotations = find_annotation_list(document, labelset_name, sample_key)
+    # Convert each annotation in document order.
     cuboids: List[Cuboid] = []
     for annotation in annotations:
         # Only cuboids are boxes; other annotation types (if any) are ignored.
@@ -276,8 +289,9 @@ def quaternion_to_rotation_matrix(quaternion_xyzw: Iterable[float]) -> np.ndarra
     Returns:
         (3, 3) float64 rotation matrix.
     """
-    quat = np.asarray(list(quaternion_xyzw), dtype=np.float64)
-    qx, qy, qz, qw = quat / np.linalg.norm(quat)
+    quaternion = np.asarray(list(quaternion_xyzw), dtype=np.float64)
+    # Renormalise, then unpack the standard component names (qx, qy, qz, qw).
+    qx, qy, qz, qw = quaternion / np.linalg.norm(quaternion)
     # Rows of the standard unit-quaternion rotation matrix; diagonal terms use
     # 1 - 2(sum of the other two squared components), valid since |q| = 1.
     return np.array(
