@@ -1,5 +1,12 @@
 {
   "enabledPlugins": {
-    "superpowers@claude-plugins-official": true
+    "superpowers@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(gh pr create --title 'Enable code-review and code-simplifier plugins' --body ' *)"
+    ]
   }
 }
