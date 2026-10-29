@@ -891,7 +891,8 @@ def write_remote_file(ssh_target: str, remote_path: str, file_text: str) -> None
 
 
 def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, time_limit: str,
-                         job_name: str, output_path: str, job_script_path: str) -> List[str]:
+                         job_name: str, output_path: str, job_script_path: str,
+                         excluded_nodes: Sequence[str] = ()) -> List[str]:
     """Build the submission command: ``sbatch <resources> <generated job script>``.
 
     Job variables are not on this command: they are exported inside the job script
@@ -907,6 +908,7 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
         job_name: --job-name value.
         output_path: --output path (may contain %j).
         job_script_path: Remote path of the generated job script (``build_job_script``).
+        excluded_nodes: Node names Slurm must not use (``--exclude``); empty = no restriction.
 
     Returns:
         Argument list ``["sbatch", <resources>..., job_script_path]``.
@@ -919,7 +921,8 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
         raise ValueError(f"time limit {time_limit} exceeds the 5-day cluster maximum")
     if cpus <= 0 or memory_gb <= 0:
         raise ValueError(f"cpus ({cpus}) and memory_gb ({memory_gb}) must be positive")
-    # Step 2: assemble the arguments.
+    # Step 2: assemble the arguments; --exclude takes one comma-separated node list.
+    exclude_arguments = [f"--exclude={','.join(excluded_nodes)}"] if excluded_nodes else []
     return [
         "sbatch",
         f"--partition={partition}",
@@ -929,6 +932,7 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
         "-t", time_limit,
         f"--job-name={job_name}",
         f"--output={output_path}",
+        *exclude_arguments,
         job_script_path,
     ]
 
@@ -1438,7 +1442,8 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
         time_limit=str(config["env_build"]["time_limit"]), job_name="splatad-build-env",
-        output_path=f"{log_dir}/{env_name}-%j.out", job_script_path=job_script_path)
+        output_path=f"{log_dir}/{env_name}-%j.out", job_script_path=job_script_path,
+        excluded_nodes=config.get("excluded_nodes", ()))
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
     print(f"submitted environment build job {job_id} -> {env_name} ({cpus} CPUs, {memory_gb}G)\n"
           f"log: {log_dir}/{env_name}-{job_id}.out")
@@ -1505,7 +1510,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=job_gres, cpus=cpus, memory_gb=memory_gb,
         time_limit=str(profile_settings["time_limit"]), job_name=f"splatad-{session}",
-        output_path=f"{remote_run_dir}/slurm-%j.out", job_script_path=job_script_path)
+        output_path=f"{remote_run_dir}/slurm-%j.out", job_script_path=job_script_path,
+        excluded_nodes=config.get("excluded_nodes", ()))
     # Step 5: submit.
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
     print(f"submitted job {job_id}  run {run_id}  ({job_gres}, {cpus} CPUs, {memory_gb}G)")
@@ -1628,7 +1634,8 @@ def submit_render(config: Dict[str, Any], run_id: str, camera_frames_text: str, 
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=job_gres, cpus=cpus, memory_gb=memory_gb,
         time_limit=str(time_limit), job_name=f"splatad-render-{session}",
-        output_path=f"{remote_rerender_dir}/slurm-%j.out", job_script_path=job_script_path)
+        output_path=f"{remote_rerender_dir}/slurm-%j.out", job_script_path=job_script_path,
+        excluded_nodes=config.get("excluded_nodes", ()))
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
     print(f"submitted render job {job_id} run {run_id} label {rerender_label} ({job_gres}, {cpus} CPUs, "
           f"{memory_gb}G)")
@@ -1774,7 +1781,8 @@ def resume_run(config: Dict[str, Any], run_id: str, skip_gates: bool) -> str:
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
         time_limit=str(time_limit), job_name=f"splatad-resume-{run_session}",
-        output_path=f"{remote_run_dir}/slurm-%j.out", job_script_path=job_script_path)
+        output_path=f"{remote_run_dir}/slurm-%j.out", job_script_path=job_script_path,
+        excluded_nodes=config.get("excluded_nodes", ()))
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
     print(f"submitted resume job {job_id} run {run_id} (code {git_sha[:SHORT_SHA_LENGTH]})")
     return job_id

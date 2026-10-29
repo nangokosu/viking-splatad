@@ -554,3 +554,19 @@ def test_sbatch_passes_seed_and_renders_lidar_for_the_same_poses():
     lidar_step_text = sbatch_text[sbatch_text.index('python "$CODE_DIR/scripts/08_render_lidar_pointcloud.py"'):]
     assert '--pose-source "$RENDER_POSE_SOURCE"' in lidar_step_text.split("\n\n")[0]
     assert '--dataset-dir "$STAGE_ROOT/data/$SESSION"' in lidar_step_text.split("\n\n")[0]
+
+
+def test_build_sbatch_command_excludes_nodes_only_when_given():
+    """No excluded nodes -> no --exclude flag; two nodes -> one comma-separated --exclude flag."""
+    submit_module = load_submit_module()
+    base_arguments = dict(
+        partition="gpunodes", gres="gpu:rtx_a4500:1", cpus=A6000_NODE_CPUS, memory_gb=EXAMPLE_MEMORY_GB,
+        time_limit="0-01:00:00", job_name="splatad-example", output_path="/stage/runs/r/slurm-%j.out",
+        job_script_path="/stage/runs/r/job.sbatch")
+    # Default: nothing excluded.
+    unrestricted = submit_module.build_sbatch_command(**base_arguments)
+    assert not any(argument.startswith("--exclude") for argument in unrestricted)
+    # Two nodes: a single flag with both names, placed before the job script (sbatch's last argument).
+    restricted = submit_module.build_sbatch_command(**base_arguments, excluded_nodes=["gpunode16", "gpunode99"])
+    assert restricted.count("--exclude=gpunode16,gpunode99") == 1
+    assert restricted[-1] == "/stage/runs/r/job.sbatch"

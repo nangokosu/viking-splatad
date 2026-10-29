@@ -18,6 +18,13 @@ partition: gpunodes
 # report 8.6 (render job on 2026-10-27, job_info.txt gpu_check: NVIDIA RTX A4500 (8, 6)).
 gres: gpu:rtx_a6000:1
 
+# Nodes Slurm must never use for any job (sbatch --exclude). gpunode16 (RTX A4500) killed three
+# runs at their first training iteration with a CUDA index-out-of-bounds assert in the lidar
+# raster step (jobs 224504, 224537, 224538, 2026-10-29), while the identical code and data ran
+# on gpunode29. Remove the entry once CS Lab has fixed the node.
+excluded_nodes:
+  - gpunode16
+
 # Fraction of the matching node's RAM requested with --mem. "Most of its RAM": the remaining
 # 10% is headroom for the OS, the Slurm daemon and the page cache, so the job is not
 # OOM-killed or the node marked unhealthy when it asks for every last MB.
