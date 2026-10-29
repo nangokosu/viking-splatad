@@ -1165,9 +1165,11 @@ def run_gates(session: str) -> None:
     untracked_paths = check_clean_tree()
     if untracked_paths:
         print("untracked (allowed, not staged):\n  " + "\n  ".join(untracked_paths))
-    # Step 2: unit tests.
-    if run_command(["uv", "run", "pytest", "-q"], capture_output=False).returncode != 0:
-        raise GateFailure("uv run pytest -q failed")
+    # Step 2: unit tests, always in the reference image (CLAUDE.md, Project rules 9), so no torch or
+    # neurad test is skipped; the wrapper's default command is the full suite.
+    test_wrapper_path = str(PROJECT_ROOT / "scripts" / "test_in_image.sh")
+    if run_command([test_wrapper_path], capture_output=False).returncode != 0:
+        raise GateFailure("scripts/test_in_image.sh (full suite in the image) failed")
     # Step 3: SplatAD input contract on the dataset to be staged.
     dataset_dir = PROJECT_ROOT / "data" / "intermediate" / session
     contract_command = ["uv", "run", "python", "scripts/06_validate_contract.py",

@@ -13,6 +13,8 @@ import sys
 
 # Command prefixes the agent is allowed to run (matched against the start of the first pipe stage).
 ALLOWED_COMMAND_PATTERNS = [
+    # The wrapper mounts the repo read-only, so it cannot write into the tree.
+    r"^scripts/test_in_image\.sh\b",
     r"^uv run (python )?scripts/affected_tests\.py\b",
     r"^uv run pytest\b",
     r"^uv run python -m pytest\b",

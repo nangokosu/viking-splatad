@@ -170,7 +170,7 @@ def test_gates_allow_untracked_and_run_tests_and_contract(monkeypatch):
 
     monkeypatch.setattr(submit_module, "run_command", fake_run_command)
     submit_module.run_gates("example_session")
-    assert issued_commands[1] == ["uv", "run", "pytest", "-q"]
+    assert issued_commands[1] == [str(submit_module.PROJECT_ROOT / "scripts" / "test_in_image.sh")]
     assert "scripts/06_validate_contract.py" in issued_commands[2]
     assert issued_commands[2][-1].endswith("data/intermediate/example_session")
 

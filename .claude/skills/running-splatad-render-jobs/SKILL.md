@@ -39,7 +39,7 @@ git status                                   # commit first; untracked .DS_Store
 uv run python scripts/slurm/submit_run.py stage  --session <session>     # code/<sha> + data to the workdisk
 uv run python scripts/slurm/submit_run.py submit --session <session> --profile smoke
 ```
-- `submit` re-runs the gates (pytest, contract, clean tree) and prints `submitted job <job> run <run_id>`. The run is also logged in `runs/submitted.tsv`.
+- `submit` re-runs the gates (the full test suite in the reference image via `scripts/test_in_image.sh`, contract, clean tree; Docker and the image must be present) and prints `submitted job <job> run <run_id>`. The run is also logged in `runs/submitted.tsv`.
 - Then wait for the job, and fetch it automatically if it succeeded (see "Fetch").
 - If sbatch says `Unable to open file .../code/<sha>/...`, you forgot `stage` after committing.
 - A `src/` change follows the test workflow in `CLAUDE.md`/`AGENTS.md` before you commit: new tests only; Claude Code runs the `transform-test-runner` subagent, other agents run `uv run python scripts/affected_tests.py --run`.
@@ -67,7 +67,7 @@ The seed alone does not make runs reproducible. The training step also turns off
 
 It still does **not** make runs bit-identical: the gsplat/SplatAD backward kernels and the tcnn lidar decoder sum gradients with `gpuAtomicAdd` in a hardware-dependent order. Expect two same-seed runs to agree closely at first and then drift. Treat the gap between two identical runs as the noise floor when comparing B vs R, and don't read small metric gaps as signal without repeats.
 
-The effect of these switches has not been measured yet: compare two identical smoke runs before relying on it. Runs from before the switches (up to job 224505) had the race.
+We accept any variability that comes from SplatAD's own implementation (no kernel changes), on the same node or across nodes. Runs from before the switches (up to job 224505) had the race.
 
 ## Train/test split record (successful runs only)
 **The split has no randomness, and the seed does not affect it.** SplatAD keeps the frames inside the time window (`DATASET_START/END_FRACTION`, over camera and lidar times together, inclusive). Then the test set is K contiguous time blocks, the same for camera and lidar, centred at k/(K+1) of the window, each (1−f)/K of it long (T60, `VikingHillDataParser.test_block_count`). K is the session config's `split.test_block_count` (2), exported as `TEST_BLOCK_COUNT`. f is the manifest's `session.train_fraction` (0.9) unless overridden. Runs from before T60 used neurad's per-sensor linspace split instead (every ~10th frame).
