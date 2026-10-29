@@ -133,6 +133,13 @@ profiles:
     # Its peak GPU memory and RSS tell whether full runs could fit an A4500 too.
     <<: *smoke_profile
     gres: gpu:rtx_a4500:1
+  smoke_a4500_same_node:
+    # smoke_a4500 pinned to one node (user's request 2026-10-29): a diagnostic pair that separates
+    # run-to-run noise (atomicAdd order) from node-to-node differences. Never use it for real runs:
+    # reproducibility must hold across nodes. One GPU per node, so a pair runs one after the other.
+    <<: *smoke_profile
+    gres: gpu:rtx_a4500:1
+    nodelist: [gpunode21]
   may_scene_a:
     # Goal: the full May Scene A model (CLAUDE.md scope: chunks 7-9 of may_short_grass, low grass),
     # trained with stock SplatAD and checked on the held-out T60 blocks.

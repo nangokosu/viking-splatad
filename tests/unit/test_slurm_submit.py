@@ -570,3 +570,19 @@ def test_build_sbatch_command_excludes_nodes_only_when_given():
     restricted = submit_module.build_sbatch_command(**base_arguments, excluded_nodes=["gpunode16", "gpunode99"])
     assert restricted.count("--exclude=gpunode16,gpunode99") == 1
     assert restricted[-1] == "/stage/runs/r/job.sbatch"
+
+
+def test_build_sbatch_command_pins_nodes_only_when_given():
+    """No nodelist -> no --nodelist flag; two nodes -> one comma-separated flag before the job script."""
+    submit_module = load_submit_module()
+    base_arguments = dict(
+        partition="gpunodes", gres="gpu:rtx_a4500:1", cpus=A6000_NODE_CPUS, memory_gb=EXAMPLE_MEMORY_GB,
+        time_limit="0-01:00:00", job_name="splatad-example", output_path="/stage/runs/r/slurm-%j.out",
+        job_script_path="/stage/runs/r/job.sbatch")
+    # Default: any node.
+    unpinned = submit_module.build_sbatch_command(**base_arguments)
+    assert not any(argument.startswith("--nodelist") for argument in unpinned)
+    # Two nodes: a single flag with both names, placed before sbatch's last argument (the job script).
+    pinned = submit_module.build_sbatch_command(**base_arguments, nodelist=["gpunode21", "gpunode22"])
+    assert pinned.count("--nodelist=gpunode21,gpunode22") == 1
+    assert pinned[-1] == "/stage/runs/r/job.sbatch"
