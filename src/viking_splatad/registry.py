@@ -56,6 +56,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # Rendered lidar npz -> points (eval/rendered_pointcloud.py): ungated (accumulation) points
         # rebuilt from the ray raster, and lidar-frame points -> map frame -> GT voxel grid.
         "T67", "T68",
+        # FiftyOne viewer (viz/viewer_export.py): GT cuboid quaternion -> FiftyOne Euler rotation,
+        # and sweep points -> map frame for display.
+        "T69", "T70",
     }
 )
 
