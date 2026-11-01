@@ -23,10 +23,12 @@
 #                          config.yml records the fraction the dataparser actually uses; the
 #                          profile's train_fraction instead, when it sets one)
 #   TEST_BLOCK_COUNT  (the session config's split.test_block_count: the test set is that many
-#                      contiguous time blocks shared by camera and lidar, T60; recorded in config.yml)
+#                      contiguous time blocks shared by camera and lidar, T60; recorded in config.yml;
+#                      ignored by the dataparser when TEST_SPLIT_METHOD is shared_interleaved)
 #   TEST_BLOCK_CORE_FRACTION  (the session config's split.test_block_core_fraction: only the central
 #                              fraction of each block is the test split, T62; the rest is guard,
-#                              neither trained on nor rendered; recorded in config.yml)
+#                              neither trained on nor rendered; recorded in config.yml; ignored
+#                              with shared_interleaved)
 #   MINIMUM_EVAL_POINTS  (the profile's minimum number of whole-stretch evals per run)
 #   STEPS_PER_EVAL_ALL_IMAGES  (the eval interval k = (N-1)//MINIMUM_EVAL_POINTS, T63, derived by
 #                               submit_run.py; ns-train --steps-per-eval-all-images)
@@ -34,6 +36,13 @@
 #   TRAIN_SPLIT_FRACTION_OVERRIDE  (set only when the profile has its own train_fraction; equal to
 #                                   TRAIN_SPLIT_FRACTION, passed as --train-split-fraction-override so
 #                                   the dataparser splits with it instead of the manifest's value, T27)
+#   TEST_SPLIT_METHOD  (the session config's split.method; set by submit_run.py for every new run.
+#                       shared_interleaved = every ~1/(1-f)-th lidar sweep and the camera frames
+#                       nearest it are held out, T71; middle_blocks = the T60 blocks. Unset = the
+#                       dataparser decides from TEST_BLOCK_COUNT, as for runs before the variable)
+#   TEST_RENDER_FRACTION  (the profile's or session's test_render_fraction; set by submit_run.py for
+#                          every new run: an evenly spaced fraction of the held-out instants is the
+#                          test split, rendered; the rest is guard, T72. Unset = 1.0)
 #   RESUME_AFTER_TRAINING  (True only for `submit_run.py resume`: the run trained and plotted its
 #                           curves, but a later step failed; this job reruns the steps after training
 #                           in the same run dir with the code at RESUME_GIT_SHA (CODE_DIR), appending
@@ -109,6 +118,13 @@ if [ "$RESUMING" = False ]; then
   if [ -n "${TRAIN_SPLIT_FRACTION_OVERRIDE:-}" ]; then
     echo "TRAIN_SPLIT_FRACTION_OVERRIDE: $TRAIN_SPLIT_FRACTION_OVERRIDE"
   fi
+  # Likewise the split method and render fraction (scripts/09 checks them against config.yml).
+  if [ -n "${TEST_SPLIT_METHOD:-}" ]; then
+    echo "TEST_SPLIT_METHOD: $TEST_SPLIT_METHOD"
+  fi
+  if [ -n "${TEST_RENDER_FRACTION:-}" ]; then
+    echo "TEST_RENDER_FRACTION: $TEST_RENDER_FRACTION"
+  fi
   echo "environment build:"; sed 's/^/  /' "$ENV_PREFIX/.build-complete"
   echo "gpu (name, compute_cap, memory.total, driver_version):"
   nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv,noheader
@@ -134,8 +150,9 @@ print('gpu_check:', torch.cuda.get_device_name(0), torch.cuda.get_device_capabil
 print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 
 # ---- (d) train --------------------------------------------------------------------------
-# --eval-whole-test-blocks True is a constant on purpose: every new run evaluates the whole test
-# stretches during training (old runs lack the field, so they keep the core-only eval).
+# --eval-whole-test-blocks True is a constant on purpose: every new run evaluates every held-out
+# frame during training (whole T60 stretches, or every T71 instant incl. guard; old runs lack the
+# field, so they keep the core-only eval).
 # --machine.seed seeds python/numpy/torch (all CUDA devices) before setup (nerfstudio train.py).
 # It does not make training bit-exact: the gsplat/SplatAD and tcnn backward passes accumulate
 # gradients with float atomics, so the same seed gives runs that agree closely and then drift.
@@ -163,6 +180,14 @@ TRAIN_FRACTION_OVERRIDE_ARGS=()
 if [ -n "${TRAIN_SPLIT_FRACTION_OVERRIDE:-}" ]; then
   TRAIN_FRACTION_OVERRIDE_ARGS=(--train-split-fraction-override "$TRAIN_SPLIT_FRACTION_OVERRIDE")
 fi
+# The split method (T71) and render subset (T72) reach the dataparser only when submit_run.py set them.
+TEST_SPLIT_ARGS=()
+if [ -n "${TEST_SPLIT_METHOD:-}" ]; then
+  TEST_SPLIT_ARGS+=(--test-split-method "$TEST_SPLIT_METHOD")
+fi
+if [ -n "${TEST_RENDER_FRACTION:-}" ]; then
+  TEST_SPLIT_ARGS+=(--test-render-fraction "$TEST_RENDER_FRACTION")
+fi
 TRAIN_START_SECONDS=$(date +%s)
 echo "train_start_epoch_s: $TRAIN_START_SECONDS" >> "$JOB_INFO"
 export VIKING_DETERMINISTIC=1 PYTHONHASHSEED="$TRAIN_SEED" CUBLAS_WORKSPACE_CONFIG=:4096:8
@@ -183,6 +208,7 @@ ns-train splatad \
   ${TRAIN_FRACTION_OVERRIDE_ARGS[@]+"${TRAIN_FRACTION_OVERRIDE_ARGS[@]}"} \
   --test-block-count "$TEST_BLOCK_COUNT" \
   --test-block-core-fraction "$TEST_BLOCK_CORE_FRACTION" \
+  ${TEST_SPLIT_ARGS[@]+"${TEST_SPLIT_ARGS[@]}"} \
   --eval-whole-test-blocks True
 TRAIN_END_SECONDS=$(date +%s)
 {

@@ -1,7 +1,8 @@
 """Prepare render configs for a run's checkpoint, and check render-only jobs (render_only.sbatch).
 
-A render-only job renders guard frames (T62: inside a T60 test block, outside its core; never trained
-on, never rendered by the run) from the run's checkpoint. Neither subcommand that writes a config
+A render-only job renders guard frames (T62: inside a T60 test block, outside its core; or T72: a
+T71 held-out instant outside the render subset; never trained on, never rendered by the run) from
+the run's checkpoint. Neither subcommand that writes a config
 ever edits the run's own config.yml:
 
     write-config      copies the run's config.yml into the rerender folder with the dataparser's
@@ -57,6 +58,11 @@ RENDER_FOLDERS_BY_KIND = {"camera": (("rgb", ".jpg"), ("gt-rgb", ".jpg")), "lida
 # T62 core fraction meaning "the whole block is test" (dataset/run_split.py WHOLE_BLOCK_CORE_FRACTION;
 # repeated so this script needs no package import): such a run has no guard frames to render.
 WHOLE_BLOCK_CORE_FRACTION = 1.0
+# T72 render fraction meaning "every held-out frame is rendered" (run_split.py WHOLE_TEST_RENDER_FRACTION);
+# a shared interleaved run with it has no guard frames either.
+WHOLE_TEST_RENDER_FRACTION = 1.0
+# test_split_method of the T71 shared interleaved split (run_split.py SHARED_INTERLEAVED_SPLIT_METHOD).
+SHARED_INTERLEAVED_SPLIT_METHOD = "shared_interleaved"
 # check exit codes (module docstring).
 EXIT_MATCH = 0
 EXIT_MISMATCH = 1
@@ -77,16 +83,26 @@ def set_render_frame_selection(trainer_config: Any, selection_path: Path) -> Any
         The same config object, with ``render_frame_selection_file`` set.
 
     Raises:
-        ValueError: If the dataparser has no test blocks or a core fraction of 1 (no guard frames).
+        ValueError: If the run has no guard frames: a shared interleaved run with a render fraction
+            of 1, or a block run without test blocks or with a core fraction of 1.
     """
     dataparser_config = trainer_config.pipeline.datamanager.dataparser
     # Step 1: refuse a run without guard frames here, before the job loads a model (getattr: configs
-    # saved before T60/T62 lack the fields; their class defaults are None and 1.0).
-    test_block_count = getattr(dataparser_config, "test_block_count", None)
-    core_fraction = getattr(dataparser_config, "test_block_core_fraction", WHOLE_BLOCK_CORE_FRACTION)
-    if test_block_count is None or core_fraction == WHOLE_BLOCK_CORE_FRACTION:
-        raise ValueError(f"run config has no guard frames (test_block_count {test_block_count}, "
-                         f"test_block_core_fraction {core_fraction}); nothing to re-render")
+    # saved before T60/T62/T71 lack the fields; their class defaults are None, 1.0, None and 1.0).
+    test_split_method = getattr(dataparser_config, "test_split_method", None)
+    if test_split_method == SHARED_INTERLEAVED_SPLIT_METHOD:
+        # T72: the held-out instants not in the render subset are the guard frames.
+        render_fraction = getattr(dataparser_config, "test_render_fraction", WHOLE_TEST_RENDER_FRACTION)
+        if render_fraction == WHOLE_TEST_RENDER_FRACTION:
+            raise ValueError(f"run config has no guard frames ({test_split_method}, test_render_fraction "
+                             f"{render_fraction}); nothing to re-render")
+    else:
+        # T62: the parts of the T60 blocks outside their cores are the guard frames.
+        test_block_count = getattr(dataparser_config, "test_block_count", None)
+        core_fraction = getattr(dataparser_config, "test_block_core_fraction", WHOLE_BLOCK_CORE_FRACTION)
+        if test_block_count is None or core_fraction == WHOLE_BLOCK_CORE_FRACTION:
+            raise ValueError(f"run config has no guard frames (test_block_count {test_block_count}, "
+                             f"test_block_core_fraction {core_fraction}); nothing to re-render")
     # Step 2: the one edit; every other field (output_dir, timestamp, ...) still names the run.
     dataparser_config.render_frame_selection_file = Path(selection_path)
     return trainer_config

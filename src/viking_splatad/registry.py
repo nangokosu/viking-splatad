@@ -59,6 +59,10 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # FiftyOne viewer (viz/viewer_export.py): GT cuboid quaternion -> FiftyOne Euler rotation,
         # and sweep points -> map frame for display.
         "T69", "T70",
+        # Shared interleaved split (dataset/run_split.py, VikingHillDataParser.test_split_method):
+        # every ~1/(1-f)-th lidar sweep is test and every sensor holds out the same instants (T71);
+        # only an evenly spaced fraction of those is rendered test, the rest is guard (T72).
+        "T71", "T72",
     }
 )
 

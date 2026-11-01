@@ -98,11 +98,14 @@ profiles:
     # here, so this profile overrides both (user's choice 2026-10-27; profile_split_fractions):
     window_start_seconds: 52
     window_seconds: 15
-    # 80/20: two T60 test blocks of 15 s x (1 - 0.8) / 2 = 1.5 s (~15 frames at ~10 Hz) each.
+    # 80/20: with the sessions' shared_interleaved split, every 1/(1 - 0.8) = 5th sweep (and the
+    # camera frame nearest it) is held out: ~30 of ~150 frames per sensor (T71).
     # Passed to the dataparser as --train-split-fraction-override (T27).
     train_fraction: 0.8
-    # Render the central 20% of each block: 0.2 x 1.5 s = 0.3 s, ~3 frames per block per sensor,
-    # ~6 rendered test frames each for camera and lidar; the other 80% of each block is guard.
+    # Render an evenly spaced 20% of the held-out instants: ~6 test frames each for camera and
+    # lidar; the other ~24 held-out frames per sensor are guard (T72).
+    test_render_fraction: 0.2
+    # middle_blocks only (unused with shared_interleaved): the central 20% of each T60 test block.
     test_block_core_fraction: 0.2
     # ~120 training frames (80% of ~150) x ~25 visits each = 3000 iterations (one image per iteration):
     # enough for a recognisable fit, a tenth of SplatAD's stock 30001.
@@ -119,7 +122,7 @@ profiles:
     # Conservative cap, far under the 5-day limit, for 3k iterations plus loading and the render.
     # Refine from the measured train/render timings in job_info.txt and `sacct` Elapsed.
     time_limit: "0-02:00:00"
-    # Render only the held-out views (the T62 cores of the test blocks): they expose wrong geometry
+    # Render only the held-out views (the T72 render subset of the held-out instants): they expose wrong geometry
     # that training views can hide by memorising, and training views are not re-rendered, which
     # keeps the data copied back to the Mac small (user's choice 2026-10-26).
     render_pose_source: test
@@ -142,7 +145,7 @@ profiles:
     nodelist: [gpunode21]
   may_scene_a:
     # Goal: the full May Scene A model (CLAUDE.md scope: chunks 7-9 of may_short_grass, low grass),
-    # trained with stock SplatAD and checked on the held-out T60 blocks.
+    # trained with stock SplatAD and checked on the held-out instants (the sessions' split.method).
     # No window_start_seconds / window_seconds: the whole extracted recording (~241 s), since the
     # session config already cuts it to Scene A (start/end fraction 0.0 / 1.0).
     # 20001 (last step 20000), not SplatAD's stock 30001: user's choice 2026-10-27 from the first full
@@ -165,7 +168,7 @@ profiles:
     # 20001 take ~2.7 h; the after-training render took ~9 min. 6 h leaves ~2x headroom, far under the
     # 5-day limit.
     time_limit: "0-06:00:00"
-    # Render only the test frames (the T62 cores of the two T60 held-out blocks), for the held-out
+    # Render only the test frames (the T72 render subset of the T71 held-out instants), for the held-out
     # metrics in renders/test/lidar_metrics.json and for viewing. Training views are not
     # re-rendered, so far less is copied back to the Mac (user's choice 2026-10-26).
     render_pose_source: test
@@ -190,7 +193,7 @@ profiles:
     # As May: same iteration count on a slightly smaller recording (2153 vs 2401 camera frames),
     # so May's ~2.7 h (measured, scaled to 20001) is an upper bound; 6 h leaves ~2x headroom.
     time_limit: "0-06:00:00"
-    # As May: render only the T62 test cores (21 camera frames, 22 lidar sweeps for June).
+    # As May: render only the T72 render subset (~22 of June's ~216 held-out sweeps, and the camera frames nearest them).
     render_pose_source: test
     # As May: full resolution.
     render_downscale_factor: 1

@@ -1,8 +1,9 @@
 #!/bin/bash
 # Render-only job: guard frames of a finished SplatAD run, from its checkpoint, on one GPU node.
 #
-# A run renders only its T62 test cores; the rest of each T60 test block is guard (split "guard" in
-# the run's split.json): never trained on, never rendered. This job renders the guard frames that
+# A run renders only part of its held-out frames: the T62 cores of its T60 test blocks, or the T72
+# subset of its T71 shared interleaved instants. The rest is guard (split "guard" in the run's
+# split.json): never trained on, never rendered. This job renders the guard frames that
 # `submit_run.py render` validated against that split.json and wrote to selection.json. No training.
 #
 # Code: the job runs the code at GIT_SHA (staged code/<sha>, normally newer than the run), with the

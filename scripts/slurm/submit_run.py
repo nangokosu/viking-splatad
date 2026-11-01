@@ -127,6 +127,13 @@ RERENDER_LABEL_PREFIX = "render"
 # Split name of guard frames in a run's split.json (dataset/run_split.py GUARD_SPLIT_NAME; repeated
 # here because this script runs without importing the package). Only these may be re-rendered.
 GUARD_SPLIT_NAME = "guard"
+# split.method values (dataset/run_split.py TEST_SPLIT_METHODS; repeated for the same reason): T60
+# contiguous middle blocks, or T71 instants shared by every sensor.
+MIDDLE_BLOCKS_SPLIT_METHOD = "middle_blocks"
+SHARED_INTERLEAVED_SPLIT_METHOD = "shared_interleaved"
+TEST_SPLIT_METHODS = (MIDDLE_BLOCKS_SPLIT_METHOD, SHARED_INTERLEAVED_SPLIT_METHOD)
+# T72 render fraction meaning "render every held-out frame" (run_split.py WHOLE_TEST_RENDER_FRACTION).
+WHOLE_TEST_RENDER_FRACTION = 1.0
 # Fewest camera frames a render-only job accepts. Not a tunable: `ns-render dataset` names each output
 # relative to os.path.commonpath of the split's image files (nerfstudio render.py ~998-1013); for a
 # single file that path is the file itself, so `relative_to` raises (smoke job 222946 crashed so).
@@ -614,6 +621,74 @@ def session_test_block_core_fraction(session: str, intermediate_root: Path = INT
     return float(core_fraction)
 
 
+def session_test_split_method(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                              session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> Optional[str]:
+    """``split.method`` of the session config a dataset was extracted with.
+
+    Passed to viking-data as ``--test-split-method``: ``shared_interleaved`` holds out every
+    ~1/(1-f)-th lidar sweep and the camera frames nearest it (T71); ``middle_blocks`` is the T60
+    contiguous blocks. config.yml records it for ns-render, scripts/08 and scripts/09.
+
+    Args:
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        The method, or None when the session config has no ``split.method`` (the dataparser then
+        picks middle_blocks from the block count, as before the key existed).
+
+    Raises:
+        FileNotFoundError: If the session config does not exist.
+        ValueError: If the value is not one of ``TEST_SPLIT_METHODS``.
+    """
+    session_name, session_config = load_dataset_session_config(session, intermediate_root, session_config_directory)
+    split_method = session_config.get("split", {}).get("method")
+    if split_method is not None and split_method not in TEST_SPLIT_METHODS:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: split.method must be one of {TEST_SPLIT_METHODS}, "
+                         f"got {split_method!r}")
+    return split_method
+
+
+def profile_test_render_fraction(profile_settings: Dict[str, Any], session: str,
+                                 intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                                 session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> float:
+    """The run's T72 render fraction: the profile's ``test_render_fraction``, else the session's.
+
+    Passed to viking-data as ``--test-render-fraction``: an evenly spaced fraction r of the held-out
+    instants is the test split (rendered and fetched); the other held-out frames are guard.
+
+    Args:
+        profile_settings: The chosen ``profiles.<name>`` mapping.
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        r in (0, 1]; 1.0 when neither sets it (every held-out frame is rendered).
+
+    Raises:
+        FileNotFoundError: If the session config does not exist.
+        ValueError: If a value is not a number in (0, 1], or r < 1 for a session whose split
+            method is not shared_interleaved (it would have no held-out instants to subset).
+    """
+    # Step 1: the profile's value wins; else the session config's; else render every held-out frame.
+    session_name, session_config = load_dataset_session_config(session, intermediate_root, session_config_directory)
+    render_fraction = profile_settings.get("test_render_fraction")
+    value_source = "profile test_render_fraction"
+    if render_fraction is None:
+        render_fraction = session_config.get("split", {}).get("test_render_fraction", WHOLE_TEST_RENDER_FRACTION)
+        value_source = f"configs/sessions/{session_name}.yaml: split.test_render_fraction"
+    # Step 2: only a real number in (0, 1] (no bools or strings coerced).
+    if not is_unit_interval_fraction(render_fraction):
+        raise ValueError(f"{value_source} must be a number in (0, 1], got {render_fraction!r}")
+    # Step 3: a subset needs the shared interleaved split; refuse it before a GPU is queued.
+    split_method = session_test_split_method(session, intermediate_root, session_config_directory)
+    if render_fraction != WHOLE_TEST_RENDER_FRACTION and split_method != SHARED_INTERLEAVED_SPLIT_METHOD:
+        raise ValueError(f"{value_source} {render_fraction} < 1 needs split.method {SHARED_INTERLEAVED_SPLIT_METHOD}")
+    return float(render_fraction)
+
+
 def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
                                session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> bool:
     """``splatad.add_missing_points`` of the session config a dataset was extracted with.
@@ -709,9 +784,13 @@ def profile_split_fractions(profile_settings: Dict[str, Any], session: str,
     else:
         train_fraction = train_fraction_override
         # K blocks of (1 - f)/K each, centred at k/(K+1), stay apart only if f > 1/(K+1) (T60);
-        # refuse here, before a GPU is queued, rather than in the dataparser.
-        test_block_count = session_test_block_count(session, intermediate_root, session_config_directory)
-        if not train_fraction > 1 / (test_block_count + 1):
+        # refuse here, before a GPU is queued, rather than in the dataparser. The shared interleaved
+        # split (T71) has no blocks, so any f in (0, 1] is valid for it.
+        uses_blocks = session_test_split_method(
+            session, intermediate_root, session_config_directory) != SHARED_INTERLEAVED_SPLIT_METHOD
+        test_block_count = (session_test_block_count(session, intermediate_root, session_config_directory)
+                            if uses_blocks else None)
+        if uses_blocks and not train_fraction > 1 / (test_block_count + 1):
             raise ValueError(f"profile train_fraction {train_fraction} must exceed 1/(K+1) = "
                              f"{1 / (test_block_count + 1)} for K = {test_block_count} test blocks")
     # Step 3: the core fraction: the profile's, else the session config's.
@@ -774,6 +853,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
                           train_split_fraction_override: Optional[float] = None,
                           test_block_count: Optional[int] = None,
                           test_block_core_fraction: Optional[float] = None,
+                          test_split_method: Optional[str] = None,
+                          test_render_fraction: Optional[float] = None,
                           minimum_eval_points: Optional[int] = None,
                           steps_per_eval_all_images: Optional[int] = None) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
@@ -797,6 +878,10 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
             as TEST_BLOCK_COUNT. Same rule as ``add_missing_points``: None leaves it out.
         test_block_core_fraction: The session's core fraction (``session_test_block_core_fraction``),
             exported as TEST_BLOCK_CORE_FRACTION. Same rule as ``add_missing_points``: None leaves it out.
+        test_split_method: The session's split method (``session_test_split_method``), exported as
+            TEST_SPLIT_METHOD. None leaves it out (the dataparser then decides from the block count).
+        test_render_fraction: The run's render fraction (``profile_test_render_fraction``), exported
+            as TEST_RENDER_FRACTION. None leaves it out (the dataparser default, 1.0, applies).
         minimum_eval_points: The profile's minimum eval count (``profile_eval_cadence``), exported as
             MINIMUM_EVAL_POINTS. Same rule as ``add_missing_points``: None leaves it out.
         steps_per_eval_all_images: The derived eval interval (``profile_eval_cadence``), exported as
@@ -843,6 +928,11 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
     # repr keeps every digit, so config.yml and job_info.txt hold the same float.
     if test_block_core_fraction is not None:
         job_environment["TEST_BLOCK_CORE_FRACTION"] = repr(float(test_block_core_fraction))
+    if test_split_method is not None:
+        job_environment["TEST_SPLIT_METHOD"] = str(test_split_method)
+    # repr keeps every digit, so config.yml and job_info.txt hold the same float.
+    if test_render_fraction is not None:
+        job_environment["TEST_RENDER_FRACTION"] = repr(float(test_render_fraction))
     if minimum_eval_points is not None:
         job_environment["MINIMUM_EVAL_POINTS"] = str(int(minimum_eval_points))
     if steps_per_eval_all_images is not None:
@@ -1501,6 +1591,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     minimum_eval_points, steps_per_eval_all_images = profile_eval_cadence(profile_settings)
     # The split fractions too (profile overrides, else the dataset's), so a bad value fails early.
     train_fraction, train_fraction_override, core_fraction = profile_split_fractions(profile_settings, session)
+    test_split_method = session_test_split_method(session)
+    render_fraction = profile_test_render_fraction(profile_settings, session)
     # And the GPU type (the profile's gres, else the default).
     job_gres = resolve_job_gres(config, profile_settings)
     ssh_target = resolve_ssh_target(config["ssh_host"])
@@ -1524,6 +1616,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
                               train_split_fraction_override=train_fraction_override,
                               test_block_count=session_test_block_count(session),
                               test_block_core_fraction=core_fraction,
+                              test_split_method=test_split_method,
+                              test_render_fraction=render_fraction,
                               minimum_eval_points=minimum_eval_points,
                               steps_per_eval_all_images=steps_per_eval_all_images),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))

@@ -88,22 +88,30 @@ radar:
   fields: [x, y, z, power, doppler]
 
 split:
-  # Fraction of the windowed frames used for training; the rest are test.
+  # Fraction of the windowed frames used for training; the rest are held out.
   train_fraction: 0.9
-  # Test set = this many contiguous time blocks, the same for camera and lidar, centred at
-  # k/(K+1) of the run's window (T60; user's choice 2026-10-26: two middle stretches). It
-  # replaces neurad's interleaved split, whose test frames sit 0.1 s from a train frame (an
-  # interpolation-only check). Each block holds (1 - train_fraction)/K of the window; blocks stay
-  # apart only if train_fraction > 1/(K+1). Read by scripts/slurm/submit_run.py
-  # (TEST_BLOCK_COUNT -> viking-data --test-block-count).
+  # How the held-out frames are chosen (user's choice 2026-11-01, replacing middle_blocks):
+  #   shared_interleaved: the standard 3DGS hold-out, every X-th frame with X = 1/(1 - train_fraction)
+  #     (10 here). The instants are taken from the lidar (every ~10th sweep, neurad's LINSPACE, T71)
+  #     and the camera holds out the frame nearest each of those sweeps, so a held-out instant is
+  #     never trained on by any sensor. Test frames sit 0.1 s from a training frame: an
+  #     interpolation check, like 3DGS's own evaluation.
+  #   middle_blocks: two contiguous test stretches (T60, the test_block_* keys below).
+  # Read by scripts/slurm/submit_run.py (TEST_SPLIT_METHOD -> viking-data --test-split-method).
+  method: shared_interleaved
+  # Only an evenly spaced 10% of the held-out instants is the test split, rendered and fetched (T72);
+  # the other 90% are guard: never trained on, not rendered (re-renderable later, T66). This keeps
+  # the copy back to the Mac at the old size: whole May recording, ~241 held-out sweeps, ~25 rendered.
+  # The eval during training uses every held-out frame (T65).
+  # Read by scripts/slurm/submit_run.py (TEST_RENDER_FRACTION -> viking-data --test-render-fraction).
+  test_render_fraction: 0.1
+  # middle_blocks parameters, unused with shared_interleaved (the dataparser ignores them then; they
+  # are still exported as TEST_BLOCK_COUNT / TEST_BLOCK_CORE_FRACTION and recorded in config.yml).
+  # Test set = this many contiguous time blocks, the same for camera and lidar, centred at k/(K+1)
+  # of the run's window (T60; user's choice 2026-10-26). Blocks stay apart only if
+  # train_fraction > 1/(K+1).
   test_block_count: 2
-  # Only the central 10% of each test block is the test split, rendered and fetched (T62; user's
-  # choice 2026-10-26: test renders only, the middle 10% of both test stretches, to cut what is
-  # copied back to the Mac). The other 90% of each block is guard: still never trained on (train is
-  # unchanged), not rendered. It also puts 45% of a block of time between test frames and the
-  # nearest train frame. Whole May recording: ~1.2 s per stretch, 22 camera frames, 24 lidar sweeps.
-  # The cores are the rendered set only: the eval during training uses the whole blocks (T65).
-  # Read by scripts/slurm/submit_run.py (TEST_BLOCK_CORE_FRACTION -> viking-data --test-block-core-fraction).
+  # Central fraction of each test block that is the rendered test split (T62); the rest is guard.
   test_block_core_fraction: 0.1
 
 splatad:

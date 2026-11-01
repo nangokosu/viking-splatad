@@ -6,7 +6,7 @@ description: Use when submitting render-only jobs for an existing successful Spl
 # Rendering more frames from a finished run's checkpoint
 
 ## Overview
-A run renders only its **test** split, the T62 cores (full May run: 22 camera frames, 24 lidar sweeps). The rest of each T60 test block is **guard**: never trained on, never rendered. `submit_run.py render` submits `scripts/slurm/render_only.sbatch`, which renders chosen guard frames from the run's own `config.yml` and latest checkpoint. There is no training. Outputs go to `<stage root>/runs/<run_id>/rerenders/<label>/`.
+A run renders only its **test** split: an evenly spaced 10% of its held-out instants (T72; full May run: 25 camera frames, 25 lidar sweeps). The other held-out frames are **guard**: never trained on, never rendered. (Block runs from before 2026-11-01: the test split is the T62 cores and the guard the rest of each T60 block.) `submit_run.py render` submits `scripts/slurm/render_only.sbatch`, which renders chosen guard frames from the run's own `config.yml` and latest checkpoint. There is no training. Outputs go to `<stage root>/runs/<run_id>/rerenders/<label>/`.
 
 How it works:
 1. `submit_run.py render` checks every index against the run's `split.json`, then writes `selection.json` and `job.sbatch` into the rerender folder.
@@ -22,7 +22,7 @@ python -c "import json; frames = json.load(open('runs/<run_id>/split.json'))['fr
 # On the cluster (no fetch needed):
 ssh comps0.cs.toronto.edu "python3 -c \"import json; frames = json.load(open('/w/20262/\$USER/viking-splatad/runs/<run_id>/split.json'))['frames']; [print(kind, [f['frame_index'] for f in frames if f['kind'] == kind and f['split'] == 'guard']) for kind in ('camera', 'lidar')]\""
 ```
-Full May run: camera 217 guard frames, lidar 216. Each block is [guard | core | guard]: the core indices (e.g. camera 795–806) are `test`, not guard.
+Full May run: camera 216 guard frames, lidar 216. Held-out instants are every 10th sweep; every 10th of those (e.g. lidar 10, 110, 210, …) is `test`, not guard, and the 9 held-out instants between two of them are guard.
 
 ## Prerequisites
 | need | check |
@@ -49,7 +49,7 @@ uv run python scripts/slurm/submit_run.py render <run_id> --camera-frames <guard
 |---|---|
 | `--camera-frames` and `--lidar-sweeps` are both required and non-empty | the job always renders both kinds |
 | at least **2** camera frames | `ns-render dataset` names outputs relative to `os.path.commonpath` of the split's images. For one image that is the file itself, so `relative_to` raises (render.py ~998–1013, smoke job 222946) |
-| every index is a guard frame of that kind | train frames were fitted, and core frames are already in `renders/test/`. The error lists each offender with its actual split (`train`, `test` or `absent`) |
+| every index is a guard frame of that kind | train frames were fitted, and test frames (render subset or cores) are already in `renders/test/`. The error lists each offender with its actual split (`train`, `test` or `absent`) |
 | list syntax `795,797-800` | inclusive ranges, sorted and deduplicated; no negatives, no reversed ranges |
 
 ## Wait, then check
