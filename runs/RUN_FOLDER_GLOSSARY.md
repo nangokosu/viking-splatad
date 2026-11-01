@@ -114,7 +114,7 @@ Exit codes: 0 written, 1 inconsistent (renders or fractions disagree), 2 run inc
 | `split_render_check` | `match` when `split.json` was written; `FAILED (exit N)` when the job stopped instead (1 = renders or fractions disagree, 2 = outputs missing). Then there is no `end_utc` and no `split.json`. |
 
 ## Overfitting curves (`overfitting/`)
-Made by `scripts/11_plot_overfitting_curves.py` from the TensorBoard log, right after training. The eval during training uses split `val` = the whole T60 test stretches (T65), not the T62 cores the renders use. Cadence is `STEPS_PER_EVAL_ALL_IMAGES` (T63).
+Made by `scripts/11_plot_overfitting_curves.py` from the TensorBoard log, right after training. The eval during training uses split `val` = every held-out frame (T65): test + guard. Shared interleaved runs (T71): all held-out instants, not only the T72 render subset. Block runs: the whole T60 test stretches, not the T62 cores. Cadence is `STEPS_PER_EVAL_ALL_IMAGES` (T63).
 - `overfitting_curves.png`: one panel per metric, train (raw line plus rolling median) against test (markers), plus Train Loss. Grey shading = steps at reduced resolution, where the gap is not meaningful.
 - `overfitting_curves.csv`: columns `metric,split,step,value`; `split` is `train`, `test` or `train_loss`.
 - Reading rule: overfitting is test getting worse over a sustained stretch after the shading while train keeps improving. A constant gap is not overfitting.

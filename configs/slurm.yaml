@@ -136,6 +136,18 @@ profiles:
     # Its peak GPU memory and RSS tell whether full runs could fit an A4500 too.
     <<: *smoke_profile
     gres: gpu:rtx_a4500:1
+  smoke_a4500_scene_split:
+    # smoke_a4500 with the May / June Scene A split instead of the smoke's 80/20 override (user's
+    # choice 2026-11-01): the same f and r as configs/sessions/*.yaml split:, so the smoke tests the
+    # exact hold-out the full runs use. On the ~150-frame window that is every 1/(1 - 0.9) = 10th sweep
+    # held out (~15 per sensor), of which ceil(15 x 0.1) = 2 per sensor are rendered and ~13 are guard
+    # (T71, T72). The eval during training still uses all ~15 held-out frames (T65).
+    <<: *smoke_profile
+    gres: gpu:rtx_a4500:1
+    # Same value as configs/sessions/may_short_grass.yaml split.train_fraction.
+    train_fraction: 0.9
+    # Same value as configs/sessions/may_short_grass.yaml split.test_render_fraction.
+    test_render_fraction: 0.1
   smoke_a4500_same_node:
     # smoke_a4500 pinned to one node (user's request 2026-10-29): a diagnostic pair that separates
     # run-to-run noise (atomicAdd order) from node-to-node differences. Never use it for real runs:
