@@ -18,6 +18,8 @@ cells are those of the voxel IoU / precision / recall in scripts/13, unioned ove
 the caption counts are over the whole scored region, the drawing is cut to the radius. A ``--pose`` map
 is the same computation for one sweep and illustrates the report without being its numbers.
 ``--classes`` filters which scored classes are drawn.
+``--ripples`` (with ``--pose`` and one ``--run``) instead draws ``<stem>_ripples.png``: the real and rendered
+ground-facing returns seen from straight above in the lidar frame, coloured by beam elevation.
 ``--show-points`` (with ``--pose``) adds the rendered and real returns to the precision map. Several ``--run`` folders give
 side-by-side panels with linked cameras (e.g. B and R of one session).
 
@@ -78,6 +80,7 @@ from viking_splatad.viz.pyvista_scene import (
     RENDER_VOXEL_RGB,
     SOLID_VOXEL_OPACITY,
     cuboid_wireframe_arrays,
+    ground_facing_points,
     inside_outside_colors,
 )
 from viking_splatad.viz.viewer_export import sweep_points_to_map
@@ -97,6 +100,10 @@ PANEL_PIXELS = 800
 REAL_POINT_OPACITY = 0.5
 # Share of ambient (direction-free) light on voxel faces, a presentation choice.
 VOXEL_AMBIENT_LIGHT = 0.7
+# Ripple view (presentation choices): small points so neighbouring returns stay separate, and a perceptual
+# colormap for the beam elevation.
+RIPPLE_POINT_SIZE = 2.0
+RIPPLE_COLORMAP = "turbo"
 
 
 @dataclass
@@ -156,6 +163,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
                         help="with --pose: also draw the real (grey) and rendered (red inside a cuboid, blue otherwise) returns on the precision map")
     parser.add_argument("--all-points", action="store_true",
                         help="with --show-points: draw every point in the radius, not only the scored neighbourhood")
+    parser.add_argument("--ripples", action="store_true",
+                        help="with --pose and one --run: draw <stem>_ripples.png, a straight-down view in the lidar frame of the "
+                             "real (left) and rendered (right) returns below the horizon coloured by beam elevation, to compare the lidar ring ripples")
     parser.add_argument("--gated", action="store_true",
                         help="use the ray-drop-gated points instead of the ungated set the metric binds to")
     parser.add_argument("--output-dir", type=Path, default=None, help="write <pooled|stem>_<map>.png here; default: interactive window")
@@ -687,8 +697,66 @@ def render_pose(scenes: Sequence[RunScene], stem: str, selected_class_ids: Seque
             plotter.close()
 
 
+def render_ripples(scene: RunScene, stem: str, use_gated: bool, output_dir: Optional[Path], radius_meters: float) -> None:
+    """Top-down view of one sweep's real and rendered ground-facing returns, coloured by beam elevation.
+
+    Each ring is a cone of constant elevation that meets flat ground in a circle of radius h / tan(depression),
+    so the returns form concentric arcs whose spacing grows with range. The real sweep (left) and the render
+    (right) share the camera and the colour scale, so a missing or smeared ring shows as a colour/arc difference.
+    The frame is the lidar's own (sensor at the origin), so the circles are centred in the picture.
+
+    Args:
+        scene: The run's scene.
+        stem: Sweep stem present in the scene.
+        use_gated: Use the gated rendered point set.
+        output_dir: Folder for ``<stem>_ripples.png``, or None for an interactive window.
+        radius_meters: Horizontal radius around the sensor to draw.
+
+    Raises:
+        ValueError: If neither the real nor the rendered sweep has a ground-facing return within the radius.
+    """
+    # PyVista (VTK) is imported here so the module loads in environments without it (tests).
+    import pyvista
+
+    # Step 1: both clouds in the lidar frame (no map transform: the rings are centred on the sensor).
+    sweep = scene.sweeps[stem]
+    rendered_lidar_points, point_set = rendered_point_set(sweep, use_gated)
+    panels = [("real", *ground_facing_points(sweep.real_points, radius_meters)),
+              (f"rendered ({point_set})", *ground_facing_points(rendered_lidar_points, radius_meters))]
+    # Step 2: one colour scale over both panels, from the data's own elevation range.
+    all_elevations = np.concatenate([elevations for _, _, elevations in panels])
+    if all_elevations.size == 0:
+        raise ValueError(f"{stem}: no ground-facing returns within {radius_meters:g} m")
+    colour_limits = (float(all_elevations.min()), float(all_elevations.max()))
+    plotter = pyvista.Plotter(shape=(1, len(panels)), off_screen=output_dir is not None,
+                              window_size=(PANEL_PIXELS * len(panels), PANEL_PIXELS))
+    try:
+        # Step 3: each panel straight down, points coloured by elevation.
+        for column, (label, points, elevations) in enumerate(panels):
+            plotter.subplot(0, column)
+            if points.shape[0]:
+                cloud = pyvista.PolyData(points)
+                cloud["elevation (deg)"] = elevations
+                plotter.add_mesh(cloud, scalars="elevation (deg)", cmap=RIPPLE_COLORMAP, clim=colour_limits,
+                                 point_size=RIPPLE_POINT_SIZE, render_points_as_spheres=False,
+                                 show_scalar_bar=column == len(panels) - 1)
+            plotter.add_text(f"{scene.run_id}\n{stem} {label}: {points.shape[0]} points below the horizon, "
+                             f"within {radius_meters:g} m of the sensor (lidar frame, straight down)", font_size=8)
+            plotter.view_xy()
+        # One shared camera so the two panels are compared from the same viewpoint.
+        plotter.link_views()
+        if output_dir is None:
+            plotter.show()
+        else:
+            output_path = output_dir / f"{stem}_ripples.png"
+            plotter.show(screenshot=str(output_path))
+            print(f"wrote {output_path}")
+    finally:
+        plotter.close()
+
+
 def main(argument_list: Optional[List[str]] = None) -> int:
-    """Draw the pooled maps (no ``--pose``) or the chosen poses of the given runs.
+    """Draw the pooled maps (no ``--pose``) or the chosen poses of the given runs (``--ripples``: the ripple view of each pose).
 
     Args:
         argument_list: CLI arguments (default: sys.argv).
@@ -701,6 +769,10 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     # Step 1: a rerender label names one run's folder, so it cannot be combined with several runs.
     if arguments.rerender is not None and len(arguments.run_dirs) != 1:
         print("--rerender takes exactly one run folder", file=sys.stderr)
+        return 1
+    # The ripple view draws one sweep of one run, checked before the slow run loading.
+    if arguments.ripples and (arguments.pose is None or len(arguments.run_dirs) != 1):
+        print("refused: --ripples draws one sweep of one run: give --pose and a single --run", file=sys.stderr)
         return 1
     # Steps 2-3 run in one guard so a missing file or key is reported as a refusal (exit 1), not a traceback.
     try:
@@ -742,6 +814,9 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         return 1
     for stem in stems:
         try:
+            if arguments.ripples:
+                render_ripples(scenes[0], stem, arguments.gated, arguments.output_dir, radius_meters)
+                continue
             render_pose(scenes, stem, list(selected_class_ids), arguments.gated, arguments.output_dir, radius_meters, arguments.view,
                         arguments.show_points, not arguments.all_points)
         except Exception as error:  # noqa: BLE001  (any drawing failure must not stop the other poses)

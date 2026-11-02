@@ -116,6 +116,30 @@ def inside_outside_colors(
     return np.where(np.asarray(inside_mask, dtype=bool)[:, None], np.array(inside_rgb), np.array(outside_rgb)).astype(np.uint8)
 
 
+def ground_facing_points(points_lidar: np.ndarray, radius_meters: float) -> Tuple[np.ndarray, np.ndarray]:
+    """The points a downward beam can have hit the ground with, and each one's beam elevation.
+
+    A lidar ring is a cone of constant elevation. On flat ground the cone meets the ground in a circle of
+    radius h / tan(depression), which is the ripple pattern of a top view. Only rays pointing below the
+    horizontal (elevation < 0) can reach the ground, so the other rings are dropped. A point (x, y, z) in the
+    lidar frame has elevation atan2(z, hypot(x, y)), the beam's own elevation up to the sweep's small motion term.
+
+    Args:
+        points_lidar: (N, 3) points in the lidar frame (x forward, y left, z up).
+        radius_meters: Keep points whose horizontal distance to the sensor is at most this.
+
+    Returns:
+        ((M, 3) kept points, (M,) elevation in degrees of each, all negative).
+    """
+    points_lidar = np.asarray(points_lidar, dtype=np.float64).reshape(-1, 3)
+    # Step 1: horizontal range and elevation of every point as seen from the sensor at the origin.
+    horizontal_range = np.hypot(points_lidar[:, 0], points_lidar[:, 1])
+    elevation_degrees = np.degrees(np.arctan2(points_lidar[:, 2], horizontal_range))
+    # Step 2: below the horizon and inside the radius.
+    keep = (elevation_degrees < 0.0) & (horizontal_range <= radius_meters)
+    return points_lidar[keep], elevation_degrees[keep]
+
+
 def viz_command(
     run_dirs: Sequence[Path],
     output_dir: Path,

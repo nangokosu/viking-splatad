@@ -25,3 +25,6 @@ uv run --project viz python scripts/15_view_pose_pyvista.py --run runs/<run_id> 
 - **Why a subprocess into `viz/`:** the root `pyproject.toml` is a recipe file (copied into `docker/Dockerfile.splatad`); adding PyVista there would change the cluster environment hash and force an image and cluster rebuild.
 - GT cuboids and voxels are display and evaluation only (CLAUDE.md rule 6). Read-only on the run folders.
 - Side-by-side pictures of two runs are made by calling script 15 with both runs; script 13 itself launches one picture set per run.
+
+## Ripple view (`--ripples`)
+`scripts/15 --run <run> --pose <stem> --ripples [--radius-meters 15] --output-dir <dir>` writes `<stem>_ripples.png`: a straight-down view in the lidar frame (sensor at the origin) of the real sweep (left) and the render (right), points below the horizon only, coloured by beam elevation `atan2(z, hypot(x, y))` on one shared colour scale. A ring is a cone of constant elevation meeting flat ground in a circle of radius h / tan(depression), so the returns form concentric arcs with spacing growing with range; the picture shows whether the render reproduces them. One sweep of one run only (refused otherwise); script 13 does not launch it. Points below the horizon include trunks and grass, not only ground. The helper is `viz.pyvista_scene.ground_facing_points`.
