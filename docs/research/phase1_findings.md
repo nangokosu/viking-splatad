@@ -125,7 +125,7 @@ Intermediate dataset (`data/intermediate/<session>/`): `manifest.json` (sensor l
 - **GPU (`-m gpu`, over SSH):** synthetic-scene 200-step smoke without NaN (zero actors); real-window 200-step smoke; `ns-render` image non-constant; held-out PSNR > mean-colour baseline.
 
 ## Conventions
-Follows `~/CLAUDE.md`: docstring per function, step comments, math explained, descriptive names (no `i`/`x`), no hardcoded numbers (derive from bag/manifest/config; justify unavoidable ones). Anonymous identifier on any network fetch. Work parallelised via subagents (extractors / aligners / labels / dataparser+patches are independent); `comment-reviewer` pass after each file.
+Follows `~/CLAUDE.md`: docstring per function, step comments, math explained, descriptive names (no `i`/`x`), no hardcoded numbers (derive from bag/manifest/config; justify unavoidable ones). Anonymous identifier on any network fetch. Work parallelised via subagents (extractors / aligners / labels / dataparser+patches are independent); `code-reviewer` pass after each file.
 
 ## Risks
 - Zero-actor runtime path and gsplat internals (rows within tile, out-of-range elevations) unverified → Phase 0 smoke.

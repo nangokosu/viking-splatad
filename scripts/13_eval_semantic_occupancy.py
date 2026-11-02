@@ -326,6 +326,7 @@ def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Di
     # Step 4: score each point set.
     point_set_reports: Dict[str, Any] = {}
     for point_set_name in POINT_SET_NAMES:
+        # Older renders lack the accumulation array, so the ungated set cannot be built: record that, score the rest.
         if point_set_name == "ungated" and any(sweep.ungated_points is None for sweep in sweeps):
             point_set_reports[point_set_name] = {"available": False, "reason": "lidar npz has no pred_accumulation"}
             continue
@@ -544,9 +545,11 @@ def main(argument_list: Optional[List[str]] = None, run_command=subprocess.run) 
     """
     arguments = build_argument_parser().parse_args(argument_list)
     project_root = find_project_root()
+    # Step 1: a rerender label names one run's folder, so it cannot be combined with several runs.
     if arguments.rerender is not None and len(arguments.run_dirs) != 1:
         print("--rerender takes exactly one run folder", file=sys.stderr)
         return 1
+    # Step 2: eval settings and the viz class filter.
     eval_config_path = arguments.eval_config or project_root / DEFAULT_EVAL_CONFIG_RELATIVE_PATH
     eval_settings = yaml.safe_load(Path(eval_config_path).read_text())["eval"]
     reports = []
@@ -556,6 +559,7 @@ def main(argument_list: Optional[List[str]] = None, run_command=subprocess.run) 
     if unknown_class_names:
         print(f"--viz-classes {unknown_class_names} are not scored classes (have {sorted(eval_settings['scored_class_ids'])})", file=sys.stderr)
         return 1
+    # Step 3: per run, score and write the report, then draw; any refused input aborts with exit 1.
     try:
         for run_dir in arguments.run_dirs:
             # One run: score, then write json + md next to its renders.
@@ -578,8 +582,10 @@ def main(argument_list: Optional[List[str]] = None, run_command=subprocess.run) 
                           f"{VIZ_ENVIRONMENT_FIX_COMMAND}", file=sys.stderr)
                 else:
                     print(report["viz"])
+            # Rewrite the JSON so it also carries the "viz" outcome (the first write kept the metrics safe).
             (output_dir / REPORT_JSON_NAME).write_text(json.dumps(report, indent=1, sort_keys=True))
             reports.append(report)
+        # Step 4: print one report, or the side-by-side table for several runs.
         if len(reports) > 1:
             print(comparison_markdown(reports))
         else:
