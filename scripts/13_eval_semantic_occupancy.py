@@ -264,6 +264,91 @@ def pooled_map_points(sweeps: Sequence[RenderedSweep], point_set_name: str, grid
     }
 
 
+def build_class_setup(scored_class_ids: Dict[str, int], visible_by_class: Dict[int, list], margins: Dict[int, Optional[float]],
+                      real_points_map: np.ndarray, grid: Dict[str, np.ndarray], sweep_poses: Sequence[np.ndarray],
+                      max_range: float, vertical_half_fov: float, n_min_quantile: float) -> Dict[str, Dict[str, Any]]:
+    """Per-class GT set-up shared by every point set: n_min, margin, neighbourhood and GT voxels.
+
+    Args:
+        scored_class_ids: Class name -> id of the scored classes.
+        visible_by_class: Class id -> its scored (visible) cuboids.
+        margins: Class id -> neighbourhood margin in metres (None if the session has no box of the class).
+        real_points_map: Pooled real test-sweep points in the map frame (source of n_min).
+        grid: GT occupancy arrays.
+        sweep_poses: lidar_to_map of every test sweep.
+        max_range: Scored range in metres.
+        vertical_half_fov: Scored vertical half field of view in radians.
+        n_min_quantile: Quantile of the real per-box point counts that sets n_min.
+
+    Returns:
+        Class name -> {class_id, cuboids, margin, n_min, n_min_source, neighbourhood, ground_truth}.
+    """
+    grid_origin, voxel_size = np.asarray(grid["origin"], dtype=np.float64), float(grid["voxel_size"])
+    grid_shape = grid["class_ids"].shape
+    class_setup: Dict[str, Dict[str, Any]] = {}
+    for class_name, class_id in scored_class_ids.items():
+        class_cuboids = visible_by_class[class_id]
+        # T45 threshold: a quantile of how many real points each scored box of the class received.
+        n_min = n_min_from_real_counts(cuboid_point_counts(real_points_map, class_cuboids), n_min_quantile)
+        n_min_source = f"quantile {n_min_quantile} of real test-sweep counts"
+        if n_min is None:
+            n_min, n_min_source = MINIMUM_POSSIBLE_POINT_COUNT, "no real hit: minimum possible count"
+        # No box of the class in the session (margin None): no growth, the neighbourhood is the boxes.
+        margin = margins[class_id] or 0.0
+        # Voxels within the margin of the class's boxes and within range/FOV of a test pose; GT voxels are
+        # the class's own voxels inside that neighbourhood.
+        neighbourhood = visible_neighbourhood_mask(
+            class_cuboids, margin, grid_origin, voxel_size, grid_shape, sweep_poses, max_range, vertical_half_fov)
+        class_setup[class_name] = {
+            "class_id": class_id, "cuboids": class_cuboids, "margin": margin, "n_min": n_min,
+            "n_min_source": n_min_source, "neighbourhood": neighbourhood,
+            "ground_truth": (grid["class_ids"] == class_id) & neighbourhood,
+        }
+    return class_setup
+
+
+def score_point_set(sweeps: Sequence[RenderedSweep], point_set_name: str, grid: Dict[str, np.ndarray],
+                    class_setup: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Score one pooled point set for every class (T45 detection, T46 precision, voxel IoU/P/R).
+
+    Args:
+        sweeps: Rendered test sweeps.
+        point_set_name: ``gated`` or ``ungated``.
+        grid: GT occupancy arrays.
+        class_setup: Output of ``build_class_setup``.
+
+    Returns:
+        The point set's report entry; ``{"available": False, ...}`` when the ungated set cannot be built.
+    """
+    # Older renders lack the accumulation array, so the ungated set cannot be built: record that, score the rest.
+    if point_set_name == "ungated" and any(sweep.ungated_points is None for sweep in sweeps):
+        return {"available": False, "reason": "lidar npz has no pred_accumulation"}
+    # Step 1: pool the point set over all sweeps in the map frame (shared by every class).
+    pooled = pooled_map_points(sweeps, point_set_name, grid)
+    class_reports = {}
+    # Step 2: per class, the three metric families against that class's set-up.
+    for class_name, setup in class_setup.items():
+        # T45: share of scored boxes holding at least n_min points.
+        detection = cuboid_detection_rate(cuboid_point_counts(pooled["points"], setup["cuboids"]), setup["n_min"])
+        # T46: points inside the boxes over points inside the margin-grown neighbourhood.
+        precision = neighbourhood_point_precision(pooled["points"], setup["cuboids"], setup["margin"])
+        # Voxel IoU/P/R of the occupied-voxel grid against the class's GT voxels, within the neighbourhood.
+        voxel_metrics = neighbourhood_voxel_metrics(pooled["occupied"], setup["ground_truth"], setup["neighbourhood"])
+        class_reports[class_name] = {
+            "detection": {"cuboid_count": detection.cuboid_count, "n_min": detection.n_min,
+                          "detection_rate": detection.detection_rate,
+                          "rate_by_min_points": detection.rate_by_min_points},
+            "point_precision": {"inside_count": precision.inside_count,
+                                "neighbourhood_count": precision.neighbourhood_count,
+                                "precision": precision.precision},
+            "voxel": summarise_metrics(voxel_metrics),
+        }
+    return {
+        "available": True, "point_count": int(pooled["points"].shape[0]),
+        "outside_grid_count": pooled["outside_grid"], "classes": class_reports,
+    }
+
+
 def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Dict[str, Any],
                  accumulation_threshold_override: Optional[float], project_root: Path) -> Tuple[Path, Dict[str, Any]]:
     """Score one run (or render-only job) and build its report.
@@ -286,8 +371,6 @@ def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Di
     session_config, manifest = resolve_session(split_record, project_root)
     gt_dir = Path(session_config["session"]["gt_dir"])
     cuboids, grid = load_ground_truth(gt_dir)
-    grid_origin, voxel_size = np.asarray(grid["origin"], dtype=np.float64), float(grid["voxel_size"])
-    grid_shape = grid["class_ids"].shape
     if accumulation_threshold_override is None:
         accumulation_threshold, threshold_source = float(eval_settings["render_accumulation_threshold"]), "configs/eval.yaml"
     else:
@@ -302,53 +385,16 @@ def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Di
     visible_by_class, max_range, vertical_half_fov = scored_region_cuboids(
         cuboids, class_ids, sweep_poses, [sweep.real_points for sweep in sweeps], manifest["lidar"]["elevation_mapping"]
     )
-    margins = class_margin_table(cuboids, class_ids)
 
-    # Step 3: per-class GT set-up shared by both point sets (n_min from the real sweeps, voxel region).
+    # Step 3: per-class GT set-up shared by both point sets.
     real_points_map = pooled_map_points(sweeps, "real", grid)["points"]
-    class_setup: Dict[str, Dict[str, Any]] = {}
-    for class_name, class_id in scored_class_ids.items():
-        class_cuboids = visible_by_class[class_id]
-        n_min = n_min_from_real_counts(cuboid_point_counts(real_points_map, class_cuboids), float(eval_settings["n_min_quantile"]))
-        n_min_source = f"quantile {eval_settings['n_min_quantile']} of real test-sweep counts"
-        if n_min is None:
-            n_min, n_min_source = MINIMUM_POSSIBLE_POINT_COUNT, "no real hit: minimum possible count"
-        # No box of the class in the session (margin None): no growth, the neighbourhood is the boxes.
-        margin = margins[class_id] or 0.0
-        neighbourhood = visible_neighbourhood_mask(
-            class_cuboids, margin, grid_origin, voxel_size, grid_shape, sweep_poses, max_range, vertical_half_fov)
-        class_setup[class_name] = {
-            "class_id": class_id, "cuboids": class_cuboids, "margin": margin, "n_min": n_min,
-            "n_min_source": n_min_source, "neighbourhood": neighbourhood,
-            "ground_truth": (grid["class_ids"] == class_id) & neighbourhood,
-        }
+    n_min_quantile = float(eval_settings["n_min_quantile"])
+    class_setup = build_class_setup(
+        scored_class_ids, visible_by_class, class_margin_table(cuboids, class_ids), real_points_map, grid,
+        sweep_poses, max_range, vertical_half_fov, n_min_quantile)
 
     # Step 4: score each point set.
-    point_set_reports: Dict[str, Any] = {}
-    for point_set_name in POINT_SET_NAMES:
-        # Older renders lack the accumulation array, so the ungated set cannot be built: record that, score the rest.
-        if point_set_name == "ungated" and any(sweep.ungated_points is None for sweep in sweeps):
-            point_set_reports[point_set_name] = {"available": False, "reason": "lidar npz has no pred_accumulation"}
-            continue
-        pooled = pooled_map_points(sweeps, point_set_name, grid)
-        class_reports = {}
-        for class_name, setup in class_setup.items():
-            detection = cuboid_detection_rate(cuboid_point_counts(pooled["points"], setup["cuboids"]), setup["n_min"])
-            precision = neighbourhood_point_precision(pooled["points"], setup["cuboids"], setup["margin"])
-            voxel_metrics = neighbourhood_voxel_metrics(pooled["occupied"], setup["ground_truth"], setup["neighbourhood"])
-            class_reports[class_name] = {
-                "detection": {"cuboid_count": detection.cuboid_count, "n_min": detection.n_min,
-                              "detection_rate": detection.detection_rate,
-                              "rate_by_min_points": detection.rate_by_min_points},
-                "point_precision": {"inside_count": precision.inside_count,
-                                    "neighbourhood_count": precision.neighbourhood_count,
-                                    "precision": precision.precision},
-                "voxel": summarise_metrics(voxel_metrics),
-            }
-        point_set_reports[point_set_name] = {
-            "available": True, "point_count": int(pooled["points"].shape[0]),
-            "outside_grid_count": pooled["outside_grid"], "classes": class_reports,
-        }
+    point_set_reports = {name: score_point_set(sweeps, name, grid, class_setup) for name in POINT_SET_NAMES}
 
     # Step 5: the report, with every derived setting and its source.
     report = {
@@ -362,12 +408,12 @@ def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Di
             "dir": str(gt_dir.relative_to(project_root)),
             "cuboids_sha256": file_sha256(gt_dir / CUBOIDS_FILE_NAME),
             "occupancy_sha256": file_sha256(gt_dir / OCCUPANCY_FILE_NAME),
-            "voxel_size_m": voxel_size,
+            "voxel_size_m": float(grid["voxel_size"]),
         },
         "sweep_count": len(sweeps),
         "settings": {
             "accumulation_threshold": accumulation_threshold, "accumulation_threshold_source": threshold_source,
-            "n_min_quantile": float(eval_settings["n_min_quantile"]),
+            "n_min_quantile": n_min_quantile,
             "max_range_m": max_range, "max_range_source": "farthest real return of the scored sweeps",
             "vertical_half_fov_rad": vertical_half_fov, "vertical_half_fov_source": "manifest lidar.elevation_mapping",
         },
