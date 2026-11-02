@@ -83,3 +83,6 @@ def test_viz_command_names_every_run_and_the_isolated_project():
     assert float(command[command.index("--accumulation-threshold") + 1]) == 0.5
     assert command[command.index("--rerender") + 1] == "render-x"
     assert "--rerender" not in viz_command([Path("/r/B")], Path("/out"), Path("/cfg/eval.yaml"), 0.5)
+    assert "--radius-meters" not in command
+    with_radius = viz_command([Path("/r/B")], Path("/out"), Path("/cfg/eval.yaml"), 0.5, radius_meters=15)
+    assert float(with_radius[with_radius.index("--radius-meters") + 1]) == 15.0

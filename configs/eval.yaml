@@ -17,3 +17,8 @@ eval:
   # objects the real lidar saw got at least this many points, so a rendered object with fewer is
   # weaker than most real observations, without letting the sparsest outliers set the bar.
   n_min_quantile: 0.25
+  # Horizontal radius (m) around each sweep's lidar within which scripts/15 draws voxels and boxes.
+  # A presentation choice, not a measured value: the user's choice (2026-11-02), wide enough to
+  # show several trunks with their surroundings while single voxels stay distinguishable. Override
+  # per run with --radius-meters (scripts/15) or --viz-radius-meters (scripts/13).
+  viz_radius_meters: 25.0

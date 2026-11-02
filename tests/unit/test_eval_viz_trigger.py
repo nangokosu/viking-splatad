@@ -122,3 +122,25 @@ def test_recorded_messages_replace_the_repo_root(tmp_path):
     eval_script = load_eval_script()
     assert eval_script.repo_relative(f"boom at {tmp_path}/x.py", tmp_path) == "boom at <repo>/x.py"
     assert eval_script.repo_relative("plain", tmp_path) == "plain"
+
+
+def test_viz_radius_override_reaches_the_viewer_command(tmp_path, monkeypatch):
+    """--viz-radius-meters is passed on as --radius-meters; without it the viewer uses the config value."""
+    eval_script, run_dir, eval_config_path = prepare_session(tmp_path, monkeypatch)
+    for extra_arguments, expected_radius in (([], None), (["--viz-radius-meters", "12"], 12.0)):
+        runner = FakeRunner()
+        assert eval_script.main(["--eval-config", str(eval_config_path), *extra_arguments, str(run_dir)],
+                                run_command=runner) == 0
+        command = runner.calls[0][0]
+        if expected_radius is None:
+            assert "--radius-meters" not in command
+        else:
+            assert float(command[command.index("--radius-meters") + 1]) == expected_radius
+
+
+def test_recorded_messages_also_hide_the_home_directory():
+    """A path under the home directory becomes ~ (e.g. a uv cache path in the viewer's last error line)."""
+    from pathlib import Path
+
+    eval_script = load_eval_script()
+    assert eval_script.repo_relative(f"cache at {Path.home()}/.cache/uv", Path("/nowhere")) == "cache at ~/.cache/uv"

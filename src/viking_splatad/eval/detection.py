@@ -475,6 +475,33 @@ def scored_region_cuboids(
     return scored_cuboids_by_class(cuboids, scored_class_ids, box_visible), max_range, vertical_half_fov
 
 
+def visible_neighbourhood_mask(
+    class_cuboids: Sequence[Cuboid], margin: float, grid_origin: np.ndarray, voxel_size: float,
+    grid_shape: Sequence[int], sweep_poses: Sequence[np.ndarray], max_range: float, vertical_half_fov: float,
+) -> np.ndarray:
+    """The scored voxel neighbourhood of one class: its boxes grown horizontally, within range/FOV.
+
+    The one definition shared by the voxel metric (scripts/13) and its picture (scripts/15).
+
+    Args:
+        class_cuboids: The class's scored boxes.
+        margin: Horizontal growth per side (m), 0 when the class has no box.
+        grid_origin: (3,) grid minimum corner.
+        voxel_size: Voxel edge (m).
+        grid_shape: (nx, ny, nz).
+        sweep_poses: Evaluated sweep poses (one pose gives that sweep's own region).
+        max_range: Range limit (m).
+        vertical_half_fov: Half vertical FOV (rad).
+
+    Returns:
+        Bool grid of ``grid_shape``.
+    """
+    # Step 1: voxels whose centre lies in a grown box. Step 2: keep those visible from the poses.
+    grown_mask = cuboid_voxel_mask(
+        [grow_cuboid_horizontally(cuboid, margin) for cuboid in class_cuboids], grid_origin, voxel_size, grid_shape)
+    return restrict_mask_to_visible(grown_mask, grid_origin, voxel_size, sweep_poses, max_range, vertical_half_fov)
+
+
 def voxel_centers(voxel_indices: np.ndarray, grid_origin: np.ndarray, voxel_size: float) -> np.ndarray:
     """Map-frame centres of voxels: origin + (index + 0.5) · voxel_size.
 

@@ -25,7 +25,12 @@ CORNERS_PER_CUBOID = CORNER_SIGN_TRIPLES.shape[0]
 INSIDE_CUBOID_RGB = (214, 39, 40)
 OUTSIDE_CUBOID_RGB = (31, 119, 180)
 REAL_POINT_RGB = (160, 160, 160)
-CUBOID_WIREFRAME_RGB = (44, 160, 44)
+# Voxel classes of the picture: occupied in both (true positive), rendered only (false positive),
+# GT only (missed). Wireframes are dark so they do not compete with the voxels.
+TRUE_POSITIVE_VOXEL_RGB = (44, 160, 44)
+FALSE_POSITIVE_VOXEL_RGB = (214, 39, 40)
+FALSE_NEGATIVE_VOXEL_RGB = (127, 127, 127)
+CUBOID_WIREFRAME_RGB = (60, 60, 60)
 # Script that renders the pictures, and the isolated project (viz/) that has PyVista installed.
 VIEWER_SCRIPT_RELATIVE_PATH = Path("scripts") / "15_view_pose_pyvista.py"
 VIEWER_PROJECT_RELATIVE_DIR = Path("viz")
@@ -100,6 +105,7 @@ def viz_command(
     eval_config_path: Path,
     accumulation_threshold: float,
     rerender_label: Optional[str] = None,
+    radius_meters: Optional[float] = None,
 ) -> List[str]:
     """Argument list that renders pictures for runs, in the isolated viz/ environment.
 
@@ -113,6 +119,7 @@ def viz_command(
         eval_config_path: configs/eval.yaml the evaluation used.
         accumulation_threshold: T67 threshold the evaluation used (so the points match).
         rerender_label: ``rerenders/<label>`` of the (single) run, or None.
+        radius_meters: Horizontal radius around each sweep to draw, or None for the config value.
 
     Returns:
         The command, program first.
@@ -124,4 +131,6 @@ def viz_command(
                 "--accumulation-threshold", repr(float(accumulation_threshold))]
     if rerender_label is not None:
         command += ["--rerender", rerender_label]
+    if radius_meters is not None:
+        command += ["--radius-meters", repr(float(radius_meters))]
     return command

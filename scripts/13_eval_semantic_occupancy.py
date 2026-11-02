@@ -43,15 +43,13 @@ from viking_splatad.eval.detection import (
     class_margin_table,
     cuboid_detection_rate,
     cuboid_point_counts,
-    cuboid_voxel_mask,
-    grow_cuboid_horizontally,
     load_cuboids_json,
     n_min_from_real_counts,
     neighbourhood_point_precision,
     neighbourhood_voxel_metrics,
-    restrict_mask_to_visible,
     scored_region_cuboids,
     summarise_metrics,
+    visible_neighbourhood_mask,
 )
 from viking_splatad.eval.rendered_pointcloud import (
     RenderedSweep,
@@ -116,6 +114,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--accumulation-threshold", type=float, default=None,
                         help="override eval.render_accumulation_threshold (recorded in the report)")
     parser.add_argument("--no-viz", action="store_true", help="do not draw the PyVista pictures (scripts/15)")
+    parser.add_argument("--viz-radius-meters", type=float, default=None,
+                        help="horizontal radius around each sweep drawn by scripts/15 (default: eval.viz_radius_meters)")
     return parser
 
 
@@ -313,11 +313,8 @@ def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Di
             n_min, n_min_source = MINIMUM_POSSIBLE_POINT_COUNT, "no real hit: minimum possible count"
         # No box of the class in the session (margin None): no growth, the neighbourhood is the boxes.
         margin = margins[class_id] or 0.0
-        neighbourhood = restrict_mask_to_visible(
-            cuboid_voxel_mask([grow_cuboid_horizontally(cuboid, margin) for cuboid in class_cuboids],
-                              grid_origin, voxel_size, grid_shape),
-            grid_origin, voxel_size, sweep_poses, max_range, vertical_half_fov,
-        )
+        neighbourhood = visible_neighbourhood_mask(
+            class_cuboids, margin, grid_origin, voxel_size, grid_shape, sweep_poses, max_range, vertical_half_fov)
         class_setup[class_name] = {
             "class_id": class_id, "cuboids": class_cuboids, "margin": margin, "n_min": n_min,
             "n_min_source": n_min_source, "neighbourhood": neighbourhood,
@@ -473,7 +470,7 @@ def comparison_markdown(reports: Sequence[Dict[str, Any]]) -> str:
 
 
 def repo_relative(text: str, project_root: Path) -> str:
-    """Replace the absolute repo root in a message by ``<repo>``, so recorded text carries no home path.
+    """Replace the absolute repo root by ``<repo>`` and the home directory by ``~`` in a message.
 
     The report is meant to be shareable, and CLAUDE.md rule 5 keeps account names (which a home
     directory contains) out of recorded output.
@@ -485,11 +482,14 @@ def repo_relative(text: str, project_root: Path) -> str:
     Returns:
         ``text`` with the root replaced.
     """
-    return text.replace(str(Path(project_root).resolve()), "<repo>").replace(str(project_root), "<repo>")
+    text = text.replace(str(Path(project_root).resolve()), "<repo>").replace(str(project_root), "<repo>")
+    # Any other path under the home directory (e.g. the uv cache) would still carry the account name.
+    return text.replace(str(Path.home()), "~")
 
 
 def launch_pose_viz(run_dir: Path, rerender_label: Optional[str], eval_output_dir: Path, eval_config_path: Path,
-                    accumulation_threshold: float, project_root: Path, run_command=subprocess.run) -> str:
+                    accumulation_threshold: float, project_root: Path, run_command=subprocess.run,
+                    viz_radius_meters: Optional[float] = None) -> str:
     """Draw the scored poses with scripts/15 in the isolated viz/ environment.
 
     Never raises: the report is already written, so a drawing problem must not touch the metrics.
@@ -504,13 +504,14 @@ def launch_pose_viz(run_dir: Path, rerender_label: Optional[str], eval_output_di
         accumulation_threshold: T67 threshold the evaluation used.
         project_root: Repo root (working directory of the subprocess).
         run_command: ``subprocess.run`` stand-in, injectable for tests.
+        viz_radius_meters: Radius override for the pictures, or None for the config value.
 
     Returns:
         "written: <folder>" or "failed: <reason>".
     """
     viz_output_dir = (eval_output_dir / VIZ_OUTPUT_DIR_NAME).resolve()
     command = viz_command([Path(run_dir).resolve()], viz_output_dir, Path(eval_config_path).resolve(),
-                          accumulation_threshold, rerender_label)
+                          accumulation_threshold, rerender_label, viz_radius_meters)
     # Step 1: run the viewer; a missing launcher (uv) is a failure to report, not a crash.
     try:
         # errors="replace": undecodable viewer output must not raise out of this never-raises helper.
@@ -561,7 +562,8 @@ def main(argument_list: Optional[List[str]] = None, run_command=subprocess.run) 
                 report["viz"] = "skipped: --no-viz"
             else:
                 report["viz"] = launch_pose_viz(run_dir, arguments.rerender, output_dir, eval_config_path,
-                                                report["settings"]["accumulation_threshold"], project_root, run_command)
+                                                report["settings"]["accumulation_threshold"], project_root, run_command,
+                                                arguments.viz_radius_meters)
                 if report["viz"].startswith("failed"):
                     print(f"WARNING: no pictures ({report['viz']}). Set up their environment with: "
                           f"{VIZ_ENVIRONMENT_FIX_COMMAND}", file=sys.stderr)
