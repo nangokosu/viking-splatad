@@ -64,6 +64,7 @@ from viking_splatad.viz.pyvista_scene import (
     GROUND_TRUTH_VOXEL_RGB,
     HIT_VOXEL_RGB,
     MAP_NAMES,
+    NON_HIT_PRECISION_OPACITY,
     NON_HIT_VOXEL_RGB,
     REAL_POINT_RGB,
     RENDER_OVERLAY_OPACITY,
@@ -435,7 +436,7 @@ def map_layers(map_name: str, maps: Dict[str, Any]) -> List[Tuple[np.ndarray, Tu
     if map_name == "recall":
         return [(maps["gt_miss"], GROUND_TRUTH_VOXEL_RGB, SOLID_VOXEL_OPACITY), (maps["gt_hit"], HIT_VOXEL_RGB, SOLID_VOXEL_OPACITY)]
     if map_name == "precision":
-        return [(maps["render_incorrect"], NON_HIT_VOXEL_RGB, SOLID_VOXEL_OPACITY), (maps["render_correct"], HIT_VOXEL_RGB, SOLID_VOXEL_OPACITY)]
+        return [(maps["render_incorrect"], NON_HIT_VOXEL_RGB, NON_HIT_PRECISION_OPACITY), (maps["render_correct"], HIT_VOXEL_RGB, SOLID_VOXEL_OPACITY)]
     raise ValueError(f"unknown map {map_name!r} (have {MAP_NAMES})")
 
 
@@ -580,8 +581,8 @@ def render_pose(scenes: Sequence[RunScene], stem: str, selected_class_ids: Seque
                            sweep.lidar_to_map[:2, 3], point_arrays)
                 if view == "top":
                     plotter.view_xy()
-            # Translucent render voxels over opaque GT need depth peeling to composite in the right order.
-            if map_name == "overlay":
+            # Translucent voxels over opaque ones (render over GT, red over green) need depth peeling to composite in the right order.
+            if map_name in ("overlay", "precision"):
                 plotter.enable_depth_peeling()
             # One shared camera, so the runs are compared from the same viewpoint.
             plotter.link_views()

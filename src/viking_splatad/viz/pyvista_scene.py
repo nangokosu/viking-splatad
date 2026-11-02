@@ -29,14 +29,16 @@ REAL_POINT_RGB = (160, 160, 160)
 # value). Ground-truth voxels are grey, rendered voxels light blue in the overlay, a hit is green and
 # a rendered voxel off every GT voxel red. In the overlay the GT is the more opaque layer, so it
 # shows through the translucent render. Wireframes are dark so they do not compete with the voxels.
-GROUND_TRUTH_VOXEL_RGB = (127, 127, 127)
-RENDER_VOXEL_RGB = (135, 195, 245)
+GROUND_TRUTH_VOXEL_RGB = (205, 205, 205)
+RENDER_VOXEL_RGB = (70, 160, 255)
 HIT_VOXEL_RGB = (44, 160, 44)
 NON_HIT_VOXEL_RGB = (214, 39, 40)
 CUBOID_WIREFRAME_RGB = (60, 60, 60)
 GROUND_TRUTH_OVERLAY_OPACITY = 0.8
 SOLID_VOXEL_OPACITY = 1.0
-RENDER_OVERLAY_OPACITY = 0.3
+# Red (non-hit) render voxels of the precision map are translucent so green hits stay visible behind them.
+NON_HIT_PRECISION_OPACITY = 0.3
+RENDER_OVERLAY_OPACITY = 0.55
 # The three maps drawn for every pose, in file-name order: <stem>_<map name>.png.
 MAP_NAMES = ("overlay", "recall", "precision")
 # Script that renders the pictures, and the isolated project (viz/) that has PyVista installed.
