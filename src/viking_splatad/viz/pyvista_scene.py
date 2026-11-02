@@ -36,9 +36,13 @@ NON_HIT_VOXEL_RGB = (214, 39, 40)
 CUBOID_WIREFRAME_RGB = (60, 60, 60)
 GROUND_TRUTH_OVERLAY_OPACITY = 0.8
 SOLID_VOXEL_OPACITY = 1.0
-# Red (non-hit) render voxels of the precision map are translucent so green hits stay visible behind them.
-NON_HIT_PRECISION_OPACITY = 0.3
-RENDER_OVERLAY_OPACITY = 0.55
+# The rendered cloud is context in every map, so its voxels are as faint as still reads. 0.03 was found by eye
+# on the smoke run (0.06 -> 0.03): one lone voxel then shifts its weakest colour channel by about 0.03 * 185 = 5
+# of 255 levels on a white background (0.02 would be 4), while dense regions still stack into a visible cloud.
+# The three maps share the value so they show the cloud identically; the solid hit voxels carry the emphasis.
+NON_HIT_PRECISION_OPACITY = 0.03
+RECALL_CONTEXT_OPACITY = 0.03
+RENDER_OVERLAY_OPACITY = 0.03
 # The three maps drawn for every pose, in file-name order: <stem>_<map name>.png.
 MAP_NAMES = ("overlay", "recall", "precision")
 # Script that renders the pictures, and the isolated project (viz/) that has PyVista installed.

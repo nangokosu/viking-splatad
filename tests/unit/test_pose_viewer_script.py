@@ -228,15 +228,17 @@ def test_each_pose_uses_only_its_own_returned_points():
     assert silent_maps["gt_miss"].shape[0] == GROUND_TRUTH_VOXEL_COUNT and silent_maps["point_count"] == 0
 
 
-def test_recall_shows_no_render_voxel_and_precision_shows_no_gt_voxel():
-    """Layers per map: recall = missed GT grey + hit GT green; precision = incorrect red + correct green;
-    overlay = all GT (more opaque) under all render (more translucent)."""
+def test_every_map_shows_the_whole_rendered_cloud_with_its_own_emphasis():
+    """Layers per map. Overlay = all GT (more opaque) under all render (more translucent). Recall = faint green
+    for every render voxel that is not a hit, missed GT grey, hit GT solid green. Precision = faint red for every
+    render voxel not on GT, correct ones solid green, no GT voxel. Scene: 16 GT voxels, one hit, one incorrect."""
     viewer = load_viewer_script()
     scene = make_voxel_scene(viewer)
     maps = viewer.sweep_voxel_maps(lifted_sweep(np.array([[10.0, 0.0, 0.0], [9.0, 0.0, 0.0]])), scene, [TRUNK_CLASS_ID], False, 25.0)
     recall = viewer.map_layers("recall", maps)
-    assert [layer[0].shape[0] for layer in recall] == [GROUND_TRUTH_VOXEL_COUNT - 1, 1]
-    assert [layer[1] for layer in recall] == [viewer.GROUND_TRUTH_VOXEL_RGB, viewer.HIT_VOXEL_RGB]
+    assert [layer[0].shape[0] for layer in recall] == [1, GROUND_TRUTH_VOXEL_COUNT - 1, 1]
+    assert [layer[1] for layer in recall] == [viewer.HIT_VOXEL_RGB, viewer.GROUND_TRUTH_VOXEL_RGB, viewer.HIT_VOXEL_RGB]
+    assert recall[0][2] < recall[2][2], "the context must be fainter than the solid hits"
     precision = viewer.map_layers("precision", maps)
     assert [layer[0].shape[0] for layer in precision] == [1, 1]
     assert [layer[1] for layer in precision] == [viewer.NON_HIT_VOXEL_RGB, viewer.HIT_VOXEL_RGB]
@@ -245,6 +247,24 @@ def test_recall_shows_no_render_voxel_and_precision_shows_no_gt_voxel():
     assert ground_truth_layer[2] > render_layer[2], "the GT must be the more opaque layer"
     with pytest.raises(ValueError, match="unknown map"):
         viewer.map_layers("nope", maps)
+
+
+def test_render_voxels_outside_the_scored_boxes_are_drawn_faint_in_all_three_maps_but_never_counted():
+    """A return far from every GT box lies outside the scoring neighbourhood: it is in the overlay's render layer,
+    the recall map's faint green and the precision map's faint red, while the report-style totals (and so the
+    captions' ratios) stay at 1 of 16 and 1 of 2."""
+    viewer = load_viewer_script()
+    scene = make_voxel_scene(viewer)
+    hit_and_incorrect = np.array([[10.0, 0.0, 0.0], [9.0, 0.0, 0.0]])
+    far_point = np.array([[10.0, 4.0, 0.0]])  # inside the grid (y origin -5), far beyond any class margin of the boxes
+    maps = viewer.sweep_voxel_maps(lifted_sweep(np.vstack([hit_and_incorrect, far_point])), scene, [TRUNK_CLASS_ID], False, 25.0)
+    assert maps["render_outside"].shape[0] == 1 and maps["outside_total"] == 1 and "render_outside" not in maps["totals"]
+    assert maps["totals"]["render_correct"] + maps["totals"]["render_incorrect"] == 2
+    assert viewer.map_layers("overlay", maps)[1][0].shape[0] == 3
+    assert viewer.map_layers("recall", maps)[0][0].shape[0] == 2  # incorrect + outside
+    assert viewer.map_layers("precision", maps)[0][0].shape[0] == 2
+    assert "recall 0.06: 1 of 16" in viewer.map_caption("recall", maps)
+    assert "precision 0.50: 1 of 2" in viewer.map_caption("precision", maps)
 
 
 def test_captions_state_recall_and_precision_from_the_voxel_counts():

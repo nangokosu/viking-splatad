@@ -7,12 +7,16 @@ their cells, not the per-class report values. ``--pose`` draws single sweeps ins
 For each run, three PNGs ``pooled_overlay.png``, ``pooled_recall.png`` and ``pooled_precision.png``
 (or ``<stem>_<map>.png`` per ``--pose``) show, in the map frame within ``--radius-meters``
 (horizontal) of a test lidar position (of any pooled sweep), voxels of the selected classes:
-    - overlay: GT voxels grey and render voxels light blue (translucent, so the GT always shows);
-    - recall: only the GT voxels; green where the render also occupies the voxel (hit), grey if missed;
-    - precision: only the render voxels; green on a GT voxel of a selected class, red off every one.
+    - overlay: GT voxels grey and every render voxel light blue (translucent, so the GT always shows);
+    - recall: GT voxels green where the render also occupies the voxel (hit), grey if missed; the other
+      render voxels are drawn very faint green as context;
+    - precision: render voxels solid green on a GT voxel of a selected class, faint red off every one;
+      no GT voxels.
+All three maps show the whole rendered cloud, including the voxels outside the metric's scoring
+neighbourhood of the selected classes (``render_outside``): they are drawn but never counted.
 Dark wireframes mark the scored GT cuboids. The render voxels come from the run's own rendered
 test-split lidar returns (ungated, the set the metric binds to, unless ``--gated``), pooled over the
-drawn sweeps (all of them, or the ``--pose`` ones), and are limited to the metric's scoring neighbourhood: each box grown horizontally by its class
+drawn sweeps (all of them, or the ``--pose`` ones). The counted ones lie in the metric's scoring neighbourhood: each box grown horizontally by its class
 margin, within the range and vertical FOV of the pooled sweeps (``visible_neighbourhood_mask``). The
 cells are those of the voxel IoU / precision / recall in scripts/13, unioned over the selected classes;
 the caption counts are over the whole scored region, the drawing is cut to the radius. A ``--pose`` map
@@ -72,6 +76,7 @@ from viking_splatad.viz.pyvista_scene import (
     NON_HIT_PRECISION_OPACITY,
     NON_HIT_VOXEL_RGB,
     REAL_POINT_RGB,
+    RECALL_CONTEXT_OPACITY,
     RENDER_OVERLAY_OPACITY,
     RENDER_VOXEL_RGB,
     SOLID_VOXEL_OPACITY,
@@ -365,7 +370,8 @@ def pooled_voxel_maps(sweeps: Sequence[RenderedSweep], scene: RunScene, selected
     voxels = occupied voxels, correct when on a GT voxel of the class (precision), incorrect
     otherwise. These are the cells ``neighbourhood_voxel_metrics`` counts, unioned over the selected
     classes; a voxel correct for one class and incorrect for another (overlapping neighbourhoods) is
-    drawn as correct.
+    drawn as correct. Occupied voxels outside every selected neighbourhood are not scored; they come back as
+    ``render_outside`` so all three maps can show the whole rendered cloud (the report never counts them).
 
     Args:
         sweeps: Rendered test sweeps of this run (their own returned points only).
@@ -375,9 +381,10 @@ def pooled_voxel_maps(sweeps: Sequence[RenderedSweep], scene: RunScene, selected
         radius_meters: Horizontal radius around any of the sweeps' lidar positions to keep.
 
     Returns:
-        {"gt_hit" / "gt_miss" / "render_correct" / "render_incorrect": (V, 3) voxel centres within the
-        radius, "totals": the same four names -> voxel counts over the whole scored region (what the
-        report counts), "point_set": name, "point_count": returned points voxelised, "sweep_count": int}.
+        {"gt_hit" / "gt_miss" / "render_correct" / "render_incorrect" / "render_outside": (V, 3) voxel
+        centres within the radius, "totals": the first four names -> voxel counts over the whole scored
+        region (what the report counts), "outside_total": the uncut count of render_outside (never in
+        the report), "point_set": name, "point_count": returned points voxelised, "sweep_count": int}.
     """
     # Step 1: one point set for all sweeps (ungated unless gated is asked for or any sweep lacks it, so sweeps never mix sets).
     point_set = "gated" if use_gated or any(sweep.ungated_points is None for sweep in sweeps) else "ungated"
@@ -410,14 +417,20 @@ def pooled_voxel_maps(sweeps: Sequence[RenderedSweep], scene: RunScene, selected
         incorrect_mask |= occupied & region & ~class_ground_truth
     # Step 4: one colour per voxel: correct beats incorrect; the hit GT voxels are the correct render voxels.
     incorrect_mask &= ~correct_mask
+    # Occupied voxels the metric does not score (outside every selected neighbourhood): shown, never counted.
+    outside_mask = occupied & ~correct_mask & ~incorrect_mask
     voxel_masks = {"gt_hit": ground_truth_mask & occupied, "gt_miss": ground_truth_mask & ~occupied,
-                   "render_correct": correct_mask, "render_incorrect": incorrect_mask}
+                   "render_correct": correct_mask, "render_incorrect": incorrect_mask, "render_outside": outside_mask}
     # Step 5: voxel centres within the radius of any lidar position; the totals keep the uncut counts.
     lidar_positions_xy = np.array([sweep.lidar_to_map[:2, 3] for sweep in sweeps])
     maps: Dict[str, Any] = {"point_set": point_set, "point_count": point_count, "sweep_count": len(sweeps), "totals": {}}
     for map_name, voxel_mask in voxel_masks.items():
         centres = voxel_centers(np.argwhere(voxel_mask), scene.grid_origin, scene.voxel_size)
-        maps["totals"][map_name] = int(centres.shape[0])
+        # The outside voxels are not part of the report, so they stay out of "totals".
+        if map_name == "render_outside":
+            maps["outside_total"] = int(centres.shape[0])
+        else:
+            maps["totals"][map_name] = int(centres.shape[0])
         maps[map_name] = centres[within_radius_of_any(centres, lidar_positions_xy, radius_meters)]
     return maps
 
@@ -478,24 +491,32 @@ def panel_arrays(sweep: RenderedSweep, scored_cuboids: Sequence[Cuboid], use_gat
 def map_layers(map_name: str, maps: Dict[str, Any]) -> List[Tuple[np.ndarray, Tuple[int, int, int], float]]:
     """The voxel layers of one map, back to front, as (centres, RGB, opacity).
 
+    Every map shows the whole rendered cloud (``render_correct`` + ``render_incorrect`` +
+    ``render_outside``), so the three pictures are comparable.
+
     Args:
         map_name: One of ``MAP_NAMES``.
         maps: ``pooled_voxel_maps`` result.
 
     Returns:
-        Overlay: all GT voxels grey (opaque-ish) under all render voxels light blue (translucent).
-        Recall: missed GT grey, hit GT green, no render voxel. Precision: incorrect render voxels red,
-        correct ones green, no GT voxel.
+        Overlay: all GT voxels grey (mostly opaque) under all render voxels light blue (translucent).
+        Recall: render voxels off a hit GT voxel very faint green, missed GT grey, hit GT solid green.
+        Precision: render voxels not on GT (incorrect and outside the neighbourhood) faint red, correct
+        ones solid green, no GT voxel.
     """
+    all_render = np.vstack([maps["render_correct"], maps["render_incorrect"], maps["render_outside"]])
     if map_name == "overlay":
         ground_truth = np.vstack([maps["gt_hit"], maps["gt_miss"]])
-        render = np.vstack([maps["render_correct"], maps["render_incorrect"]])
         return [(ground_truth, GROUND_TRUTH_VOXEL_RGB, GROUND_TRUTH_OVERLAY_OPACITY),
-                (render, RENDER_VOXEL_RGB, RENDER_OVERLAY_OPACITY)]
+                (all_render, RENDER_VOXEL_RGB, RENDER_OVERLAY_OPACITY)]
     if map_name == "recall":
-        return [(maps["gt_miss"], GROUND_TRUTH_VOXEL_RGB, SOLID_VOXEL_OPACITY), (maps["gt_hit"], HIT_VOXEL_RGB, SOLID_VOXEL_OPACITY)]
+        # The hit GT voxels are the correct render voxels, so the faint context is every other render voxel.
+        context = np.vstack([maps["render_incorrect"], maps["render_outside"]])
+        return [(context, HIT_VOXEL_RGB, RECALL_CONTEXT_OPACITY), (maps["gt_miss"], GROUND_TRUTH_VOXEL_RGB, SOLID_VOXEL_OPACITY),
+                (maps["gt_hit"], HIT_VOXEL_RGB, SOLID_VOXEL_OPACITY)]
     if map_name == "precision":
-        return [(maps["render_incorrect"], NON_HIT_VOXEL_RGB, NON_HIT_PRECISION_OPACITY), (maps["render_correct"], HIT_VOXEL_RGB, SOLID_VOXEL_OPACITY)]
+        not_on_ground_truth = np.vstack([maps["render_incorrect"], maps["render_outside"]])
+        return [(not_on_ground_truth, NON_HIT_VOXEL_RGB, NON_HIT_PRECISION_OPACITY), (maps["render_correct"], HIT_VOXEL_RGB, SOLID_VOXEL_OPACITY)]
     raise ValueError(f"unknown map {map_name!r} (have {MAP_NAMES})")
 
 
@@ -507,18 +528,22 @@ def map_caption(map_name: str, maps: Dict[str, Any]) -> str:
         maps: ``pooled_voxel_maps`` result.
 
     Returns:
-        Overlay: GT and render voxel counts. Recall: hit / GT voxels. Precision: correct / render voxels.
+        Overlay: GT and render voxel counts (all rendered voxels). Recall: hit / GT voxels, faint green =
+        the other render voxels. Precision: correct / scored render voxels, faint red = not on GT.
+        The ratios are the report's; the faint voxels outside the selected neighbourhoods are named, never counted.
     """
     # Whole-region counts (what the report counts), not only the drawn part within the radius.
     totals = maps["totals"]
     gt_hits, gt_misses = totals["gt_hit"], totals["gt_miss"]
-    correct, incorrect = totals["render_correct"], totals["render_incorrect"]
+    correct, incorrect, outside = totals["render_correct"], totals["render_incorrect"], maps["outside_total"]
     if map_name == "overlay":
-        return f"{gt_hits + gt_misses} GT voxels (grey), {correct + incorrect} render voxels (light blue)"
+        return f"{gt_hits + gt_misses} GT voxels (grey), {correct + incorrect + outside} render voxels (light blue)"
     if map_name == "recall":
-        return f"recall {ratio_text(gt_hits, gt_hits + gt_misses)}: {gt_hits} of {gt_hits + gt_misses} GT voxels hit (green)"
+        return (f"recall {ratio_text(gt_hits, gt_hits + gt_misses)}: {gt_hits} of {gt_hits + gt_misses} GT voxels hit (green); "
+                f"faint green = {incorrect + outside} other render voxels")
     if map_name == "precision":
-        return f"precision {ratio_text(correct, correct + incorrect)}: {correct} of {correct + incorrect} render voxels on GT (green)"
+        return (f"precision {ratio_text(correct, correct + incorrect)}: {correct} of {correct + incorrect} render voxels on GT (green); "
+                f"faint red = not on GT, {outside} of them outside the selected classes' neighbourhoods (not counted)")
     raise ValueError(f"unknown map {map_name!r} (have {MAP_NAMES})")
 
 
@@ -649,7 +674,7 @@ def render_pose(scenes: Sequence[RunScene], stem: str, selected_class_ids: Seque
                     plotter.view_xy()
             # Translucent voxels over opaque ones (render over GT, red over green) need depth peeling to composite in the right order.
             # Peeling is a per-renderer setting, so every run's panel gets it, not only the last active one.
-            if map_name in ("overlay", "precision"):
+            if map_name in MAP_NAMES:  # every map stacks translucent voxels over solid ones
                 for column in range(len(scenes)):
                     plotter.subplot(0, column)
                     plotter.enable_depth_peeling()
