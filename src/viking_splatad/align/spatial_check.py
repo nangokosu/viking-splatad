@@ -7,6 +7,10 @@ import numpy as np
 
 from viking_splatad.registry import transform
 
+# Distance from a pixel centre to its edge, in pixels: OpenCV puts integer coordinates
+# at pixel centres, so each pixel is one unit wide and its edges sit half a unit away.
+PIXEL_CENTRE_TO_EDGE = 0.5
+
 
 @transform("T25", "project lidar points into the image with T_camera_lidar and pinhole K")
 def project_lidar_to_image(
@@ -33,21 +37,23 @@ def project_lidar_to_image(
         (pixels [N,2] float64, valid [N] bool); valid = in front of the camera
         (Z > 0) and inside the image bounds. Pixels of points with Z <= 0 are NaN.
     """
-    # Camera-frame points: p_cam = R p_lidar + t.
+    # Step 1: camera-frame points, p_cam = R p_lidar + t (row-vector form: p R^T + t).
     points_camera = points_lidar @ T_camera_lidar[:3, :3].T + T_camera_lidar[:3, 3]
     depth = points_camera[:, 2]
     in_front = depth > 0.0
-    # Avoid dividing by non-positive depth; those rows are masked to NaN below.
+    # Step 2: replace non-positive depth by NaN so those pixels come out NaN.
     safe_depth = np.where(in_front, depth, np.nan)
+    # Step 3: pinhole projection u = fx*X/Z + cx, v = fy*Y/Z + cy.
     pixel_u = camera_matrix[0, 0] * points_camera[:, 0] / safe_depth + camera_matrix[0, 2]
     pixel_v = camera_matrix[1, 1] * points_camera[:, 1] / safe_depth + camera_matrix[1, 2]
     pixels = np.column_stack([pixel_u, pixel_v])
-    # NaN comparisons are False, so behind-camera points are excluded automatically.
+    # Step 4: bounds test on the half-open image extent. NaN comparisons are False,
+    # so behind-camera points are excluded automatically.
     inside_image = (
-        (pixel_u >= -0.5)
-        & (pixel_u < image_width - 0.5)
-        & (pixel_v >= -0.5)
-        & (pixel_v < image_height - 0.5)
+        (pixel_u >= -PIXEL_CENTRE_TO_EDGE)
+        & (pixel_u < image_width - PIXEL_CENTRE_TO_EDGE)
+        & (pixel_v >= -PIXEL_CENTRE_TO_EDGE)
+        & (pixel_v < image_height - PIXEL_CENTRE_TO_EDGE)
     )
     return pixels, in_front & inside_image
 
@@ -74,17 +80,20 @@ def edge_alignment_score(
     Returns:
         Score in [0, 1]; 0 if there is no weight or no image gradient.
     """
-    # Sobel gradient magnitude sqrt(Gx^2 + Gy^2) on a float32 copy.
+    # Step 1: Sobel gradient magnitude sqrt(Gx^2 + Gy^2) on a float32 copy
+    # (derivative orders (1, 0) give Gx, (0, 1) give Gy).
     gray_float = image_gray.astype(np.float32)
     gradient_x = cv2.Sobel(gray_float, cv2.CV_32F, 1, 0)
     gradient_y = cv2.Sobel(gray_float, cv2.CV_32F, 0, 1)
     gradient_magnitude = np.hypot(gradient_x, gradient_y)
-    # Nearest-pixel lookup; clip guards the half-pixel border that rounds to W or H.
+    # Step 2: nearest-pixel lookup; clip guards the half-pixel border that rounds to W or H.
     column_index = np.clip(np.rint(pixels[valid, 0]).astype(int), 0, image_gray.shape[1] - 1)
     row_index = np.clip(np.rint(pixels[valid, 1]).astype(int), 0, image_gray.shape[0] - 1)
     sampled_gradient = gradient_magnitude[row_index, column_index]
+    # Step 3: weighted mean gradient over the valid points, divided by the image maximum.
     weights = discontinuity[valid]
+    total_weight = weights.sum()
     maximum_gradient = gradient_magnitude.max()
-    if weights.sum() == 0.0 or maximum_gradient == 0.0:
+    if total_weight == 0.0 or maximum_gradient == 0.0:
         return 0.0
-    return float(np.sum(weights * sampled_gradient) / (weights.sum() * maximum_gradient))
+    return float(np.sum(weights * sampled_gradient) / (total_weight * maximum_gradient))

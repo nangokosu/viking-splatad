@@ -1,0 +1,19 @@
+# Isolated environment for the FiftyOne viewer (scripts/14_build_fiftyone_dataset.py).
+# Kept apart from the root project: FiftyOne requires opencv-python-headless<5, which would
+# otherwise change the root uv.lock pin (opencv 5.0.0.93) that every other script relies on.
+[project]
+name = "viking-splatad-viz"
+version = "0.1.0"
+description = "FiftyOne viewer for SplatAD run outputs (read-only)"
+requires-python = ">=3.10"
+dependencies = [
+  "fiftyone>=1.22.1",
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "pyyaml>=6",
+  # The root package supplies the shared helpers (viking_splatad.viz, .eval, .labels).
+  "viking_splatad",
+]
+
+[tool.uv.sources]
+viking_splatad = { path = "..", editable = true }

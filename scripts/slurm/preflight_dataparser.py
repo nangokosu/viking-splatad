@@ -80,20 +80,24 @@ def draw_depth_coloured_points(image_bgr: np.ndarray, pixels: np.ndarray, depths
     overlay = image_bgr.copy()
     if len(depths) == 0:
         return overlay
-    # Robust range: percentiles ignore a few extreme returns.
+    # Robust range: percentiles ignore a few extreme returns. 5/95 is a visual choice (drops the
+    # outer 10% of returns), not a measured value; points outside it are clipped to the end colours.
     near_depth, far_depth = np.percentile(depths, [5.0, 95.0])
+    # eps floor avoids dividing by zero when every point has the same depth.
     depth_span = max(far_depth - near_depth, np.finfo(np.float64).eps)
     normalised_depth = np.clip((depths - near_depth) / depth_span, 0.0, 1.0)
-    # JET maps 0 -> blue, 255 -> red; invert so near points are red.
-    colour_indices = (255.0 * (1.0 - normalised_depth)).astype(np.uint8)
+    # JET maps 0 -> blue, uint8 max (255) -> red; invert so near points are red.
+    colour_index_max = float(np.iinfo(np.uint8).max)
+    colour_indices = (colour_index_max * (1.0 - normalised_depth)).astype(np.uint8)
     point_colours = cv2.applyColorMap(colour_indices.reshape(-1, 1), cv2.COLORMAP_JET).reshape(-1, 3)
     # Marker radius scales with image width so overlays look the same at any resolution;
     # 1/400 of the width is a visual choice (≈3 px at 1280 px wide), not a measured value.
     marker_radius = max(1, int(round(image_bgr.shape[1] / 400)))
     rounded_pixels = np.round(pixels).astype(int)
+    # One filled disc per point (cv2.FILLED == -1 thickness).
     for point_index in range(len(rounded_pixels)):
         cv2.circle(overlay, tuple(rounded_pixels[point_index]), marker_radius,
-                   tuple(int(channel) for channel in point_colours[point_index]), -1)
+                   tuple(int(channel) for channel in point_colours[point_index]), cv2.FILLED)
     return overlay
 
 
@@ -103,6 +107,9 @@ def summarise_split(split_name: str, outputs) -> None:
     Args:
         split_name: "train" or "test".
         outputs: ``DataparserOutputs`` for that split.
+
+    Returns:
+        None; the summary goes to stdout.
     """
     cameras = outputs.cameras
     lidars = outputs.metadata["lidars"]
@@ -166,15 +173,15 @@ def write_overlays(outputs, frame_count: int, output_dir: Path) -> List[Path]:
         if image_bgr is None:
             raise FileNotFoundError(f"cannot read {outputs.image_filenames[camera_index]}")
         points_lidar = point_clouds[lidar_index][:, :3].numpy().astype(np.float64)
-        pixels, valid = project_lidar_to_image(
+        pixels, in_image_mask = project_lidar_to_image(
             points_lidar, T_camera_lidar, camera_matrix, image_bgr.shape[1], image_bgr.shape[0])
-        # Depth for colouring: Z in the OpenCV camera frame.
+        # Depth for colouring: camera-frame Z = row 2 of T_camera_lidar applied to each lidar point.
         points_camera_z = points_lidar @ T_camera_lidar[2, :3] + T_camera_lidar[2, 3]
-        overlay = draw_depth_coloured_points(image_bgr, pixels[valid], points_camera_z[valid])
+        overlay = draw_depth_coloured_points(image_bgr, pixels[in_image_mask], points_camera_z[in_image_mask])
         overlay_path = output_dir / f"overlay_cam{camera_index:05d}_lidar{lidar_index:05d}.png"
         cv2.imwrite(str(overlay_path), overlay)
         print(f"overlay {overlay_path.name}: t_cam={camera_time:.3f}s dt_lidar={time_gap_seconds:+.3f}s "
-              f"points in image {int(valid.sum())}/{len(valid)}")
+              f"points in image {int(in_image_mask.sum())}/{len(in_image_mask)}")
         written_paths.append(overlay_path)
     return written_paths
 

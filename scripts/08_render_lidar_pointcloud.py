@@ -68,7 +68,7 @@ SUPPORTED_SPLITS = ("train", "test")
 # Divisor turning the sweep period into the time-match tolerance: consecutive sweeps are one
 # period apart, so a scan more than half a period from a sweep could belong to its neighbour.
 HALF_PERIOD_DIVISOR = 2.0
-# poses.npz key separator, as in dataset/writer.py (POSE_KEY_SEPARATOR); key = <sensor>__times.
+# Suffix of the poses.npz time key (separator as in dataset/writer.py POSE_KEY_SEPARATOR); key = <sensor>__times.
 POSES_TIMES_SUFFIX = "__times"
 # nerfstudio's file name for the dataparser transform (trainer.py:291). scripts/10_export_gaussians.py
 # reads it from the train dir; a test keeps the two names equal.
@@ -219,6 +219,8 @@ def render_scan(model: Any, scan_lidar: Any, batch: Dict[str, Any]) -> Tuple[Dic
         # (xyz = depth * ray direction + velocity * t, kept where ray-drop prob <= 0.5).
         outputs = model.get_lidar_outputs(scan_lidar)
         prediction, ground_truth = model.filter_lidar_pred_and_gt(outputs, batch, output_point_cloud=True)
+        # 0.5 is SplatAD's own ray-drop decision boundary (equal odds of drop and return), copied
+        # rather than tuned so these rows line up with the points filter_lidar_pred_and_gt builds.
         kept_ray_mask = (prediction["ray_drop"].sigmoid() <= 0.5) * ground_truth["valid"]
         kept_intensity = outputs["intensity"].flatten()[kept_ray_mask]
         kept_time = batch["raster_pts"][..., 3].flatten()[kept_ray_mask]
@@ -239,7 +241,14 @@ def render_scan(model: Any, scan_lidar: Any, batch: Dict[str, Any]) -> Tuple[Dic
         metrics, _ = model.get_image_metrics_and_images(outputs, batch)
 
     def to_float32(tensor: Any) -> np.ndarray:
-        """Detached CPU float32 copy of a tensor."""
+        """Detached CPU float32 copy of a tensor.
+
+        Args:
+            tensor: Torch tensor on any device.
+
+        Returns:
+            float32 numpy array of the same shape.
+        """
         return tensor.detach().cpu().numpy().astype(np.float32)
 
     arrays = {
@@ -343,8 +352,9 @@ def prepare_render_config(config: Any, streamline_config: Callable[[Any], Any]) 
 
     ``streamline_ad_config`` also sets ``add_missing_points = False``. That drops every no-return
     ray from the raster, so the render could not score ray drop or no-return directions. The
-    trained value is restored: rendering uses the same rays training saw. Point painting is also
-    turned off (it only seeds Gaussian colours, which the checkpoint replaces).
+    trained value is restored: rendering uses the same rays training saw. The eval-frame cap is
+    removed, and point painting is turned off (it only seeds Gaussian colours, which the checkpoint
+    replaces).
 
     Args:
         config: The loaded run config (config.yml).

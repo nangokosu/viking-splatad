@@ -141,3 +141,24 @@ Results at the time of the audit (ungated, binding):
 | 6 | Close the frame caveat in `data/gt/*/summary.md`, citing §8.1 | §8.1 | low |
 
 The 1 m band in fix 3 and the p99.9 in fix 1 are proposals. When adopted, they get a source in `configs/eval.yaml` like the other settings.
+
+## 9. FiftyOne viewer: per-pose scene coverage, B vs R (user's decision 2026-10-31)
+`scripts/14_build_fiftyone_dataset.py` (`fiftyone_viewer.md`) shows each test sweep's rendered cloud with the GT cuboids of the **whole run** (`cuboids.json`), all in the map frame.
+
+**Question it serves:** a comparison. From each held-out test pose, how much of the overall labelled scene does the rendered point cloud capture, and does R capture more than B?
+- **No per-pose "expected boxes":** no range, FOV or occlusion filter per sweep. Every pose is scored against the same whole-run cuboid set.
+- **Why that is enough:** B and R are rendered from the same test poses, along the same real rays, against the same cuboids. Anything a pose cannot see limits both arms equally, so it cancels in the B-vs-R difference.
+- **Consequence:** a pose's absolute coverage is **not** meaningful (low coverage may just mean the scene is mostly out of view). Only the difference between arms at the same pose is read.
+
+**Conditions for the comparison to hold:**
+- **Same test frames:** both runs' `split.json` must have the same `membership_sha256`. Otherwise the poses differ and nothing cancels.
+- **Repeats:** SplatAD's run-to-run noise (CLAUDE.md rule 10) applies here too. Compare the B-vs-R gap with the spread across repeats of each arm, never one run against one run.
+
+**Caveats inherited from the sections above:**
+- **§2 ray-drop gate:** the viewer draws `pred_points`, which is the **gated** output. A radar trunk on a ray the real lidar got no return on can be gated out, so the viewer can understate R. An ungated cloud (`pred_accumulation` > the P1 threshold) would match the primary metric.
+- **§3 first surface only:** coverage counts only what a lidar at the pose would hit first. R's trunks hidden behind grass Gaussians do not show here; P2 (§5) is the test for them.
+- **§4 interleaved split:** test poses sit between training poses, so "novel" pose means in-between, not truly new viewpoints.
+- **§8.2 canopy overlap:** trunk boxes are mostly canopy, so points "in a trunk box" are mostly foliage. Read coverage per class, and at the trunk base, through the §8.4 fixes 2 and 3 once adopted.
+- **Overlap is not correct geometry:** a point inside a box shows the render reached the object, not that its surface is in the right place.
+
+**Status:** the viewer currently shows coverage by eye only. It computes no per-pose or per-box coverage numbers. Its cuboid `Detection` objects are also shared across samples, which may give duplicate label ids (not checked). Neither change is made yet.

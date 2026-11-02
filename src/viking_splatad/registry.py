@@ -56,6 +56,13 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # Rendered lidar npz -> points (eval/rendered_pointcloud.py): ungated (accumulation) points
         # rebuilt from the ray raster, and lidar-frame points -> map frame -> GT voxel grid.
         "T67", "T68",
+        # FiftyOne viewer (viz/viewer_export.py): GT cuboid quaternion -> FiftyOne Euler rotation,
+        # and sweep points -> map frame for display.
+        "T69", "T70",
+        # Shared interleaved split (dataset/run_split.py, VikingHillDataParser.test_split_method):
+        # every ~1/(1-f)-th lidar sweep is test and every sensor holds out the same instants (T71);
+        # only an evenly spaced fraction of those is rendered test, the rest is guard (T72).
+        "T71", "T72",
     }
 )
 
@@ -94,12 +101,24 @@ def transform(transform_id: str, description: str) -> Callable:
     """
 
     def register(function: Callable) -> Callable:
+        """Record ``function`` in TRANSFORM_REGISTRY under ``transform_id``.
+
+        Args:
+            function: The conversion/calibration function being decorated.
+
+        Returns:
+            ``function`` itself, unwrapped.
+
+        Raises:
+            ValueError: If the id is unknown or held by a different function.
+        """
         # Guard against typos: only ids promised by the plan may be registered.
         if transform_id not in PLANNED_TRANSFORM_IDS:
             raise ValueError(f"Unknown transform id {transform_id!r}")
         qualified_name = f"{function.__module__}.{function.__qualname__}"
         existing_spec = TRANSFORM_REGISTRY.get(transform_id)
-        # One id <-> one implementation, so a test maps unambiguously to code.
+        # One id <-> one implementation, so a test maps unambiguously to code. Re-registering
+        # the same qualified name (e.g. a module re-import) is allowed.
         if existing_spec is not None and existing_spec.qualified_name != qualified_name:
             raise ValueError(
                 f"{transform_id} already registered by {existing_spec.qualified_name}"

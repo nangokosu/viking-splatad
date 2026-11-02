@@ -19,14 +19,25 @@ from typing import Dict, List, Optional, Tuple, Type, Union
 import numpy as np
 
 from viking_splatad.dataset.run_split import (
+    MIDDLE_BLOCKS_SPLIT_METHOD,
+    REFERENCE_SENSOR_KIND,
     RENDER_SELECTION_SPLIT_NAMES,
+    SHARED_INTERLEAVED_SPLIT_METHOD,
     WHOLE_BLOCK_CORE_FRACTION,
+    WHOLE_TEST_RENDER_FRACTION,
     core_fraction_for_split,
     frame_indices_of_paths,
     load_render_frame_selection,
     middle_block_train_eval_indices,
+    resolve_test_split_method,
     restrict_test_to_block_cores,
+    restrict_test_to_render_subset,
     select_guard_frames_for_render,
+    shared_interleaved_train_test_indices,
+)
+from viking_splatad.splatad.determinism import (
+    deterministic_mode_requested,
+    enable_deterministic_mode,
 )
 from viking_splatad.splatad.viking_conversions import (
     OUSTER_LIDAR_TYPE_NAME,
@@ -86,14 +97,26 @@ if NERFSTUDIO_AVAILABLE:
         of the block is guard: not trained on, not evaluated or rendered. 1.0 = the whole block.
         Needs test_block_count. Set from the session config's split.test_block_core_fraction."""
         eval_whole_test_blocks: bool = False
-        """True = training's ``val`` eval covers the whole T60 blocks, guard included (T65); renders
-        (``test``/``eval``) keep the cores. Set by splatad_run.sbatch."""
+        """True = training's ``val`` eval covers every held-out frame, guard included (T65): the whole
+        T60 blocks, or every T71 instant; renders (``test``/``eval``) keep the cores / the T72
+        subset. Set by splatad_run.sbatch."""
+        test_split_method: Optional[str] = None
+        """``shared_interleaved`` = every ~1/(1-f)-th lidar sweep is test and camera holds out the
+        frames nearest those sweeps (T71); test_block_count and test_block_core_fraction are then
+        ignored. ``middle_blocks`` = the T60 blocks (needs test_block_count). None = middle_blocks
+        when test_block_count is set (config.yml files saved before this field), else neurad's
+        LINSPACE. Set from the session config's split.method by submit_run.py."""
+        test_render_fraction: float = WHOLE_TEST_RENDER_FRACTION
+        """Fraction r of the T71 held-out instants, evenly spaced, that is the eval split (T72); the
+        other held-out frames are guard (not trained on, not rendered). 1.0 = every held-out frame.
+        Needs shared_interleaved. Set from the session config's split.test_render_fraction."""
         render_frame_selection_file: Optional[Path] = None
         """JSON ``{"camera": [frame indices], "lidar": [...]}``; set only by render-only jobs
         (scripts/slurm/render_only.sbatch) in a copy of a run's config.yml. With it, the ``test``/``eval``
-        split is exactly these guard frames (T66) instead of the cores; ``val`` and ``train`` are
-        unchanged. Needs test_block_count and a core fraction < 1. None (also for config.yml files
-        saved before this field existed: the class default is the fallback) = the cores."""
+        split is exactly these guard frames (T66) instead of the cores / render subset; ``val`` and
+        ``train`` are unchanged. Needs guard frames: test blocks with a core fraction < 1, or the
+        shared interleaved split with a render fraction < 1. None (also for config.yml files saved
+        before this field existed: the class default is the fallback) = the cores / render subset."""
         time_to_center_fraction_of_readout: float = 0.5
         """Centre row is exposed this fraction of the readout after the stamp: 0.5 if the stamp
         marks readout start (assumed; unverified), 0.0 if it marks mid-readout."""
@@ -121,7 +144,7 @@ if NERFSTUDIO_AVAILABLE:
             self._view: Optional[DatasetView] = None
             self._camera_arrays = None
             self._lidar_arrays = None
-            # T60 positions per sensor kind ("camera"/"lidar" -> (train, test)), set after the window.
+            # T60 / T71 positions per sensor kind ("camera"/"lidar" -> (train, test)), set after the window.
             self._block_split_positions: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None
             # Split of the current get_dataparser_outputs call (the datamanager reuses one parser).
             self._requested_split: str = "train"
@@ -136,6 +159,10 @@ if NERFSTUDIO_AVAILABLE:
             Returns:
                 ``DataparserOutputs`` from ``ADDataParser``.
             """
+            # Reproducibility switches (VIKING_DETERMINISTIC=1, training step only). Here, because the
+            # RNGs are already seeded and the lidar cache has not started (see determinism.py).
+            if deterministic_mode_requested():
+                enable_deterministic_mode()
             # Remember the requester: _filter_based_on_time picks whole blocks or cores from it (T65).
             self._requested_split = split
             session_root = Path(self.config.data) / self.config.session_name
@@ -176,7 +203,8 @@ if NERFSTUDIO_AVAILABLE:
             return super()._generate_dataparser_outputs(split)
 
         def _filter_based_on_time(self, cameras, img_filenames, lidars, pc_filenames, trajectories):
-            """Base time window, then the T60 block split (and T62 cores or T66 guard frames) on the windowed times.
+            """Base time window, then the T60 block split (T62 cores) or the T71 shared interleaved split
+            (T72 render subset), and T66 guard frames, on the windowed times.
 
             The blocks are computed here, not in ``_get_train_eval_indices``: that runs after
             ``_adjust_times`` has cast times to float32 and sees one sensor kind at a time, while
@@ -190,42 +218,63 @@ if NERFSTUDIO_AVAILABLE:
                 The base class's filtered (cameras, img_filenames, lidars, pc_filenames, trajectories).
 
             Raises:
-                ValueError: If c < 1 without test blocks, if ``render_frame_selection_file`` is set
-                    without blocks or with c = 1 (no guard frames), or if it names a frame that is
-                    not a guard frame (T66).
+                ValueError: If c < 1 without test blocks, r < 1 without the shared interleaved
+                    split, an unknown ``test_split_method``, ``render_frame_selection_file`` set
+                    on a run without guard frames, or a selection naming a non-guard frame (T66).
             """
             filtered = super()._filter_based_on_time(cameras, img_filenames, lidars, pc_filenames, trajectories)
             self._block_split_positions = None
-            # A render selection names guard frames, which exist only with T60 blocks and T62 cores < 1.
+            split_method = resolve_test_split_method(self.config.test_split_method, self.config.test_block_count)
+            # A render subset is part of the T71 instants; refuse r < 1 elsewhere rather than ignore it.
+            if (split_method != SHARED_INTERLEAVED_SPLIT_METHOD
+                    and self.config.test_render_fraction != WHOLE_TEST_RENDER_FRACTION):
+                raise ValueError("test_render_fraction < 1 needs test_split_method shared_interleaved")
+            # A render selection names guard frames: T62 cores < 1 of T60 blocks, or a T72 subset r < 1.
             selection_file = self.config.render_frame_selection_file
-            if selection_file is not None and (
-                    self.config.test_block_count is None
-                    or self.config.test_block_core_fraction == WHOLE_BLOCK_CORE_FRACTION):
-                raise ValueError("render_frame_selection_file needs test_block_count and "
-                                 "test_block_core_fraction < 1 (it selects guard frames)")
-            if self.config.test_block_count is None:
+            has_guard_frames = (
+                (split_method == MIDDLE_BLOCKS_SPLIT_METHOD
+                 and self.config.test_block_core_fraction != WHOLE_BLOCK_CORE_FRACTION)
+                or (split_method == SHARED_INTERLEAVED_SPLIT_METHOD
+                    and self.config.test_render_fraction != WHOLE_TEST_RENDER_FRACTION))
+            if selection_file is not None and not has_guard_frames:
+                raise ValueError("render_frame_selection_file needs guard frames: test_block_count with "
+                                 "test_block_core_fraction < 1, or shared_interleaved with test_render_fraction < 1")
+            if split_method is None:
                 # Cores are parts of T60 blocks; refuse c < 1 rather than ignore it silently.
                 if self.config.test_block_core_fraction != WHOLE_BLOCK_CORE_FRACTION:
                     raise ValueError("test_block_core_fraction < 1 needs test_block_count")
                 return filtered
-            windowed_cameras, windowed_lidars = filtered[0], filtered[2]
+            # Base output order: (cameras, image paths, lidars, sweep paths, trajectories).
+            windowed_cameras, windowed_image_paths = filtered[0], filtered[1]
+            windowed_lidars, windowed_sweep_paths = filtered[2], filtered[3]
+            # float64 copies of the windowed times, flattened per sensor kind, for T60.
             windowed_times = {"camera": windowed_cameras.times.reshape(-1).double().numpy(),
                               "lidar": windowed_lidars.times.reshape(-1).double().numpy()}
-            block_positions, block_bounds = middle_block_train_eval_indices(
-                windowed_times, self.config.train_split_fraction, self.config.test_block_count)
-            # T65 picks c per requester; T62: eval keeps only each block's core, the guard drops out.
-            core_fraction = core_fraction_for_split(
-                self._requested_split, self.config.test_block_core_fraction, self.config.eval_whole_test_blocks)
-            self._block_split_positions, guard_positions_by_kind, _ = restrict_test_to_block_cores(
-                windowed_times, block_positions, block_bounds, core_fraction)
+            if split_method == SHARED_INTERLEAVED_SPLIT_METHOD:
+                # T71: every ~1/(1-f)-th lidar sweep and the camera frames nearest it are held out.
+                interleaved_positions = shared_interleaved_train_test_indices(
+                    windowed_times, self.config.train_split_fraction, REFERENCE_SENSOR_KIND)
+                # T65 picks r per requester (val: every held-out frame); T72: eval keeps the subset.
+                render_fraction = core_fraction_for_split(
+                    self._requested_split, self.config.test_render_fraction, self.config.eval_whole_test_blocks)
+                self._block_split_positions, guard_positions_by_kind = restrict_test_to_render_subset(
+                    windowed_times, interleaved_positions, REFERENCE_SENSOR_KIND, render_fraction)
+            else:
+                block_positions, block_bounds = middle_block_train_eval_indices(
+                    windowed_times, self.config.train_split_fraction, self.config.test_block_count)
+                # T65 picks c per requester; T62: eval keeps only each block's core, the guard drops out.
+                core_fraction = core_fraction_for_split(
+                    self._requested_split, self.config.test_block_core_fraction, self.config.eval_whole_test_blocks)
+                self._block_split_positions, guard_positions_by_kind, _ = restrict_test_to_block_cores(
+                    windowed_times, block_positions, block_bounds, core_fraction)
             # T66 (render-only jobs): the held-out split asked for by ns-render / scripts/08 becomes
             # exactly the requested guard frames; train positions are kept as they are.
             if selection_file is not None and self._requested_split in RENDER_SELECTION_SPLIT_NAMES:
                 requested_by_kind = load_render_frame_selection(Path(selection_file))
-                # Frame index of each windowed position, from its file name (filtered[1] images,
-                # filtered[3] sweeps; same order as the windowed cameras / lidars).
-                frame_indices_by_kind = {"camera": frame_indices_of_paths(filtered[1]),
-                                         "lidar": frame_indices_of_paths(filtered[3])}
+                # Frame index of each windowed position, from its file name (paths are in the same
+                # order as the windowed cameras / lidars).
+                frame_indices_by_kind = {"camera": frame_indices_of_paths(windowed_image_paths),
+                                         "lidar": frame_indices_of_paths(windowed_sweep_paths)}
                 for sensor_kind, (train_positions, _) in list(self._block_split_positions.items()):
                     selected_positions = select_guard_frames_for_render(
                         guard_positions_by_kind[sensor_kind], frame_indices_by_kind[sensor_kind],
@@ -234,7 +283,7 @@ if NERFSTUDIO_AVAILABLE:
             return filtered
 
         def _get_train_eval_indices(self, sensors: Union["Cameras", "Lidars"]) -> Tuple["torch.Tensor", "torch.Tensor"]:
-            """neurad's LINSPACE split, or the T60 block positions when ``test_block_count`` is set.
+            """neurad's LINSPACE split, or the T60 / T71 positions computed in ``_filter_based_on_time``.
 
             Args:
                 sensors: The windowed cameras or lidars (same order as in ``_filter_based_on_time``).
@@ -243,12 +292,14 @@ if NERFSTUDIO_AVAILABLE:
                 (train_indices, eval_indices) int64 tensors.
 
             Raises:
-                ValueError: If ``max_eval_frames`` is set with blocks (it would subsample them randomly).
+                ValueError: If ``max_eval_frames`` is set with blocks or the shared interleaved split
+                    (it would subsample them randomly).
             """
-            if self.config.test_block_count is None:
+            if resolve_test_split_method(self.config.test_split_method, self.config.test_block_count) is None:
                 return super()._get_train_eval_indices(sensors)
             if self.config.max_eval_frames is not None:
-                raise ValueError("max_eval_frames subsamples eval frames with an RNG; unset it for the block split")
+                raise ValueError("max_eval_frames subsamples eval frames with an RNG; unset it for the block "
+                                 "or shared interleaved split")
             sensor_kind = "camera" if isinstance(sensors, Cameras) else "lidar"
             train_positions, test_positions = self._block_split_positions[sensor_kind]
             return torch.from_numpy(train_positions), torch.from_numpy(test_positions)
@@ -315,10 +366,11 @@ if NERFSTUDIO_AVAILABLE:
             # Ego filter from the manifest: sphere radius or box (one of them is the identity).
             model = self._lidar_arrays.model
             point_clouds = []
-            for path in filepaths:
-                sweep = load_lidar_sweep(path, model.min_lidar_radius, model.ego_box_half_extents)
+            for sweep_path in filepaths:
+                sweep = load_lidar_sweep(sweep_path, model.min_lidar_radius, model.ego_box_half_extents)
                 if self.config.add_missing_points:
-                    no_return_path = no_return_path_for_sweep(path)
+                    # Placeholder rows keep the sweep's column count so the concatenation is valid.
+                    no_return_path = no_return_path_for_sweep(sweep_path)
                     if not no_return_path.is_file():
                         raise FileNotFoundError(
                             f"{no_return_path} missing: add_missing_points needs the no-return sidecar "
@@ -331,8 +383,14 @@ if NERFSTUDIO_AVAILABLE:
             return point_clouds
 
         def _add_sensor_velocities(self, cameras, lidars) -> None:
-            """Base velocities, then overwrite rolling-shutter metadata from the manifest."""
+            """Base velocities, then overwrite rolling-shutter metadata from the manifest.
+
+            Args:
+                cameras: Windowed ``Cameras``; its metadata is updated in place.
+                lidars: Windowed ``Lidars`` (base class only).
+            """
             super()._add_sensor_velocities(cameras, lidars)
+            # One (frame_count, 1) column per metadata key, every frame sharing the manifest value.
             frame_count = len(cameras)
             cameras.metadata["rolling_shutter_time"] = torch.full(
                 (frame_count, 1), self._camera_arrays.rolling_shutter_seconds)
@@ -340,7 +398,11 @@ if NERFSTUDIO_AVAILABLE:
                 (frame_count, 1), self._camera_arrays.time_to_center_pixel_seconds)
 
         def _get_actor_trajectories(self) -> List[Dict]:
-            """No actors: cuboids stay out of SplatAD inputs."""
+            """No actors: cuboids stay out of SplatAD inputs (project rule 6).
+
+            Returns:
+                An empty list.
+            """
             return []
 
     # Object neurad's plugin loader expects (it rejects a bare config class).

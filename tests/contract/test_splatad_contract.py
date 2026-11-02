@@ -6,7 +6,9 @@ import numpy as np
 import pytest
 
 from tests.unit.test_writer import build_synthetic_dataset
-from viking_splatad.contract.splatad_contract import ContractReport, validate_dataset
+from viking_splatad.contract.splatad_contract import (
+    ContractReport, check_azimuth_tiles, validate_dataset,
+)
 from viking_splatad.dataset.writer import write_dataset
 
 
@@ -157,3 +159,23 @@ def test_schema_version_mismatch_reported_as_failed_check(tmp_path):
     manifest["schema_version"] += 1
     manifest_path.write_text(json.dumps(manifest))
     assert validate_dataset(tmp_path).failed_check_names() == ["dataset_loadable"]
+
+
+@pytest.mark.parametrize("bad_resolution", [0.0, -0.0175, float("inf"), float("nan")])
+def test_azimuth_tiles_invalid_resolution_fails_without_exception(bad_resolution):
+    """A non-positive or non-finite azimuth resolution yields a failed check, not an exception."""
+    dataset = build_synthetic_dataset()
+    dataset.lidar.azimuth_resolution = bad_resolution
+    result = check_azimuth_tiles(dataset)
+    assert result.name == "azimuth_tile_integral"
+    assert not result.passed
+    assert "finite and positive" in result.message
+
+
+@pytest.mark.parametrize("bad_resolution", [0.0, -0.0175])
+def test_validate_dataset_invalid_resolution_reports_failure(tmp_path, bad_resolution):
+    """Full validation with an invalid resolution fails the azimuth check and does not raise."""
+    report = validate_corrupted(
+        tmp_path, lambda dataset: setattr(dataset.lidar, "azimuth_resolution", bad_resolution)
+    )
+    assert "azimuth_tile_integral" in report.failed_check_names()

@@ -42,7 +42,8 @@ class OccupancyGrid:
             ((N, 3) centres, (N,) class ids) in C-order of the grid.
         """
         occupied_indices = np.argwhere(self.class_ids != EMPTY_CLASS_ID)
-        # Centre = origin + (index + half a voxel) * voxel_size.
+        # Centre = origin + (index + 0.5) * voxel_size; 0.5 is half a voxel, the
+        # centre-of-cell convention in the module docstring.
         centers = self.origin + (occupied_indices + 0.5) * self.voxel_size
         class_ids = self.class_ids[tuple(occupied_indices.T)]
         return centers, class_ids
@@ -77,8 +78,8 @@ def voxelize_cuboids(
     Complexity: for each box only voxels inside its axis-aligned bounding box are
     tested, so cost is sum over boxes of (AABB volume / voxel_size^3), not
     (#boxes x grid size). Discretisation error: only voxels whose centre-vs-surface
-    classification flips are wrong; those lie within sqrt(3)*voxel_size of the
-    surface, so |volume error| <= O(surface_area * voxel_size).
+    classification flips are wrong; the surface must cross such a voxel, so its
+    centre lies within the half-diagonal sqrt(3)/2*voxel_size of the surface, and |volume error| <= O(surface_area * voxel_size).
 
     Overlap rule: each voxel takes the class with the lowest rank in
     ``class_priority`` among boxes containing its centre. Classes missing from the
@@ -99,6 +100,7 @@ def voxelize_cuboids(
     """
     if voxel_size <= 0:
         raise ValueError("voxel_size must be positive")
+    # Resolve grid bounds: explicit, or union of box extents padded by the margin.
     if bounds is None:
         if not cuboids:
             raise ValueError("bounds are required when there are no cuboids")
@@ -132,9 +134,9 @@ def voxelize_cuboids(
         inside_mask = points_in_cuboid(geometry, centers.reshape(-1, 3)).reshape(index_mesh.shape[:3])
         # Write only voxels inside the box that this box outranks.
         window = tuple(slice(low, high) for low, high in zip(index_low, index_high))
-        wins = inside_mask & (box_rank < best_rank[window])
-        class_ids[window][wins] = box.class_id
-        best_rank[window][wins] = box_rank
+        voxels_won = inside_mask & (box_rank < best_rank[window])
+        class_ids[window][voxels_won] = box.class_id
+        best_rank[window][voxels_won] = box_rank
     return OccupancyGrid(class_ids, bounds_min, float(voxel_size))
 
 
@@ -152,7 +154,8 @@ def crop_occupancy_to_sensor_fov(
     is kept when |p_s| <= max_range, |atan2(y, x)| <= horizontal_fov/2 and
     |atan2(z, hypot(x, y))| <= vertical_fov/2 (a full 2*pi horizontal FOV keeps all
     azimuths: atan2 returns values in [-pi, pi], so |azimuth| <= pi always holds).
-    No occlusion reasoning is done. Cost is O(occupied voxels).
+    No occlusion reasoning is done. Cost is O(grid voxels) to find the occupied ones,
+    then O(occupied voxels) for the transform and tests.
 
     Args:
         grid: Map-frame occupancy grid.
@@ -165,15 +168,15 @@ def crop_occupancy_to_sensor_fov(
         ((N, 3) sensor-frame voxel centres, (N,) class ids).
     """
     centers_map, class_ids = grid.occupied_voxel_centers()
-    # T_sensor_map = inverse of the rigid transform: R^T and -R^T t.
+    # T_sensor_map = inverse of the rigid transform: p_s = R^T (p_map - t).
     rotation_map_sensor = T_map_sensor[:3, :3]
     translation_map_sensor = T_map_sensor[:3, 3]
-    centers_sensor = (centers_map - translation_map_sensor) @ rotation_map_sensor
     # Row-vector form: (p - t) @ R == R^T (p - t) for each centre p.
+    centers_sensor = (centers_map - translation_map_sensor) @ rotation_map_sensor
     forward, left, up = centers_sensor[:, 0], centers_sensor[:, 1], centers_sensor[:, 2]
     # Range test, azimuth (yaw about z) test, elevation (angle above the xy plane) test.
     range_ok = np.linalg.norm(centers_sensor, axis=1) <= max_range
     azimuth_ok = np.abs(np.arctan2(left, forward)) <= horizontal_fov_radians / 2.0
     elevation_ok = np.abs(np.arctan2(up, np.hypot(forward, left))) <= vertical_fov_radians / 2.0
-    keep = range_ok & azimuth_ok & elevation_ok
-    return centers_sensor[keep], class_ids[keep]
+    in_fov = range_ok & azimuth_ok & elevation_ok
+    return centers_sensor[in_fov], class_ids[in_fov]

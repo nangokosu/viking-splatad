@@ -6,12 +6,15 @@ Usage:
     uv run python scripts/slurm/submit_run.py stage  --session S
     uv run python scripts/slurm/submit_run.py submit --session S --profile smoke [--skip-gates]
     uv run python scripts/slurm/submit_run.py status <job_id>
+    uv run python scripts/slurm/submit_run.py runs   [--all]
     uv run python scripts/slurm/submit_run.py fetch  <run_id>
     uv run python scripts/slurm/submit_run.py clean  [<run_id> ...] [--yes]
     uv run python scripts/slurm/submit_run.py render <run_id> --camera-frames 795,797-800 --lidar-sweeps 801 [--skip-gates]
+    uv run python scripts/slurm/submit_run.py resume <run_id> [--skip-gates]
 
 ``render`` re-renders guard frames of a finished run from its checkpoint, with the code at HEAD
-(scripts/slurm/render_only.sbatch), into <run dir>/rerenders/<label>/; no training.
+(scripts/slurm/render_only.sbatch), into <run dir>/rerenders/<label>/; no training. ``resume``
+reruns the steps after training of a run that trained but failed later, in the same run dir.
 
 The GPU nodes have no container runtime, so jobs run in a native environment that
 ``build-env`` builds once from the Dockerfile's recipe (scripts/slurm/build_env.sbatch). The
@@ -92,8 +95,8 @@ LOCAL_RUNS_ROOT = PROJECT_ROOT / "runs"
 # A run id is one path component (build_run_id: session-profile-timestamp-sha). Anything else is
 # refused before a path is built from it, so `clean` can never delete outside a runs/ folder.
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-# job_info.txt lines that only a successful run has (splatad_run.sbatch writes end_utc after
-# `split_render_check: match`); a run without both was cancelled, failed or killed.
+# job_info.txt's split_render_check value on success. Only a successful run has both that line and
+# end_utc (splatad_run.sbatch writes end_utc after it); a run without both was cancelled, failed or killed.
 SUCCESS_SPLIT_CHECK_VALUE = "match"
 # File name of the per-job batch script inside the run dir; squeue's %o names it, which maps an
 # active job back to its run id.
@@ -104,6 +107,18 @@ RERENDERS_DIRECTORY_NAME = "rerenders"
 # Folder inside a run dir holding a resume job's script (<run>/resume/job.sbatch, submit_run.py
 # resume). A job script there marks its run as active too: the resume job writes into the run dir.
 RESUME_DIRECTORY_NAME = "resume"
+# job_info.txt keys that mark a run's progress, in the order splatad_run.sbatch writes them. The last
+# one present is the run's milestone in `runs`: start_utc = job started, train_start_epoch_s = training
+# started, ..., end_utc = every step finished.
+RUN_MILESTONE_KEYS = ("start_utc", "gpu_check", "train_start_epoch_s", "train_elapsed_s", "overfitting_plot",
+                      "render_elapsed_s", "lidar_render_elapsed_s", "gaussian_export_elapsed_s",
+                      "split_render_check", "end_utc")
+# job_info.txt's overfitting_plot value when the figure was written (splatad_run.sbatch).
+WRITTEN_PLOT_VALUE = "written"
+# squeue -o fields for `runs`: job id, state, pending reason, (estimated) start time, batch script
+# path. Space-separated: the first four never contain spaces, and the path is last, so a split with
+# at most len - 1 cuts keeps a path with spaces whole.
+SQUEUE_TRACK_FIELDS = ("%i", "%T", "%r", "%S", "%o")
 # Render-only job's frame selection, inside its rerender folder (read by the dataparser, T66, and by
 # scripts/12_prepare_rerender.py check).
 SELECTION_FILE_NAME = "selection.json"
@@ -112,6 +127,13 @@ RERENDER_LABEL_PREFIX = "render"
 # Split name of guard frames in a run's split.json (dataset/run_split.py GUARD_SPLIT_NAME; repeated
 # here because this script runs without importing the package). Only these may be re-rendered.
 GUARD_SPLIT_NAME = "guard"
+# split.method values (dataset/run_split.py TEST_SPLIT_METHODS; repeated for the same reason): T60
+# contiguous middle blocks, or T71 instants shared by every sensor.
+MIDDLE_BLOCKS_SPLIT_METHOD = "middle_blocks"
+SHARED_INTERLEAVED_SPLIT_METHOD = "shared_interleaved"
+TEST_SPLIT_METHODS = (MIDDLE_BLOCKS_SPLIT_METHOD, SHARED_INTERLEAVED_SPLIT_METHOD)
+# T72 render fraction meaning "render every held-out frame" (run_split.py WHOLE_TEST_RENDER_FRACTION).
+WHOLE_TEST_RENDER_FRACTION = 1.0
 # Fewest camera frames a render-only job accepts. Not a tunable: `ns-render dataset` names each output
 # relative to os.path.commonpath of the split's image files (nerfstudio render.py ~998-1013); for a
 # single file that path is the file itself, so `relative_to` raises (smoke job 222946 crashed so).
@@ -527,6 +549,19 @@ def load_dataset_session_config(session: str, intermediate_root: Path = INTERMED
     return session_name, session_config
 
 
+def is_unit_interval_fraction(value: Any) -> bool:
+    """Whether ``value`` is a real YAML/JSON number in (0, 1].
+
+    Args:
+        value: The parsed config or manifest value.
+
+    Returns:
+        True iff ``value`` is an int or float (bool refused: it is an int subclass, so ``true``
+        would otherwise pass as 1) with 0 < value <= 1.
+    """
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and 0 < value <= 1
+
+
 def session_test_block_count(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
                              session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> int:
     """``split.test_block_count`` of the session config a dataset was extracted with.
@@ -579,11 +614,79 @@ def session_test_block_core_fraction(session: str, intermediate_root: Path = INT
     """
     session_name, session_config = load_dataset_session_config(session, intermediate_root, session_config_directory)
     core_fraction = session_config.get("split", {}).get("test_block_core_fraction")
-    # bool is an int subclass; refuse it (and strings) instead of coercing.
-    if isinstance(core_fraction, bool) or not isinstance(core_fraction, (int, float)) or not 0 < core_fraction <= 1:
+    # Only a real number is accepted (no bools or strings coerced).
+    if not is_unit_interval_fraction(core_fraction):
         raise ValueError(f"configs/sessions/{session_name}.yaml: split.test_block_core_fraction must be a number "
                          f"in (0, 1], got {core_fraction!r}")
     return float(core_fraction)
+
+
+def session_test_split_method(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                              session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> Optional[str]:
+    """``split.method`` of the session config a dataset was extracted with.
+
+    Passed to viking-data as ``--test-split-method``: ``shared_interleaved`` holds out every
+    ~1/(1-f)-th lidar sweep and the camera frames nearest it (T71); ``middle_blocks`` is the T60
+    contiguous blocks. config.yml records it for ns-render, scripts/08 and scripts/09.
+
+    Args:
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        The method, or None when the session config has no ``split.method`` (the dataparser then
+        picks middle_blocks from the block count, as before the key existed).
+
+    Raises:
+        FileNotFoundError: If the session config does not exist.
+        ValueError: If the value is not one of ``TEST_SPLIT_METHODS``.
+    """
+    session_name, session_config = load_dataset_session_config(session, intermediate_root, session_config_directory)
+    split_method = session_config.get("split", {}).get("method")
+    if split_method is not None and split_method not in TEST_SPLIT_METHODS:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: split.method must be one of {TEST_SPLIT_METHODS}, "
+                         f"got {split_method!r}")
+    return split_method
+
+
+def profile_test_render_fraction(profile_settings: Dict[str, Any], session: str,
+                                 intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+                                 session_config_directory: Path = SESSION_CONFIG_DIRECTORY) -> float:
+    """The run's T72 render fraction: the profile's ``test_render_fraction``, else the session's.
+
+    Passed to viking-data as ``--test-render-fraction``: an evenly spaced fraction r of the held-out
+    instants is the test split (rendered and fetched); the other held-out frames are guard.
+
+    Args:
+        profile_settings: The chosen ``profiles.<name>`` mapping.
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding ``<session name>.yaml``.
+
+    Returns:
+        r in (0, 1]; 1.0 when neither sets it (every held-out frame is rendered).
+
+    Raises:
+        FileNotFoundError: If the session config does not exist.
+        ValueError: If a value is not a number in (0, 1], or r < 1 for a session whose split
+            method is not shared_interleaved (it would have no held-out instants to subset).
+    """
+    # Step 1: the profile's value wins; else the session config's; else render every held-out frame.
+    session_name, session_config = load_dataset_session_config(session, intermediate_root, session_config_directory)
+    render_fraction = profile_settings.get("test_render_fraction")
+    value_source = "profile test_render_fraction"
+    if render_fraction is None:
+        render_fraction = session_config.get("split", {}).get("test_render_fraction", WHOLE_TEST_RENDER_FRACTION)
+        value_source = f"configs/sessions/{session_name}.yaml: split.test_render_fraction"
+    # Step 2: only a real number in (0, 1] (no bools or strings coerced).
+    if not is_unit_interval_fraction(render_fraction):
+        raise ValueError(f"{value_source} must be a number in (0, 1], got {render_fraction!r}")
+    # Step 3: a subset needs the shared interleaved split; refuse it before a GPU is queued.
+    split_method = session_test_split_method(session, intermediate_root, session_config_directory)
+    if render_fraction != WHOLE_TEST_RENDER_FRACTION and split_method != SHARED_INTERLEAVED_SPLIT_METHOD:
+        raise ValueError(f"{value_source} {render_fraction} < 1 needs split.method {SHARED_INTERLEAVED_SPLIT_METHOD}")
+    return float(render_fraction)
 
 
 def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
@@ -635,8 +738,8 @@ def dataset_train_fraction(session: str, intermediate_root: Path = INTERMEDIATE_
     """
     manifest_path = Path(intermediate_root) / session / "manifest.json"
     train_fraction = json.loads(manifest_path.read_text())["session"]["train_fraction"]
-    # bool is an int subclass; refuse it like any other non-number.
-    if isinstance(train_fraction, bool) or not isinstance(train_fraction, (int, float)) or not 0 < train_fraction <= 1:
+    # Only a real number is accepted (no bools or strings coerced).
+    if not is_unit_interval_fraction(train_fraction):
         raise ValueError(f"{manifest_path}: session.train_fraction must be a number in (0, 1], got {train_fraction!r}")
     return float(train_fraction)
 
@@ -669,29 +772,32 @@ def profile_split_fractions(profile_settings: Dict[str, Any], session: str,
             the test blocks overlapping (f <= 1/(K+1), T60).
     """
     # Step 1: each profile value, when present, must be a real number in (0, 1] (no bools/strings).
-    for key in ("train_fraction", "test_block_core_fraction"):
-        value = profile_settings.get(key)
-        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
-                                  or not 0 < value <= 1):
-            raise ValueError(f"profile {key} must be a number in (0, 1], got {value!r}")
+    for fraction_key in ("train_fraction", "test_block_core_fraction"):
+        profile_value = profile_settings.get(fraction_key)
+        if profile_value is not None and not is_unit_interval_fraction(profile_value):
+            raise ValueError(f"profile {fraction_key} must be a number in (0, 1], got {profile_value!r}")
     # Step 2: the train fraction: the profile's (then it is also the override), else the manifest's.
-    train_fraction_override = profile_settings.get("train_fraction")
+    profile_train_fraction = profile_settings.get("train_fraction")
+    train_fraction_override = None if profile_train_fraction is None else float(profile_train_fraction)
     if train_fraction_override is None:
         train_fraction = dataset_train_fraction(session, intermediate_root)
     else:
-        train_fraction = float(train_fraction_override)
+        train_fraction = train_fraction_override
         # K blocks of (1 - f)/K each, centred at k/(K+1), stay apart only if f > 1/(K+1) (T60);
-        # refuse here, before a GPU is queued, rather than in the dataparser.
-        test_block_count = session_test_block_count(session, intermediate_root, session_config_directory)
-        if not train_fraction > 1 / (test_block_count + 1):
+        # refuse here, before a GPU is queued, rather than in the dataparser. The shared interleaved
+        # split (T71) has no blocks, so any f in (0, 1] is valid for it.
+        uses_blocks = session_test_split_method(
+            session, intermediate_root, session_config_directory) != SHARED_INTERLEAVED_SPLIT_METHOD
+        test_block_count = (session_test_block_count(session, intermediate_root, session_config_directory)
+                            if uses_blocks else None)
+        if uses_blocks and not train_fraction > 1 / (test_block_count + 1):
             raise ValueError(f"profile train_fraction {train_fraction} must exceed 1/(K+1) = "
                              f"{1 / (test_block_count + 1)} for K = {test_block_count} test blocks")
     # Step 3: the core fraction: the profile's, else the session config's.
     core_fraction = profile_settings.get("test_block_core_fraction")
     if core_fraction is None:
         core_fraction = session_test_block_core_fraction(session, intermediate_root, session_config_directory)
-    return (train_fraction, None if train_fraction_override is None else float(train_fraction_override),
-            float(core_fraction))
+    return train_fraction, train_fraction_override, float(core_fraction)
 
 
 def require_no_return_sidecar(dataset_dir: Path, add_missing_points: bool) -> None:
@@ -747,6 +853,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
                           train_split_fraction_override: Optional[float] = None,
                           test_block_count: Optional[int] = None,
                           test_block_core_fraction: Optional[float] = None,
+                          test_split_method: Optional[str] = None,
+                          test_render_fraction: Optional[float] = None,
                           minimum_eval_points: Optional[int] = None,
                           steps_per_eval_all_images: Optional[int] = None) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
@@ -770,6 +878,10 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
             as TEST_BLOCK_COUNT. Same rule as ``add_missing_points``: None leaves it out.
         test_block_core_fraction: The session's core fraction (``session_test_block_core_fraction``),
             exported as TEST_BLOCK_CORE_FRACTION. Same rule as ``add_missing_points``: None leaves it out.
+        test_split_method: The session's split method (``session_test_split_method``), exported as
+            TEST_SPLIT_METHOD. None leaves it out (the dataparser then decides from the block count).
+        test_render_fraction: The run's render fraction (``profile_test_render_fraction``), exported
+            as TEST_RENDER_FRACTION. None leaves it out (the dataparser default, 1.0, applies).
         minimum_eval_points: The profile's minimum eval count (``profile_eval_cadence``), exported as
             MINIMUM_EVAL_POINTS. Same rule as ``add_missing_points``: None leaves it out.
         steps_per_eval_all_images: The derived eval interval (``profile_eval_cadence``), exported as
@@ -816,6 +928,11 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
     # repr keeps every digit, so config.yml and job_info.txt hold the same float.
     if test_block_core_fraction is not None:
         job_environment["TEST_BLOCK_CORE_FRACTION"] = repr(float(test_block_core_fraction))
+    if test_split_method is not None:
+        job_environment["TEST_SPLIT_METHOD"] = str(test_split_method)
+    # repr keeps every digit, so config.yml and job_info.txt hold the same float.
+    if test_render_fraction is not None:
+        job_environment["TEST_RENDER_FRACTION"] = repr(float(test_render_fraction))
     if minimum_eval_points is not None:
         job_environment["MINIMUM_EVAL_POINTS"] = str(int(minimum_eval_points))
     if steps_per_eval_all_images is not None:
@@ -877,7 +994,9 @@ def write_remote_file(ssh_target: str, remote_path: str, file_text: str) -> None
 
 
 def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, time_limit: str,
-                         job_name: str, output_path: str, job_script_path: str) -> List[str]:
+                         job_name: str, output_path: str, job_script_path: str,
+                         excluded_nodes: Sequence[str] = (),
+                         nodelist: Sequence[str] = ()) -> List[str]:
     """Build the submission command: ``sbatch <resources> <generated job script>``.
 
     Job variables are not on this command: they are exported inside the job script
@@ -893,6 +1012,9 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
         job_name: --job-name value.
         output_path: --output path (may contain %j).
         job_script_path: Remote path of the generated job script (``build_job_script``).
+        excluded_nodes: Node names Slurm must not use (``--exclude``); empty = no restriction.
+        nodelist: Node names the job must run on (``--nodelist``); empty = any node. Only for
+            diagnostics such as a same-node reproducibility pair; normal runs must not pin a node.
 
     Returns:
         Argument list ``["sbatch", <resources>..., job_script_path]``.
@@ -905,7 +1027,9 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
         raise ValueError(f"time limit {time_limit} exceeds the 5-day cluster maximum")
     if cpus <= 0 or memory_gb <= 0:
         raise ValueError(f"cpus ({cpus}) and memory_gb ({memory_gb}) must be positive")
-    # Step 2: assemble the arguments.
+    # Step 2: assemble the arguments; --exclude takes one comma-separated node list.
+    exclude_arguments = [f"--exclude={','.join(excluded_nodes)}"] if excluded_nodes else []
+    nodelist_arguments = [f"--nodelist={','.join(nodelist)}"] if nodelist else []
     return [
         "sbatch",
         f"--partition={partition}",
@@ -915,6 +1039,8 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
         "-t", time_limit,
         f"--job-name={job_name}",
         f"--output={output_path}",
+        *exclude_arguments,
+        *nodelist_arguments,
         job_script_path,
     ]
 
@@ -1142,9 +1268,11 @@ def run_gates(session: str) -> None:
     untracked_paths = check_clean_tree()
     if untracked_paths:
         print("untracked (allowed, not staged):\n  " + "\n  ".join(untracked_paths))
-    # Step 2: unit tests.
-    if run_command(["uv", "run", "pytest", "-q"], capture_output=False).returncode != 0:
-        raise GateFailure("uv run pytest -q failed")
+    # Step 2: unit tests, always in the reference image (CLAUDE.md, Project rules 9), so no torch or
+    # neurad test is skipped; the wrapper's default command is the full suite.
+    test_wrapper_path = str(PROJECT_ROOT / "scripts" / "test_in_image.sh")
+    if run_command([test_wrapper_path], capture_output=False).returncode != 0:
+        raise GateFailure("scripts/test_in_image.sh (full suite in the image) failed")
     # Step 3: SplatAD input contract on the dataset to be staged.
     dataset_dir = PROJECT_ROOT / "data" / "intermediate" / session
     contract_command = ["uv", "run", "python", "scripts/06_validate_contract.py",
@@ -1264,6 +1392,63 @@ def read_environment_marker(ssh_target: str, absolute_stage_root: str,
     return parse_environment_marker(completed.stdout)
 
 
+def require_built_environment(config: Dict[str, Any], ssh_target: str, absolute_stage_root: str,
+                              git_sha: str) -> Dict[str, str]:
+    """Marker of the environment the recipe at ``git_sha`` defines, or fail when it is not built.
+
+    Args:
+        config: Parsed Slurm config (``environment_recipe_files``).
+        ssh_target: ``host`` or ``user@host``.
+        absolute_stage_root: Resolved stage root on the workdisk.
+        git_sha: Commit whose recipe names the environment.
+
+    Returns:
+        The parsed environment marker.
+
+    Raises:
+        RuntimeError: If the environment has no marker (never built, or the build did not finish).
+    """
+    env_name = environment_name(config, git_sha)
+    env_marker = read_environment_marker(ssh_target, absolute_stage_root, env_name)
+    if env_marker is None:
+        raise RuntimeError(f"environment {env_name} is not built; run `build-env` first")
+    return env_marker
+
+
+def require_staged_code(ssh_target: str, remote_code_dir: str, git_sha: str, session: str) -> None:
+    """Fail unless the code snapshot of ``git_sha`` exists on the cluster.
+
+    Args:
+        ssh_target: ``host`` or ``user@host``.
+        remote_code_dir: ``<stage root>/code/<git_sha>``.
+        git_sha: Commit the job will run.
+        session: Session named in the hint to run ``stage``.
+
+    Raises:
+        RuntimeError: If the code directory does not exist.
+    """
+    if run_command(ssh_command(ssh_target, ["test", "-d", remote_code_dir])).returncode != 0:
+        raise RuntimeError(f"code {git_sha} is not staged; run `stage --session {session}` first")
+
+
+def require_render_time_limit(config: Dict[str, Any]) -> Any:
+    """``render_only.time_limit`` of the Slurm config, shared by render-only and resume jobs.
+
+    Args:
+        config: Parsed Slurm config.
+
+    Returns:
+        The configured time limit (as written in the YAML).
+
+    Raises:
+        ValueError: If ``render_only`` or its ``time_limit`` is unset or empty.
+    """
+    time_limit = (config.get("render_only") or {}).get("time_limit")
+    if not time_limit:
+        raise ValueError("configs/slurm.yaml: render_only.time_limit is not set")
+    return time_limit
+
+
 def resolve_job_gres(config: Dict[str, Any], section_settings: Optional[Dict[str, Any]]) -> str:
     """The gres spec for one kind of job: the section's own ``gres``, else the top-level ``gres``.
 
@@ -1367,7 +1552,8 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
         time_limit=str(config["env_build"]["time_limit"]), job_name="splatad-build-env",
-        output_path=f"{log_dir}/{env_name}-%j.out", job_script_path=job_script_path)
+        output_path=f"{log_dir}/{env_name}-%j.out", job_script_path=job_script_path,
+        excluded_nodes=config.get("excluded_nodes", ()))
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
     print(f"submitted environment build job {job_id} -> {env_name} ({cpus} CPUs, {memory_gb}G)\n"
           f"log: {log_dir}/{env_name}-{job_id}.out")
@@ -1405,6 +1591,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     minimum_eval_points, steps_per_eval_all_images = profile_eval_cadence(profile_settings)
     # The split fractions too (profile overrides, else the dataset's), so a bad value fails early.
     train_fraction, train_fraction_override, core_fraction = profile_split_fractions(profile_settings, session)
+    test_split_method = session_test_split_method(session)
+    render_fraction = profile_test_render_fraction(profile_settings, session)
     # And the GPU type (the profile's gres, else the default).
     job_gres = resolve_job_gres(config, profile_settings)
     ssh_target = resolve_ssh_target(config["ssh_host"])
@@ -1413,17 +1601,14 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     now_utc = now_utc or datetime.datetime.now(datetime.timezone.utc)
     run_id = build_run_id(session, profile, git_sha, now_utc)
     # Step 2: the run needs the environment its committed recipe defines.
-    env_name = environment_name(config, git_sha)
-    env_marker = read_environment_marker(ssh_target, absolute_stage_root, env_name)
-    if env_marker is None:
-        raise RuntimeError(f"environment {env_name} is not built; run `build-env` first")
+    env_marker = require_built_environment(config, ssh_target, absolute_stage_root, git_sha)
     # Step 3: node sizes from sinfo, for the nodes of the job's GPU type.
     cpus, memory_gb = query_node_resources(config, ssh_target, job_gres)
     # Step 4: run dir first (it holds the job script, and Slurm cannot write the --output log
     # into a missing directory), then the job script exporting the run's variables.
     remote_run_dir = f"{absolute_stage_root}/runs/{run_id}"
     run_checked(ssh_command(ssh_target, ["mkdir", "-p", remote_run_dir]), "remote run dir mkdir")
-    job_script_path = f"{remote_run_dir}/job.sbatch"
+    job_script_path = f"{remote_run_dir}/{JOB_SCRIPT_NAME}"
     write_remote_file(ssh_target, job_script_path, build_job_script(
         build_job_environment(profile_settings, session, run_id, git_sha, absolute_stage_root, env_marker,
                               add_missing_points=session_add_missing_points(session),
@@ -1431,13 +1616,17 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
                               train_split_fraction_override=train_fraction_override,
                               test_block_count=session_test_block_count(session),
                               test_block_core_fraction=core_fraction,
+                              test_split_method=test_split_method,
+                              test_render_fraction=render_fraction,
                               minimum_eval_points=minimum_eval_points,
                               steps_per_eval_all_images=steps_per_eval_all_images),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=job_gres, cpus=cpus, memory_gb=memory_gb,
         time_limit=str(profile_settings["time_limit"]), job_name=f"splatad-{session}",
-        output_path=f"{remote_run_dir}/slurm-%j.out", job_script_path=job_script_path)
+        output_path=f"{remote_run_dir}/slurm-%j.out", job_script_path=job_script_path,
+        excluded_nodes=config.get("excluded_nodes", ()),
+        nodelist=profile_settings.get("nodelist", ()))
     # Step 5: submit.
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
     print(f"submitted job {job_id}  run {run_id}  ({job_gres}, {cpus} CPUs, {memory_gb}G)")
@@ -1467,6 +1656,24 @@ def read_remote_text(ssh_target: str, remote_path: str, description: str) -> str
         RuntimeError: If the file cannot be read (missing run, or not yet written).
     """
     return run_checked(ssh_command(ssh_target, ["cat", remote_path]), description).stdout
+
+
+def read_remote_run_job_info(ssh_target: str, remote_run_dir: str, run_id: str) -> Dict[str, str]:
+    """Read and parse a cluster run's job_info.txt.
+
+    Args:
+        ssh_target: ``host`` or ``user@host``.
+        remote_run_dir: ``<stage root>/runs/<run_id>``.
+        run_id: Run id (for the error message).
+
+    Returns:
+        The parsed job_info (``parse_job_info_text``).
+
+    Raises:
+        RuntimeError: If the file cannot be read.
+    """
+    return parse_job_info_text(read_remote_text(ssh_target, f"{remote_run_dir}/job_info.txt",
+                                                f"read job_info.txt of {run_id}"))
 
 
 def submit_render(config: Dict[str, Any], run_id: str, camera_frames_text: str, lidar_sweeps_text: str,
@@ -1500,17 +1707,14 @@ def submit_render(config: Dict[str, Any], run_id: str, camera_frames_text: str, 
         raise ValueError(f"malformed run id {run_id!r}")
     camera_frame_indices = parse_frame_index_list(camera_frames_text)
     lidar_frame_indices = parse_frame_index_list(lidar_sweeps_text)
-    time_limit = (config.get("render_only") or {}).get("time_limit")
-    if not time_limit:
-        raise ValueError("configs/slurm.yaml: render_only.time_limit is not set")
+    time_limit = require_render_time_limit(config)
     # The GPU type: render_only.gres, else the default.
     job_gres = resolve_job_gres(config, config.get("render_only"))
     # Step 2: the run's own record decides: only a successful run has a verified split.json.
     ssh_target = resolve_ssh_target(config["ssh_host"])
     absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
     remote_run_dir = f"{absolute_stage_root}/runs/{run_id}"
-    run_job_info = parse_job_info_text(read_remote_text(ssh_target, f"{remote_run_dir}/job_info.txt",
-                                                        f"read job_info.txt of {run_id}"))
+    run_job_info = read_remote_run_job_info(ssh_target, remote_run_dir, run_id)
     if not run_succeeded(run_job_info):
         raise ValueError(f"run {run_id} did not succeed (no end_utc + split_render_check: match); "
                          "only finished runs can be re-rendered")
@@ -1524,12 +1728,8 @@ def submit_render(config: Dict[str, Any], run_id: str, camera_frames_text: str, 
     # Step 4: the render code (HEAD) must be staged, and its environment built.
     git_sha = get_head_sha()
     remote_code_dir = f"{absolute_stage_root}/code/{git_sha}"
-    if run_command(ssh_command(ssh_target, ["test", "-d", remote_code_dir])).returncode != 0:
-        raise RuntimeError(f"code {git_sha} is not staged; run `stage --session {session}` first")
-    env_name = environment_name(config, git_sha)
-    env_marker = read_environment_marker(ssh_target, absolute_stage_root, env_name)
-    if env_marker is None:
-        raise RuntimeError(f"environment {env_name} is not built; run `build-env` first")
+    require_staged_code(ssh_target, remote_code_dir, git_sha, session)
+    env_marker = require_built_environment(config, ssh_target, absolute_stage_root, git_sha)
     cpus, memory_gb = query_node_resources(config, ssh_target, job_gres)
     # Step 5: rerender folder (Slurm cannot write --output into a missing dir), selection, job script.
     now_utc = now_utc or datetime.datetime.now(datetime.timezone.utc)
@@ -1549,7 +1749,8 @@ def submit_render(config: Dict[str, Any], run_id: str, camera_frames_text: str, 
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=job_gres, cpus=cpus, memory_gb=memory_gb,
         time_limit=str(time_limit), job_name=f"splatad-render-{session}",
-        output_path=f"{remote_rerender_dir}/slurm-%j.out", job_script_path=job_script_path)
+        output_path=f"{remote_rerender_dir}/slurm-%j.out", job_script_path=job_script_path,
+        excluded_nodes=config.get("excluded_nodes", ()))
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
     print(f"submitted render job {job_id} run {run_id} label {rerender_label} ({job_gres}, {cpus} CPUs, "
           f"{memory_gb}G)")
@@ -1657,16 +1858,12 @@ def resume_run(config: Dict[str, Any], run_id: str, skip_gates: bool) -> str:
     # Step 1: local checks first (no ssh for a typo).
     if not RUN_ID_PATTERN.match(run_id):
         raise ValueError(f"malformed run id {run_id!r}")
-    time_limit = (config.get("render_only") or {}).get("time_limit")
-    if not time_limit:
-        raise ValueError("configs/slurm.yaml: render_only.time_limit is not set")
+    time_limit = require_render_time_limit(config)
     # Step 2: the run's own record and job script decide.
     ssh_target = resolve_ssh_target(config["ssh_host"])
     absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
     remote_run_dir = f"{absolute_stage_root}/runs/{run_id}"
-    run_job_info = parse_job_info_text(read_remote_text(ssh_target, f"{remote_run_dir}/job_info.txt",
-                                                        f"read job_info.txt of {run_id}"))
-    require_resumable(run_job_info)
+    require_resumable(read_remote_run_job_info(ssh_target, remote_run_dir, run_id))
     run_exports = parse_job_script_exports(read_remote_text(ssh_target, f"{remote_run_dir}/{JOB_SCRIPT_NAME}",
                                                             f"read {JOB_SCRIPT_NAME} of {run_id}"))
     # Step 3: never two jobs on one run dir.
@@ -1680,14 +1877,13 @@ def resume_run(config: Dict[str, Any], run_id: str, skip_gates: bool) -> str:
     if run_command(ssh_command(ssh_target, ["test", "-f", checkpoint_path])).returncode != 0:
         raise RuntimeError(f"final checkpoint {checkpoint_path} is missing; resubmit the run instead")
     # Step 5: gates, then HEAD's staged code and its environment.
+    run_session = run_exports["SESSION"]
     if not skip_gates:
-        run_gates(run_exports["SESSION"])
+        run_gates(run_session)
     git_sha = get_head_sha()
-    if run_command(ssh_command(ssh_target, ["test", "-d", f"{absolute_stage_root}/code/{git_sha}"])).returncode != 0:
-        raise RuntimeError(f"code {git_sha} is not staged; run `stage --session {run_exports['SESSION']}` first")
-    env_marker = read_environment_marker(ssh_target, absolute_stage_root, environment_name(config, git_sha))
-    if env_marker is None:
-        raise RuntimeError(f"environment {environment_name(config, git_sha)} is not built; run `build-env` first")
+    remote_code_dir = f"{absolute_stage_root}/code/{git_sha}"
+    require_staged_code(ssh_target, remote_code_dir, git_sha, run_session)
+    env_marker = require_built_environment(config, ssh_target, absolute_stage_root, git_sha)
     # The default gres: a resume belongs to the train+render job, not to render_only.
     cpus, memory_gb = query_node_resources(config, ssh_target, config["gres"])
     # Step 6: job script in <run dir>/resume/, then submit.
@@ -1696,13 +1892,14 @@ def resume_run(config: Dict[str, Any], run_id: str, skip_gates: bool) -> str:
     job_script_path = f"{remote_resume_dir}/{JOB_SCRIPT_NAME}"
     write_remote_file(ssh_target, job_script_path, build_job_script(
         build_resume_job_environment(run_exports, absolute_stage_root, git_sha, env_marker),
-        f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
+        f"{remote_code_dir}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=config["gres"], cpus=cpus, memory_gb=memory_gb,
-        time_limit=str(time_limit), job_name=f"splatad-resume-{run_exports['SESSION']}",
-        output_path=f"{remote_run_dir}/slurm-%j.out", job_script_path=job_script_path)
+        time_limit=str(time_limit), job_name=f"splatad-resume-{run_session}",
+        output_path=f"{remote_run_dir}/slurm-%j.out", job_script_path=job_script_path,
+        excluded_nodes=config.get("excluded_nodes", ()))
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
-    print(f"submitted resume job {job_id} run {run_id} (code {git_sha[:7]})")
+    print(f"submitted resume job {job_id} run {run_id} (code {git_sha[:SHORT_SHA_LENGTH]})")
     return job_id
 
 
@@ -1792,15 +1989,16 @@ def parse_remote_run_listing(listing_text: str) -> Tuple[Dict[str, Optional[Dict
 
     Format: ``RUN<TAB><run_id>`` opens a run, followed by its job_info.txt lines between
     ``INFO_BEGIN`` and ``INFO_END`` (absent if it has none); ``ACTIVE<TAB><job script path>`` is one
-    pending or running job of the user: a run's own job (``<runs>/<run_id>/job.sbatch``) or a
-    render-only job on its checkpoint (``<runs>/<run_id>/rerenders/<label>/job.sbatch``).
+    pending or running job of the user: a run's own job (``<runs>/<run_id>/job.sbatch``), a
+    render-only job on its checkpoint (``<runs>/<run_id>/rerenders/<label>/job.sbatch``) or a
+    resume job writing into it (``<runs>/<run_id>/resume/job.sbatch``).
 
     Args:
         listing_text: Remote stdout.
 
     Returns:
         (runs, active run ids): run id -> parsed job_info (None if missing); the run ids with a
-        queued or running job: their own, or a render-only job reading their checkpoint.
+        queued or running job: their own, a render-only job reading their checkpoint, or a resume job.
     """
     remote_runs: Dict[str, Optional[Dict[str, str]]] = {}
     active_run_ids = set()
@@ -1817,7 +2015,7 @@ def parse_remote_run_listing(listing_text: str) -> Tuple[Dict[str, Optional[Dict
         elif inside_info:
             info_lines.append(line)
         elif line.startswith("ACTIVE\t"):
-            # The job script is <stage>/runs/<run_id>/job.sbatch: its parent folder is the run id.
+            # A run's own job script is <stage>/runs/<run_id>/job.sbatch: its parent folder is the run id.
             script_path = Path(line.split("\t", 1)[1].strip())
             if script_path.name == JOB_SCRIPT_NAME:
                 active_run_ids.add(script_path.parent.name)
@@ -2016,6 +2214,178 @@ def clean_runs(config: Dict[str, Any], named_run_ids: Sequence[str], confirmed: 
     return plan
 
 
+def job_script_owner(script_path_text: str) -> Optional[Tuple[str, str]]:
+    """The run a queued/running job belongs to, and the job's kind, from its batch script path.
+
+    Layouts (see ``parse_remote_run_listing``): ``<runs>/<run_id>/job.sbatch`` (train+render),
+    ``<runs>/<run_id>/rerenders/<label>/job.sbatch`` (render-only), ``<runs>/<run_id>/resume/job.sbatch``.
+
+    Args:
+        script_path_text: squeue's ``%o`` field.
+
+    Returns:
+        (run id, kind: ``train``, ``render`` or ``resume``), or None for a job that is not a run's
+        (e.g. an environment build or another script).
+    """
+    script_path = Path(script_path_text.strip())
+    if script_path.name != JOB_SCRIPT_NAME:
+        return None
+    # Check the nested layouts first: their run folder sits one or two levels higher.
+    if script_path.parent.parent.name == RERENDERS_DIRECTORY_NAME:
+        return script_path.parent.parent.parent.name, "render"
+    if script_path.parent.name == RESUME_DIRECTORY_NAME:
+        return script_path.parent.parent.name, "resume"
+    return script_path.parent.name, "train"
+
+
+def parse_tracked_jobs(squeue_text: str) -> List[Dict[str, str]]:
+    """Parse ``squeue -h -o "<SQUEUE_TRACK_FIELDS>"`` output into the user's run jobs.
+
+    Args:
+        squeue_text: squeue stdout, one job per line.
+
+    Returns:
+        One dict per job that belongs to a run: job_id, state, reason, start (squeue's start time:
+        actual when running, Slurm's estimate when pending, ``N/A`` if unknown), run_id, kind.
+        Other jobs (env builds) and malformed lines are left out.
+    """
+    tracked_jobs = []
+    for line in squeue_text.splitlines():
+        # maxsplit = fields - 1: the script path (last) may contain spaces.
+        fields = line.split(None, len(SQUEUE_TRACK_FIELDS) - 1)
+        if len(fields) != len(SQUEUE_TRACK_FIELDS):
+            continue
+        job_id, state, reason, start, script_path_text = fields
+        owner = job_script_owner(script_path_text)
+        if owner is None:
+            continue
+        tracked_jobs.append({"job_id": job_id, "state": state, "reason": reason, "start": start,
+                             "run_id": owner[0], "kind": owner[1]})
+    return tracked_jobs
+
+
+def run_milestone(job_info: Optional[Dict[str, str]]) -> str:
+    """The last progress key a run's job_info.txt has reached (``RUN_MILESTONE_KEYS`` order).
+
+    Args:
+        job_info: Parsed job_info.txt, or None when the run has none.
+
+    Returns:
+        ``key: value`` of the furthest milestone, ``no job_info.txt`` if there is none, or
+        ``no milestone`` if the file has none of the keys.
+    """
+    if job_info is None:
+        return "no job_info.txt"
+    reached_keys = [key for key in RUN_MILESTONE_KEYS if key in job_info]
+    return f"{reached_keys[-1]}: {job_info[reached_keys[-1]]}" if reached_keys else "no milestone"
+
+
+def plan_run_tracking(ledger_rows: List[Dict[str, str]], remote_runs: Dict[str, Optional[Dict[str, str]]],
+                      tracked_jobs: List[Dict[str, str]],
+                      local_runs: Dict[str, Optional[Dict[str, str]]]) -> List[Dict[str, Any]]:
+    """Classify every known run and name the next action (pure: no I/O).
+
+    Rules, first match wins (actions follow the running-splatad-render-jobs and
+    cleaning-up-splatad-runs skills):
+        1. a queued or running job on the run -> ``active``: keep a background wait on it;
+        2. proof of success (``run_succeeded``, cluster copy preferred over the fetched one):
+           fetched copy also successful -> ``done``, else ``fetch``;
+        3. ``split_render_check: match`` but no written plot -> ``plot-recovery``;
+        4. trained (``train_elapsed_s``) with the plot written -> ``resumable`` (resume needs the
+           user's approval);
+        5. in the ledger only (no folder anywhere) -> ``stale-ledger``: clean;
+        6. otherwise -> ``failed``: read the Slurm log, diagnose, clean.
+
+    Args:
+        ledger_rows: From ``read_ledger``.
+        remote_runs: From ``list_remote_runs``.
+        tracked_jobs: From ``parse_tracked_jobs``.
+        local_runs: From ``list_local_runs``.
+
+    Returns:
+        One dict per run, sorted by run id: run_id, status, jobs (``<kind> <job id> <STATE> ...``
+        texts), milestone, action, on_cluster, on_mac.
+    """
+    # Step 1: every run id known anywhere, and the jobs grouped by run.
+    jobs_by_run: Dict[str, List[Dict[str, str]]] = {}
+    for job in tracked_jobs:
+        jobs_by_run.setdefault(job["run_id"], []).append(job)
+    known_run_ids = {row["run_id"] for row in ledger_rows} | set(remote_runs) | set(local_runs) | set(jobs_by_run)
+    # Step 2: one status per run, rules in docstring order.
+    tracking_plan = []
+    for run_id in sorted(known_run_ids):
+        # Same record choice as plan_cleanup: the cluster copy is the job's own record.
+        job_info = remote_runs.get(run_id) if run_id in remote_runs else local_runs.get(run_id)
+        job_texts = []
+        for job in jobs_by_run.get(run_id, []):
+            # A pending job shows why it waits and Slurm's start estimate; a running one its start.
+            detail = f" ({job['reason']}, est. start {job['start']})" if job["state"] == "PENDING" else (
+                f" (since {job['start']})")
+            job_texts.append(f"{job['kind']} {job['job_id']} {job['state']}{detail}")
+        if run_id in jobs_by_run:
+            status, action = "active", "wait: keep one background wait on the job(s); fetch when they leave the queue"
+        elif run_succeeded(job_info):
+            fetched = run_succeeded(local_runs.get(run_id))
+            status, action = ("done", "none") if fetched else ("fetch", f"submit_run.py fetch {run_id}")
+        elif job_info and job_info.get("split_render_check") == SUCCESS_SPLIT_CHECK_VALUE:
+            status, action = "plot-recovery", "re-run script 11, then append end_utc (skill: Plot-only failure)"
+        elif job_info and "train_elapsed_s" in job_info and job_info.get("overfitting_plot") == WRITTEN_PLOT_VALUE:
+            status, action = "resumable", f"diagnose the Slurm log; resume {run_id} only with the user's approval"
+        elif run_id not in remote_runs and run_id not in local_runs:
+            status, action = "stale-ledger", "submit_run.py clean (ledger row only)"
+        else:
+            status, action = "failed", "read the Slurm log, diagnose, report, then submit_run.py clean"
+        tracking_plan.append({"run_id": run_id, "status": status, "jobs": job_texts,
+                              "milestone": run_milestone(job_info), "action": action,
+                              "on_cluster": run_id in remote_runs, "on_mac": run_id in local_runs})
+    return tracking_plan
+
+
+def track_runs(config: Dict[str, Any], show_done: bool, local_runs_root: Path = LOCAL_RUNS_ROOT,
+               ledger_path: Path = SUBMITTED_LEDGER_PATH) -> List[Dict[str, Any]]:
+    """Print every pending, running or unfinished run with its milestone and next action.
+
+    The session-start check (CLAUDE.md "Run tracking"): reconciles the local ledger, the cluster's
+    run folders, the user's squeue and the fetched copies in two ssh calls. Read-only.
+
+    Args:
+        config: Parsed Slurm config.
+        show_done: Also list runs that succeeded and are fetched (hidden by default).
+        local_runs_root: Local runs/ folder.
+        ledger_path: Local ledger.
+
+    Returns:
+        The plan from ``plan_run_tracking`` (all runs, done included).
+
+    Raises:
+        RuntimeError: If the cluster cannot be listed (then nothing is known about active jobs).
+    """
+    # Step 1: cluster state (run folders, then the user's jobs with state, reason and start time).
+    ssh_target = resolve_ssh_target(config["ssh_host"])
+    absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
+    remote_runs, _ = list_remote_runs(ssh_target, absolute_stage_root)
+    squeue_format = " ".join(SQUEUE_TRACK_FIELDS)
+    squeue_output = run_checked(ssh_command(ssh_target, [
+        "bash", "-c", f'squeue -h -u "$(id -un)" -o "{squeue_format}"']), "squeue for run tracking").stdout
+    # Step 2: classify against the ledger and the fetched copies.
+    tracking_plan = plan_run_tracking(read_ledger(ledger_path), remote_runs, parse_tracked_jobs(squeue_output),
+                                      list_local_runs(local_runs_root))
+    # Step 3: print the runs that need attention (and the done ones on request).
+    shown_runs = [entry for entry in tracking_plan if show_done or entry["status"] != "done"]
+    for entry in shown_runs:
+        places = [place for place, present in (("cluster", entry["on_cluster"]), ("mac", entry["on_mac"]))
+                  if present]
+        print(f"{entry['status']:<13} {entry['run_id']}  [{', '.join(places) or 'ledger only'}]")
+        for job_text in entry["jobs"]:
+            print(f"    job:       {job_text}")
+        print(f"    milestone: {entry['milestone']}")
+        print(f"    next:      {entry['action']}")
+    hidden_count = len(tracking_plan) - len(shown_runs)
+    print(f"{len(shown_runs)} run(s) listed" + (f", {hidden_count} done and fetched hidden (--all to list)"
+                                                if hidden_count else ""))
+    return tracking_plan
+
+
 def main(argument_list: Optional[List[str]] = None) -> int:
     """CLI entry point.
 
@@ -2041,6 +2411,9 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     submit_parser.add_argument("--skip-gates", action="store_true")
     status_parser = subparsers.add_parser("status", help="squeue + sacct for a job")
     status_parser.add_argument("job_id")
+    runs_parser = subparsers.add_parser(
+        "runs", help="pending/running/unfinished runs with milestone and next action (session-start check)")
+    runs_parser.add_argument("--all", action="store_true", help="also list runs that are done and fetched")
     fetch_parser = subparsers.add_parser("fetch", help="copy a run back (latest checkpoint only)")
     fetch_parser.add_argument("run_id")
     clean_parser = subparsers.add_parser(
@@ -2073,6 +2446,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             submit_run(config, arguments.session, arguments.profile, arguments.skip_gates)
         elif arguments.command == "status":
             return 0 if show_status(config, arguments.job_id) == 0 else 1
+        elif arguments.command == "runs":
+            track_runs(config, arguments.all)
         elif arguments.command == "fetch":
             fetch_run(config, arguments.run_id)
         elif arguments.command == "clean":

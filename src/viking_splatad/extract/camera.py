@@ -70,7 +70,7 @@ class CameraIntrinsics:
 
 
 def _read_field(camera_info: Any, field_name: str) -> Any:
-    """Fetch a field from a mapping or attribute object (case-insensitive for ROS ``K``/``k``).
+    """Fetch a field from a mapping or attribute object, trying the name as given, then upper-case (ROS ``k``/``K``).
 
     Args:
         camera_info: dict or object with CameraInfo fields.
@@ -119,7 +119,7 @@ def parse_camera_info(camera_info: Any) -> CameraIntrinsics:
     if camera_matrix_values.size != expected_k_length:
         raise ValueError(f"K must have {expected_k_length} entries, got {camera_matrix_values.size}")
     camera_matrix = camera_matrix_values.reshape(3, 3)
-    # Optional 3x4 projection matrix.
+    # Optional projection matrix; 3x4 is fixed by the ROS CameraInfo definition.
     projection_values = _read_field(camera_info, "p")
     projection_matrix = (
         None if projection_values is None
@@ -149,6 +149,9 @@ def opencv_to_neurad_distortion(opencv_distortion: Sequence[float]) -> np.ndarra
 
     Returns:
         float64 array (k1, k2, k3, k4=0, p1, p2).
+
+    Raises:
+        ValueError: Input does not have exactly five coefficients.
     """
     opencv_values = np.asarray(opencv_distortion, dtype=np.float64).reshape(-1)
     expected_length = 5  # OpenCV plumb_bob has exactly five coefficients
@@ -174,6 +177,9 @@ def undistort_image(image: np.ndarray, intrinsics: CameraIntrinsics) -> Tuple[np
 
     Returns:
         (undistorted cropped image, new CameraIntrinsics with zero distortion).
+
+    Raises:
+        ValueError: Image size differs from the intrinsics, or the valid ROI is empty.
     """
     image_size = (intrinsics.width, intrinsics.height)  # OpenCV expects (w, h)
     if image.shape[:2] != (intrinsics.height, intrinsics.width):
@@ -251,6 +257,8 @@ def decode_and_resize_image(
     # Rounding makes the true per-axis scale differ slightly from resize_factor; use it.
     scale_x = new_width / decoded_width
     scale_y = new_height / decoded_height
+    # Principal point maps through edge coordinates: u' = (u + 0.5) * scale - 0.5,
+    # where 0.5 is the half-pixel offset of the pixel-centre convention (see docstring).
     scaled_intrinsics = replace(
         intrinsics,
         fx=intrinsics.fx * scale_x,
@@ -274,7 +282,12 @@ def rolling_shutter_parameters(timestamp_convention: str, readout_seconds: float
       start_of_exposure: stamp = first row    -> +readout/2
       center:            stamp = centre row   -> 0
       end_of_readout:    stamp = last row     -> -readout/2
-    (PandaSet uses readout 0.03 and -0.01.) Readout 0 disables rolling shutter.
+    Readout 0 disables rolling shutter. Example: readout 0.03 s with end_of_readout
+    returns (0.03, -0.015).
+    neurad-studio's PandaSet parser hardcodes rolling_shutter_time 0.03 and
+    time_to_center_pixel -0.01 (pandaset_dataparser.py, in the Docker image). That
+    offset is -readout/3, a dataset-specific value none of these conventions
+    produces; ours come from the stamp convention alone.
 
     Args:
         timestamp_convention: One of SUPPORTED_TIMESTAMP_CONVENTIONS.

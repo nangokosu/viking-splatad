@@ -134,6 +134,8 @@ DEFAULT_POSE_LOOKAHEAD_SECONDS = 1.0
 DEFAULT_WORLD_UP_TOLERANCE_DEGREES = 10.0
 # World up axis stored in the session info (the check above guarantees it).
 WORLD_UP_AXIS = (0.0, 0.0, 1.0)
+# Sensor roles (keys of config "frames") whose base->sensor extrinsics are cross-checked and stored.
+EXTRINSIC_SENSOR_ROLES = ("camera", "lidar", "radar")
 
 
 @dataclass
@@ -232,6 +234,71 @@ def stamp_to_seconds(stamp: Any, reference_ns: int) -> float:
     return float(conversion.seconds[0])
 
 
+def _extrinsic_key(frames: Dict[str, str], role: str) -> str:
+    """Key ``"<base frame>-><sensor frame>"`` of one sensor's extrinsic.
+
+    Args:
+        frames: ``frames`` config section (role -> frame id, including "base").
+        role: Sensor role, e.g. "camera".
+
+    Returns:
+        The parent->child key used by the calibration file, /tf lookup and manifest.
+    """
+    return f"{frames['base']}->{frames[role]}"
+
+
+def _frame_index_of(path: Path) -> Optional[int]:
+    """Frame index encoded in a dataset frame file name.
+
+    Args:
+        path: File inside a frame directory.
+
+    Returns:
+        The index, or None when the name does not follow ``FRAME_FILE_PATTERN``.
+    """
+    match = FRAME_FILE_PATTERN.match(path.name)
+    return int(match.group(1)) if match else None
+
+
+def _delete_frame_files_from_index(directory: Path, glob_pattern: str, first_orphan_index: int) -> None:
+    """Delete frame files whose index is >= ``first_orphan_index`` (left by an interrupted run).
+
+    Args:
+        directory: Frame directory to scan (a missing directory yields nothing).
+        glob_pattern: File glob within the directory.
+        first_orphan_index: Number of recorded frames; files at or past it are orphans.
+    """
+    for path in directory.glob(glob_pattern):
+        index = _frame_index_of(path)
+        if index is not None and index >= first_orphan_index:
+            path.unlink()
+
+
+def _chunk_starts_after(chunk_path: Path, end_ns: Optional[int]) -> bool:
+    """Whether a chunk lies entirely past the read window (so it is skipped).
+
+    Args:
+        chunk_path: MCAP file.
+        end_ns: Bag log-time upper bound, or None for no window.
+
+    Returns:
+        True when a window is set and the chunk's first log time is after it.
+    """
+    return end_ns is not None and chunk_log_time_start_ns(chunk_path) > end_ns
+
+
+def _cloud_xyz(fields: Dict[str, np.ndarray]) -> np.ndarray:
+    """Point coordinates of a decoded cloud as float64 [n, 3].
+
+    Args:
+        fields: Output of ``decode_cloud_fields``.
+
+    Returns:
+        Stacked x, y, z columns.
+    """
+    return np.stack([fields["x"], fields["y"], fields["z"]], axis=1).astype(np.float64)
+
+
 def open_chunk_messages(
     chunk_path: Path, topics: Sequence[str], start_ns: Optional[int] = None, end_ns: Optional[int] = None
 ):
@@ -287,6 +354,7 @@ def find_chunk_files(config: Dict[str, Any], explicit_names: Optional[Sequence[s
     window = config["window"]
     names: Optional[Sequence[str]] = explicit_names or window.get("chunk_files")
     metadata_path = bag_dir / "metadata.yaml"
+    # Fall through the priority list until one source yields names.
     has_offsets = window.get("start_offset_s") is not None or window.get("end_offset_s") is not None
     if not names and has_offsets and metadata_path.is_file():
         names = select_bag_chunks(
@@ -294,6 +362,7 @@ def find_chunk_files(config: Dict[str, Any], explicit_names: Optional[Sequence[s
         )
     if not names:
         names = [path.name for path in bag_dir.glob("*.mcap")]
+    # Every named chunk must exist; an empty bag dir is an error too.
     paths = [bag_dir / name for name in names]
     for path in paths:
         if not path.is_file():
@@ -379,6 +448,7 @@ def build_trajectory(
         for key in odometry_per_chunk[0]
     }
     conversion = ros_stamps_to_increasing_seconds(merged["seconds"], merged["nanoseconds"], reference_ns)
+    # T2 drops non-increasing stamps; keep only the pose rows of the surviving stamps.
     kept = conversion.kept_indices
     return Trajectory(conversion.seconds, merged["positions"][kept], merged["quaternions_xyzw"][kept])
 
@@ -483,7 +553,7 @@ def lidar_sample_from_fields(
         LidarScanSample in the sensor frame.
     """
     range_meters = fields[lidar_config["range_field"]].astype(np.float64) * lidar_config["range_unit_meters"]
-    coordinates = np.stack([fields["x"], fields["y"], fields["z"]], axis=1).astype(np.float64)
+    coordinates = _cloud_xyz(fields)
     # Ouster marks no-returns with range 0 (deskewed no-returns carry tiny junk coordinates).
     valid_mask = (range_meters > 0) & np.all(np.isfinite(coordinates), axis=1)
     return LidarScanSample(
@@ -573,7 +643,7 @@ def sample_raw_beam_returns(
     generator = open_chunk_messages(chunk_path, [config["topics"]["lidar_raw"]])
     for _, message in generator:
         fields = decode_cloud_fields(message)
-        coordinates = np.stack([fields["x"], fields["y"], fields["z"]], axis=1).astype(np.float64)
+        coordinates = _cloud_xyz(fields)
         # Same validity rule as the returns (range > 0 and finite coordinates).
         returned = (fields[lidar_config["range_field"]] > 0) & np.all(np.isfinite(coordinates), axis=1)
         # Row-major organized cloud: cell k is in column k mod width (T53 checks the layout).
@@ -679,7 +749,8 @@ def cross_check_extrinsics(
         bag_extrinsics: key -> 4x4 from /tf (T4).
 
     Returns:
-        key -> {translation_delta_m, rotation_delta_rad, within_tolerance}.
+        key -> {translation_delta_m, rotation_delta_rad, translation_tolerance_m,
+        rotation_tolerance_rad, within_tolerance}, for the keys found in ``bag_extrinsics``.
     """
     translation_tolerance, rotation_tolerance = calibration_tolerance()
     report: Dict[str, Dict[str, Any]] = {}
@@ -746,24 +817,21 @@ def load_accumulator(output_dir: Path, name: str, kind: str) -> SensorAccumulato
     with np.load(poses_path) as archive:
         times = archive[f"{name}{POSE_KEY_SEPARATOR}times"]
         poses = archive[f"{name}{POSE_KEY_SEPARATOR}poses_world_sensor"]
-    frame_files = []
+    recorded_count = len(times)
+    # (frame index, stamp ns) of every frame file, sorted by index.
+    frame_records = []
     for path in (output_dir / kind / name).glob("*"):
         match = FRAME_FILE_PATTERN.match(path.name)
         if match:
-            frame_files.append((int(match.group(1)), int(match.group(2)), path))
-    frame_files.sort(key=lambda record: record[0])
-    for frame_index, _, path in frame_files:
-        if frame_index >= len(times):
-            path.unlink()
+            frame_records.append((int(match.group(1)), int(match.group(2))))
+    frame_records.sort(key=lambda record: record[0])
+    _delete_frame_files_from_index(output_dir / kind / name, "*", recorded_count)
     # A lidar's no-return files share its frame indices, so their orphans go too.
     if kind == "lidar":
-        for path in (output_dir / NO_RETURN_DIRECTORY / name).glob("*"):
-            match = FRAME_FILE_PATTERN.match(path.name)
-            if match and int(match.group(1)) >= len(times):
-                path.unlink()
+        _delete_frame_files_from_index(output_dir / NO_RETURN_DIRECTORY / name, "*", recorded_count)
     accumulator.times = [float(value) for value in times]
     accumulator.poses = [pose for pose in poses]
-    accumulator.stamps_ns = [record[1] for record in frame_files if record[0] < len(times)]
+    accumulator.stamps_ns = [stamp_ns for frame_index, stamp_ns in frame_records if frame_index < recorded_count]
     return accumulator
 
 
@@ -784,9 +852,9 @@ def longest_point_time_in_frames(output_dir: Path, name: str, frame_count: int) 
     """
     longest = 0.0
     for path in (output_dir / "lidar" / name).glob("*.npy"):
-        match = FRAME_FILE_PATTERN.match(path.name)
+        frame_index = _frame_index_of(path)
         # Only recorded frames count; orphans of an interrupted run are deleted by load_accumulator.
-        if match and int(match.group(1)) < frame_count:
+        if frame_index is not None and frame_index < frame_count:
             scan = np.load(path)
             if scan.shape[0]:
                 longest = max(longest, float(np.abs(scan[:, SCAN_TIME_COLUMN]).max()))
@@ -800,10 +868,7 @@ def remove_orphan_radar_files(output_dir: Path, valid_count: int) -> None:
         output_dir: Dataset directory.
         valid_count: Radar frames recorded in the state file.
     """
-    for path in (output_dir / "sidecar" / "radar").glob("*.npy"):
-        match = FRAME_FILE_PATTERN.match(path.name)
-        if match and int(match.group(1)) >= valid_count:
-            path.unlink()
+    _delete_frame_files_from_index(output_dir / "sidecar" / "radar", "*.npy", valid_count)
 
 
 # --------------------------------------------------------------------------------------
@@ -846,8 +911,8 @@ class DatasetExtractor:
         frames = config["frames"]
         self.camera_name = config["camera"]["name"]
         self.lidar_name = config["lidar"]["name"]
-        self.T_base_camera = extrinsics[f"{frames['base']}->{frames['camera']}"]
-        self.T_base_lidar = extrinsics[f"{frames['base']}->{frames['lidar']}"]
+        self.T_base_camera = extrinsics[_extrinsic_key(frames, "camera")]
+        self.T_base_lidar = extrinsics[_extrinsic_key(frames, "lidar")]
         self.camera_accumulator = load_accumulator(self.output_dir, self.camera_name, "camera")
         self.lidar_accumulator = load_accumulator(self.output_dir, self.lidar_name, "lidar")
         # Longest |t| over all sweeps written so far (T49 input): from the state, or recomputed
@@ -878,16 +943,24 @@ class DatasetExtractor:
         self.total_values = 0
 
     def _last_radar_stamp_ns(self) -> int:
-        """Largest stamp among recorded radar sidecar files (-1 if none)."""
-        stamps = [
-            int(FRAME_FILE_PATTERN.match(path.name).group(2))
-            for path in (self.output_dir / "sidecar" / "radar").glob("*.npy")
-            if FRAME_FILE_PATTERN.match(path.name)
-        ]
+        """Largest stamp among recorded radar sidecar files.
+
+        Returns:
+            Stamp in ns, or -1 (below any real stamp) when no radar file exists.
+        """
+        stamps = []
+        for path in (self.output_dir / "sidecar" / "radar").glob("*.npy"):
+            match = FRAME_FILE_PATTERN.match(path.name)
+            if match:
+                stamps.append(int(match.group(2)))
         return max(stamps) if stamps else -1
 
     def _skip(self, reason: str) -> None:
-        """Count a dropped frame under ``reason``."""
+        """Count a dropped frame under ``reason``.
+
+        Args:
+            reason: Key of ``self.skipped`` to increment.
+        """
         self.skipped[reason] = self.skipped.get(reason, 0) + 1
 
     def _admit(self, stamp: Any, last_stamp_ns: int) -> Optional[Tuple[float, int]]:
@@ -964,15 +1037,15 @@ class DatasetExtractor:
         if sample.points_xyz.shape[0] == 0:
             self._skip("lidar_no_valid_points")
             return
+        def pose_at(query_times: np.ndarray) -> np.ndarray:
+            """T_world_lidar at the given times (batched); raises ValueError outside the trajectory."""
+            return interpolate_pose_se3(self.trajectory, query_times) @ self.T_base_lidar
+
         try:
             # T18: pose of the lidar at the sweep reference time (stamp = sweep start).
             T_world_lidar, reference_time = lidar_to_world_at_reference_time(
                 self.trajectory, self.T_base_lidar, seconds, sweep_period, lidar_config["reference"]
             )
-            def pose_at(query_times: np.ndarray) -> np.ndarray:
-                """T_world_lidar at the given times (batched)."""
-                return interpolate_pose_se3(self.trajectory, query_times) @ self.T_base_lidar
-
             if lidar_config["source"] == "raw_own_deskew":
                 # T13: move every point to the reference pose using the interpolated trajectory.
                 points_xyz, relative_time = deskew_points(
@@ -1111,7 +1184,7 @@ def write_metadata(
     config, derived = extractor.config, extractor.derived
     output_dir = extractor.output_dir
     frames = config["frames"]
-    camera_cfg = config["camera"]
+    camera_config = config["camera"]
 
     def build_stream(accumulator: SensorAccumulator) -> SensorStream:
         """SensorStream (without frame payloads) from an accumulator."""
@@ -1132,7 +1205,7 @@ def write_metadata(
     all_times = np.concatenate([stream.times for stream in streams.values()])
     camera_dict = derived.camera_undistorted
     rolling_shutter_time, time_to_center_pixel = rolling_shutter_parameters(
-        camera_cfg["timestamp_convention"], camera_cfg["readout_seconds"]
+        camera_config["timestamp_convention"], camera_config["readout_seconds"]
     )
     dataset = IntermediateDataset(
         schema_version=SCHEMA_VERSION,
@@ -1142,8 +1215,8 @@ def write_metadata(
             distortion=None,  # images are undistorted offline
         )},
         extrinsics={
-            f"{frames['base']}->{frames[role]}": extrinsics[f"{frames['base']}->{frames[role]}"]
-            for role in ("camera", "lidar", "radar")
+            _extrinsic_key(frames, role): extrinsics[_extrinsic_key(frames, role)]
+            for role in EXTRINSIC_SENSOR_ROLES
         },
         clock=ClockInfo(
             reference_sensor=extractor.lidar_name,
@@ -1200,7 +1273,7 @@ def write_metadata(
         "split_problems": split_issues,
         "rolling_shutter_time": rolling_shutter_time,
         "time_to_center_pixel": time_to_center_pixel,
-        "timestamp_convention": camera_cfg["timestamp_convention"],
+        "timestamp_convention": camera_config["timestamp_convention"],
         "lidar_source": config["lidar"]["source"],
         # Provenance of lidar.elevation_mapping (datasets without this key carry T16 medians).
         "elevation_mapping_source": ELEVATION_MAPPING_SOURCE,
@@ -1210,7 +1283,7 @@ def write_metadata(
         ),
         "extrinsic_check": derived.extrinsic_check,
         "radar": {"name": config["radar"]["name"], "fields": list(config["radar"]["fields"]),
-                  "extrinsic_key": f"{frames['base']}->{frames['radar']}",
+                  "extrinsic_key": _extrinsic_key(frames, "radar"),
                   "frame_count": extractor.state["radar_frame_count"]},
         "warnings": warnings_list,
     }
@@ -1244,7 +1317,7 @@ def derive_session_parameters(
     warnings_list: List[str] = []
     lidar_config, topics, frames = config["lidar"], config["topics"], config["frames"]
     # Camera model from the first camera_info message.
-    camera_info = next(m for _, m in open_chunk_messages(first_chunk, [topics["camera_info"]]))
+    camera_info = next(message for _, message in open_chunk_messages(first_chunk, [topics["camera_info"]]))
     resize_factor = float(config["camera"]["resize_factor"])
     source_intrinsics, undistorted = derive_camera_model(camera_info, resize_factor)
     # Lidar model from the first N sweeps (T14-T17).
@@ -1261,8 +1334,8 @@ def derive_session_parameters(
     )
     # /tf cross-check of the three sensor extrinsics (T4 + T6).
     pairs = {
-        f"{frames['base']}->{frames[role]}": (frames["base"], frames[role])
-        for role in ("camera", "lidar", "radar")
+        _extrinsic_key(frames, role): (frames["base"], frames[role])
+        for role in EXTRINSIC_SENSOR_ROLES
     }
     bag_extrinsics = find_bag_extrinsics(first_chunk, topics["tf"], pairs)
     extrinsic_check = cross_check_extrinsics(calibration, bag_extrinsics)
@@ -1352,7 +1425,7 @@ def run_pipeline(
     pose_topic = config["topics"]["pose"]
     odometry_per_chunk = []
     for chunk_path in selected_chunks:
-        if end_ns is not None and chunk_log_time_start_ns(chunk_path) > end_ns:
+        if _chunk_starts_after(chunk_path, end_ns):
             continue
         odometry_per_chunk.append(load_odometry_cached(chunk_path, pose_topic, output_dir, end_ns))
     odometry_per_chunk = [chunk for chunk in odometry_per_chunk if chunk["seconds"].size]
@@ -1366,7 +1439,7 @@ def run_pipeline(
     check_world_z_up(mean_up_vector_from_orientations(trajectory.quaternions_xyzw), tilt_tolerance)
     # Step 5: calibration and one-time derivation.
     calibration = load_extrinsics(config["session"]["calibration_dir"], config["session"]["extrinsics_variant"])
-    result.warnings = []
+    # Warnings come only from a fresh derivation (result.warnings starts empty).
     if derived is None:
         derived, result.warnings = derive_session_parameters(
             config, new_chunks[0], reference_ns, calibration, output_dir
@@ -1384,7 +1457,7 @@ def run_pipeline(
     extractor = DatasetExtractor(config, derived, trajectory, calibration, state, cutoff_seconds)
     extracted_chunks = list(state["extracted_chunks"])
     for chunk_path in new_chunks:
-        if end_ns is not None and chunk_log_time_start_ns(chunk_path) > end_ns:
+        if _chunk_starts_after(chunk_path, end_ns):
             continue
         LOGGER.info("Extracting %s", chunk_path.name)
         # Recover the tail of the directly preceding chunk, whose last frames had no odometry

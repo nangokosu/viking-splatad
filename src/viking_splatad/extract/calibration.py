@@ -2,7 +2,7 @@
 
 import re
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Set, Tuple, Union
 
 import numpy as np
 
@@ -30,20 +30,36 @@ def quaternion_xyzw_to_rotation(quaternion_xyzw: np.ndarray) -> np.ndarray:
 
     Returns:
         [3,3] float64 rotation matrix.
+
+    Raises:
+        ValueError: If the quaternion has zero norm.
     """
+    # Step 1: renormalise to a unit quaternion.
     quaternion = np.asarray(quaternion_xyzw, dtype=np.float64)
     norm = np.linalg.norm(quaternion)
     if norm == 0.0:
         raise ValueError("Zero-norm quaternion")
     vector_x, vector_y, vector_z, scalar_w = quaternion / norm
+    # Step 2: skew-symmetric cross-product matrix [v]x, so [v]x @ u = v x u.
     cross_matrix = np.array(
         [[0.0, -vector_z, vector_y], [vector_z, 0.0, -vector_x], [-vector_y, vector_x, 0.0]]
     )
+    # Step 3: R = I + 2w[v]x + 2[v]x^2.
     return np.eye(3) + 2.0 * scalar_w * cross_matrix + 2.0 * (cross_matrix @ cross_matrix)
 
 
 def parse_number_list(line: str) -> np.ndarray:
-    """Parse the first bracketed number list on a line into a float array."""
+    """Parse the first bracketed number list on a line into a float array.
+
+    Args:
+        line: Text line containing a list such as "[1.0, 2.0, 3.0]".
+
+    Returns:
+        (K,) float64 array of the comma-separated values.
+
+    Raises:
+        ValueError: If the line holds no bracketed list.
+    """
     match = NUMBER_LIST_PATTERN.search(line)
     if match is None:
         raise ValueError(f"No bracketed list in line: {line!r}")
@@ -76,7 +92,7 @@ def parse_extrinsics_text(text: str, extrinsics_variant: str) -> Dict[str, np.nd
     current_key: Optional[str] = None       # frame pair being parsed
     current_variant: Optional[str] = None   # variant header in force (None = shared)
     pending_translation: Optional[np.ndarray] = None
-    seen_variants = set()
+    seen_variants: Set[str] = set()             # every variant header encountered
     # Step 1: scan line by line, tracking headers and capturing translation/rotation.
     for line in text.splitlines():
         pair_match = FRAME_PAIR_PATTERN.match(line)

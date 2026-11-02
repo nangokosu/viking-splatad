@@ -170,7 +170,7 @@ def test_gates_allow_untracked_and_run_tests_and_contract(monkeypatch):
 
     monkeypatch.setattr(submit_module, "run_command", fake_run_command)
     submit_module.run_gates("example_session")
-    assert issued_commands[1] == ["uv", "run", "pytest", "-q"]
+    assert issued_commands[1] == [str(submit_module.PROJECT_ROOT / "scripts" / "test_in_image.sh")]
     assert "scripts/06_validate_contract.py" in issued_commands[2]
     assert issued_commands[2][-1].endswith("data/intermediate/example_session")
 
@@ -554,3 +554,35 @@ def test_sbatch_passes_seed_and_renders_lidar_for_the_same_poses():
     lidar_step_text = sbatch_text[sbatch_text.index('python "$CODE_DIR/scripts/08_render_lidar_pointcloud.py"'):]
     assert '--pose-source "$RENDER_POSE_SOURCE"' in lidar_step_text.split("\n\n")[0]
     assert '--dataset-dir "$STAGE_ROOT/data/$SESSION"' in lidar_step_text.split("\n\n")[0]
+
+
+def test_build_sbatch_command_excludes_nodes_only_when_given():
+    """No excluded nodes -> no --exclude flag; two nodes -> one comma-separated --exclude flag."""
+    submit_module = load_submit_module()
+    base_arguments = dict(
+        partition="gpunodes", gres="gpu:rtx_a4500:1", cpus=A6000_NODE_CPUS, memory_gb=EXAMPLE_MEMORY_GB,
+        time_limit="0-01:00:00", job_name="splatad-example", output_path="/stage/runs/r/slurm-%j.out",
+        job_script_path="/stage/runs/r/job.sbatch")
+    # Default: nothing excluded.
+    unrestricted = submit_module.build_sbatch_command(**base_arguments)
+    assert not any(argument.startswith("--exclude") for argument in unrestricted)
+    # Two nodes: a single flag with both names, placed before the job script (sbatch's last argument).
+    restricted = submit_module.build_sbatch_command(**base_arguments, excluded_nodes=["gpunode16", "gpunode99"])
+    assert restricted.count("--exclude=gpunode16,gpunode99") == 1
+    assert restricted[-1] == "/stage/runs/r/job.sbatch"
+
+
+def test_build_sbatch_command_pins_nodes_only_when_given():
+    """No nodelist -> no --nodelist flag; two nodes -> one comma-separated flag before the job script."""
+    submit_module = load_submit_module()
+    base_arguments = dict(
+        partition="gpunodes", gres="gpu:rtx_a4500:1", cpus=A6000_NODE_CPUS, memory_gb=EXAMPLE_MEMORY_GB,
+        time_limit="0-01:00:00", job_name="splatad-example", output_path="/stage/runs/r/slurm-%j.out",
+        job_script_path="/stage/runs/r/job.sbatch")
+    # Default: any node.
+    unpinned = submit_module.build_sbatch_command(**base_arguments)
+    assert not any(argument.startswith("--nodelist") for argument in unpinned)
+    # Two nodes: a single flag with both names, placed before sbatch's last argument (the job script).
+    pinned = submit_module.build_sbatch_command(**base_arguments, nodelist=["gpunode21", "gpunode22"])
+    assert pinned.count("--nodelist=gpunode21,gpunode22") == 1
+    assert pinned[-1] == "/stage/runs/r/job.sbatch"

@@ -22,11 +22,28 @@ def chunk_index(file_name: str) -> int:
     Raises:
         ValueError: If no trailing index is present.
     """
-    # Trailing digits right before the final extension.
-    match = re.search(r"_(\d+)\.[^.]+$", file_name)
-    if match is None:
+    # Step 1: match "_<digits>" right before the final extension.
+    index_match = re.search(r"_(\d+)\.[^.]+$", file_name)
+    if index_match is None:
         raise ValueError(f"No chunk index in {file_name!r}")
-    return int(match.group(1))
+    # Step 2: the captured digits are the chunk index.
+    return int(index_match.group(1))
+
+
+def _offset_to_absolute_ns(bag_start_ns: int, offset_s: Optional[float]) -> Optional[int]:
+    """Convert a window offset in seconds to an absolute epoch time in integer nanoseconds.
+
+    Args:
+        bag_start_ns: Bag start, nanoseconds since the epoch.
+        offset_s: Seconds after the bag start, or None for an open bound.
+
+    Returns:
+        bag_start_ns + round(offset_s * 1e9), or None when offset_s is None.
+    """
+    # An open bound stays open; otherwise round to the nearest whole nanosecond.
+    if offset_s is None:
+        return None
+    return bag_start_ns + round(offset_s * NANOSECONDS_PER_SECOND)
 
 
 @transform("T1", "Select rosbag2 chunk files whose time span intersects the requested window")
@@ -58,14 +75,8 @@ def select_bag_chunks(
         int(record["starting_time"]["nanoseconds_since_epoch"]) for record in file_records.values()
     )
     # Step 3: window bounds in absolute integer nanoseconds (None stays open).
-    window_start_ns = (
-        None if start_offset_s is None
-        else bag_start_ns + round(start_offset_s * NANOSECONDS_PER_SECOND)
-    )
-    window_end_ns = (
-        None if end_offset_s is None
-        else bag_start_ns + round(end_offset_s * NANOSECONDS_PER_SECOND)
-    )
+    window_start_ns = _offset_to_absolute_ns(bag_start_ns, start_offset_s)
+    window_end_ns = _offset_to_absolute_ns(bag_start_ns, end_offset_s)
     # Step 4: keep chunks passing the interval-intersection test, in listed order.
     selected_names: List[str] = []
     for file_name in bag_information.get("relative_file_paths", list(file_records)):

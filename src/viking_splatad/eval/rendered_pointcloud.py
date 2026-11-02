@@ -11,8 +11,8 @@ SplatAD builds a point as ``depth · direction(az, el) + v · t_c`` (splatad.py
 ``filter_lidar_pred_and_gt``): ``v`` is the sweep's local linear velocity and ``t_c`` the ray time
 after the rolling-shutter centring shift (t − (max t + min t)/2 over the raster). ``v`` is not saved,
 so T67 fits it on the gated rows, which carry the full point and ``t_c`` (their ``t`` column), checks
-that the fit rebuilds them, and applies it to the ungated rays. Points then go to the map frame with the stored ``lidar_to_map`` (T50) and onto the
-GT occupancy grid (T68).
+that the fit rebuilds them, and applies it to the ungated rays. Points then go to the map frame with
+the stored ``lidar_to_map`` (T50) and onto the GT occupancy grid (T68).
 """
 
 from dataclasses import dataclass
@@ -92,6 +92,7 @@ def smallest_positive_step(values: np.ndarray) -> float:
     Returns:
         min positive difference of the sorted unique values; 0.0 when fewer than two distinct values.
     """
+    # Sorted unique values: consecutive differences are all positive, and their minimum is the step.
     unique_values = np.unique(np.asarray(values, dtype=np.float64))
     if unique_values.size < 2:
         return 0.0
@@ -101,9 +102,9 @@ def smallest_positive_step(values: np.ndarray) -> float:
 def resolution_at_gate(stored_probabilities: np.ndarray, gate: float) -> float:
     """Resolution of a stored (quantised) probability array at the gate value.
 
-    = gap between the largest stored value <= gate and the smallest stored value > gate. A ray whose
-    exact probability passed the gate is stored at most this far above it, whatever the storage
-    precision (the saved ``pred_ray_drop_prob`` is coarser than the value the gate used).
+    The resolution is the gap between the largest stored value <= gate and the smallest stored value
+    > gate. A ray whose exact probability passed the gate is stored at most this far above it, whatever
+    the storage precision (the saved ``pred_ray_drop_prob`` is coarser than the value the gate used).
 
     Args:
         stored_probabilities: Stored probabilities of the valid rays.
@@ -112,11 +113,14 @@ def resolution_at_gate(stored_probabilities: np.ndarray, gate: float) -> float:
     Returns:
         The gap; 0.0 when no value lies on one side of the gate (nothing is ambiguous then).
     """
+    # Step 1: the distinct stored values on each side of the gate.
     unique_values = np.unique(np.asarray(stored_probabilities, dtype=np.float64))
-    at_or_below, above = unique_values[unique_values <= gate], unique_values[unique_values > gate]
-    if at_or_below.size == 0 or above.size == 0:
+    values_at_or_below = unique_values[unique_values <= gate]
+    values_above = unique_values[unique_values > gate]
+    if values_at_or_below.size == 0 or values_above.size == 0:
         return 0.0
-    return float(above.min() - at_or_below.max())
+    # Step 2: the gap straddling the gate.
+    return float(values_above.min() - values_at_or_below.max())
 
 
 def rolling_shutter_time_shift(raster_time: np.ndarray) -> float:
@@ -172,7 +176,8 @@ def align_gated_rays(
     row_times = gated_points[:, PRED_POINT_TIME_COLUMN].astype(np.float64)
     # Step 2: half the smallest raster time step: closer than that, two ray times cannot be confused.
     time_tolerance = smallest_positive_step(ray_time[valid_ray_mask]) / 2.0
-    # Step 3: two-pointer walk.
+    # Step 3: two-pointer walk. Both sequences are in raster order, so a candidate that does not match
+    # the current row is one the exact gate dropped and is skipped; the row pointer only advances on a match.
     row_rays = np.empty(row_count, dtype=np.int64)
     row_index = 0
     for candidate_ray in candidate_rays:
@@ -249,11 +254,13 @@ def ungated_points_from_raster(
     row_rays = align_gated_rays(
         pred_ray_drop_prob.reshape(-1), pred_intensity.reshape(-1), ray_time, valid_ray_mask, pred_points, time_shift
     )
-    velocity = fit_sweep_velocity(pred_points, base_points[row_rays]) if row_rays.size else np.zeros(3)
-    # Step 3: the rebuilt gated rows must reproduce pred_points, else the alignment is wrong.
-    rebuilt_rows = base_points[row_rays] + velocity * (ray_time[row_rays] - time_shift)[:, None]
-    stored_rows = pred_points[:, XYZ_COLUMNS]
+    # With no gated rows the motion term is unobservable, so v stays 0.
+    velocity = np.zeros(3)
     if row_rays.size:
+        velocity = fit_sweep_velocity(pred_points, base_points[row_rays])
+        # Step 3: the rebuilt gated rows must reproduce pred_points, else the alignment is wrong.
+        rebuilt_rows = base_points[row_rays] + velocity * (ray_time[row_rays] - time_shift)[:, None]
+        stored_rows = pred_points[:, XYZ_COLUMNS]
         rebuild_tolerance = REBUILD_ROUNDING_COUNT * float(np.spacing(np.float32(np.abs(stored_rows).max())))
         rebuild_error = float(np.abs(rebuilt_rows - stored_rows).max())
         if rebuild_error > rebuild_tolerance:
@@ -306,6 +313,7 @@ def occupied_voxel_grid(voxel_indices: np.ndarray, inside_grid: np.ndarray, grid
     Returns:
         Bool array of ``grid_shape``.
     """
+    # Scatter True at the (x, y, z) index of every in-grid point; repeats are harmless.
     occupied = np.zeros(tuple(grid_shape), dtype=bool)
     kept_indices = voxel_indices[inside_grid]
     occupied[kept_indices[:, 0], kept_indices[:, 1], kept_indices[:, 2]] = True
@@ -324,6 +332,7 @@ def load_rendered_sweep(npz_path: Path, accumulation_threshold: float) -> Render
     """
     with np.load(npz_path) as arrays:
         gated_rows = arrays["pred_points"]
+        # Older renders lack pred_accumulation, so they have no ungated set.
         ungated_points = None
         if "pred_accumulation" in arrays.files:
             ungated_points = ungated_points_from_raster(
@@ -355,6 +364,7 @@ def load_test_lidar_sweeps(
     Raises:
         ValueError: If the folder's stems differ from the expected ones (missing or extra files).
     """
+    # Step 1: the folder's stems must equal the expected ones exactly (first 5 of each listed).
     found_stems = sorted(npz_path.stem for npz_path in Path(render_dir).glob(f"*{LIDAR_NPZ_SUFFIX}"))
     missing_stems = sorted(set(expected_stems) - set(found_stems))
     unexpected_stems = sorted(set(found_stems) - set(expected_stems))
@@ -363,6 +373,7 @@ def load_test_lidar_sweeps(
             f"{render_dir}: renders differ from the expected frames "
             f"(missing {missing_stems[:5]}, unexpected {unexpected_stems[:5]})"
         )
+    # Step 2: load each sweep in stem order.
     return [
         load_rendered_sweep(Path(render_dir) / f"{stem}{LIDAR_NPZ_SUFFIX}", accumulation_threshold)
         for stem in found_stems

@@ -72,18 +72,18 @@ def lidar_pose_in_map_frame(lidar_to_world: np.ndarray, dataparser_transform: np
     # Step 1: both inputs as 4x4 so they compose by matrix product.
     lidar_to_dataparser = _to_homogeneous_4x4(lidar_to_world)
     map_to_dataparser = _to_homogeneous_4x4(dataparser_transform)
-    # Rigid-inverse precondition R^T R = I; the tolerance is float32 resolution (the dataparser
-    # stores W as float32), times 10 for the few rounding steps in R^T R.
+    # Step 2: rigid-inverse precondition R^T R = I. The tolerance is float32 resolution (the
+    # dataparser stores W as float32), times 10 for the few rounding steps in R^T R.
     float32_tolerance = 10.0 * float(np.finfo(np.float32).eps)
     rotation = map_to_dataparser[:3, :3]
     if not np.allclose(rotation.T @ rotation, np.eye(3), atol=float32_tolerance):
         raise ValueError("dataparser_transform is not rigid (rotation not orthonormal)")
-    # Step 2: rigid inverse of W: rotation transposed, translation -R^T t.
-    rotation_transposed = map_to_dataparser[:3, :3].T
+    # Step 3: rigid inverse of W: rotation transposed, translation -R^T t.
+    rotation_transposed = rotation.T
     dataparser_to_map = np.eye(4, dtype=np.float64)
     dataparser_to_map[:3, :3] = rotation_transposed
     dataparser_to_map[:3, 3] = -rotation_transposed @ map_to_dataparser[:3, 3]
-    # Step 3: lidar -> dataparser -> map.
+    # Step 4: lidar -> dataparser -> map.
     return dataparser_to_map @ lidar_to_dataparser
 
 
@@ -125,7 +125,8 @@ def match_scan_times_to_frame_indices(
 
     Scan times are ``Lidars.times + DataparserOutputs.time_offset`` (the dataparser subtracts
     the earliest sensor time, ad_dataparser.py:300-314), i.e. the poses.npz time base.
-    Nearest-neighbour search uses one sorted search: O((S + F) log F) for S scans, F frames.
+    Nearest-neighbour search is one binary search per scan, O(S log F) for S scans and F frames,
+    plus O(F) for the monotonicity check and O(S log S) for the duplicate check.
 
     Args:
         scan_times_seconds: (S,) absolute times of the rendered scans.

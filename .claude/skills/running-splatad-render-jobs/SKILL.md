@@ -11,7 +11,7 @@ description: Use when training SplatAD and rendering camera images or lidar poin
 2. **Plots train vs test curves** with `scripts/11_plot_overfitting_curves.py` (see "Overfitting monitor").
 3. **Renders camera images** with `ns-render dataset`: rgb + gt-rgb jpg.
 4. **Renders lidar** with `scripts/08_render_lidar_pointcloud.py`, which calls SplatAD's `get_lidar_outputs` and then `filter_lidar_pred_and_gt(output_point_cloud=True)`.
-5. Both renders cover every input pose of the profile's `render_pose_source`, which is **`test` only** (user's choice 2026-10-26): training views are never re-rendered, and the test split is only the middle 10% of each held-out block (T62, below). That keeps the fetch small: 22 camera frames and 24 lidar sweeps for the full May run instead of ~2400 each.
+5. Both renders cover every input pose of the profile's `render_pose_source`, which is **`test` only** (user's choice 2026-10-26): training views are never re-rendered, and the test split is only an evenly spaced 10% of the held-out instants (T72, below). That keeps the fetch small: 25 camera frames and 25 lidar sweeps for the full May run instead of ~2400 each.
 
 Jobs run the **committed** code at HEAD. They need a built env: if `submit` says it is missing, follow the `building-splatad-cluster-env` skill.
 
@@ -39,12 +39,13 @@ git status                                   # commit first; untracked .DS_Store
 uv run python scripts/slurm/submit_run.py stage  --session <session>     # code/<sha> + data to the workdisk
 uv run python scripts/slurm/submit_run.py submit --session <session> --profile smoke
 ```
-- `submit` re-runs the gates (pytest, contract, clean tree) and prints `submitted job <job> run <run_id>`. The run is also logged in `runs/submitted.tsv`.
+- `submit` re-runs the gates (the full test suite in the reference image via `scripts/test_in_image.sh`, contract, clean tree; Docker and the image must be present) and prints `submitted job <job> run <run_id>`. The run is also logged in `runs/submitted.tsv`.
 - Then wait for the job, and fetch it automatically if it succeeded (see "Fetch").
 - If sbatch says `Unable to open file .../code/<sha>/...`, you forgot `stage` after committing.
 - A `src/` change follows the test workflow in `CLAUDE.md`/`AGENTS.md` before you commit: new tests only; Claude Code runs the `transform-test-runner` subagent, other agents run `uv run python scripts/affected_tests.py --run`.
 - Every profile in `configs/slurm.yaml` needs an integer `seed`, or `submit` refuses.
 - **GPU type:** the profile's `gres` if set, else the top-level `gres` (A6000). The job is sized from `sinfo` rows of that GPU type only. `smoke_a4500` is `smoke` (YAML merge) on an RTX A4500 (sm_86, 20 GB, 4 CPUs, ~25 GB RAM). It fits because the smoke's ~120 images stay under neurad's 500-image limit, so the images are cached on the GPU. Full runs stay on the A6000: with more than 500 images the cache moves to CPU RAM (~20.5 GB decoded for May's 2162 training images), which leaves too little of an A4500 node's 29 GB. `resume` and `build-env` always use the top-level `gres`.
+- **Excluded nodes:** `excluded_nodes` in `configs/slurm.yaml` (currently `gpunode16`) becomes `--exclude=<nodes>` on every `submit`, `resume`, `render` and `build-env` sbatch, so Slurm never places a job there. gpunode16 is broken: SplatAD dies at the first training iteration with a CUDA index-out-of-bounds assert in the lidar raster step (jobs 224504, 224537, 224538, 2026-10-29), while the identical code and data run on other A4500 nodes. Never remove the entry or pass a job to that node by hand; remove it from the YAML only once CS Lab has fixed the node. Add a node the same way (one YAML line, with the job ids and error as the comment), never with a per-job flag. A run that nevertheless shows `hostname: gpunode16` in `job_info.txt` is a failed run for that reason.
 
 Re-run the CPU preflight whenever the dataparser, extraction or window changes:
 - Script: `scripts/slurm/preflight_dataparser.py`, run in the image with `src/` bind-mounted.
@@ -59,21 +60,23 @@ Re-run the CPU preflight whenever the dataparser, extraction or window changes:
 ## Seed and reproducibility
 `seed` seeds Python, NumPy and torch (all CUDA devices) before setup (nerfstudio `train.py`). It covers Gaussian init, sensor sampling order, random background, and MCMC relocation and noise.
 
-It does **not** make runs bit-identical:
-- the gsplat/SplatAD backward kernels sum gradients with `gpuAtomicAdd`;
-- so does the tcnn lidar decoder;
-- nerfstudio sets `cudnn.benchmark=True`.
+The seed alone does not make runs reproducible. The training step also turns off the removable sources (`src/viking_splatad/splatad/determinism.py`, gated by `VIKING_DETERMINISTIC=1`, which `splatad_run.sbatch` exports for training only; no env rebuild needed):
+- **RNG race in the lidar cache:** neurad's `full_images_lidar_datamanager.py` draws `torch.randperm` from the global generator inside a 2-thread pool, so the draw order (and every later random draw) depended on thread scheduling. The pool now has one worker.
+- **Kernel choice:** `cudnn.benchmark=False`, `cudnn.deterministic=True`. `torch.use_deterministic_algorithms` is deliberately NOT used: it crashed every smoke run at the first MCMC relocation (jobs 224547/224548, step ~590, `INTERNAL ASSERT FAILED` in `Indexing.cu` from gsplat's `v[sampled_idxs] = 0`), and gsplat's `bincount`/`cumsum` have no deterministic version anyway.
+- **Environment:** `PYTHONHASHSEED=$TRAIN_SEED` and `CUBLAS_WORKSPACE_CONFIG=:4096:8`.
 
-Same seed means statistically similar runs, not identical ones. Compare B vs R with the same seed, and don't read small metric gaps as signal without repeats.
+It still does **not** make runs bit-identical: the gsplat/SplatAD backward kernels and the tcnn lidar decoder sum gradients with `gpuAtomicAdd` in a hardware-dependent order. Expect two same-seed runs to agree closely at first and then drift. Treat the gap between two identical runs as the noise floor when comparing B vs R, and don't read small metric gaps as signal without repeats.
+
+We accept any variability that comes from SplatAD's own implementation (no kernel changes), on the same node or across nodes. Runs from before the switches (up to job 224505) had the race.
 
 ## Train/test split record (successful runs only)
-**The split has no randomness, and the seed does not affect it.** SplatAD keeps the frames inside the time window (`DATASET_START/END_FRACTION`, over camera and lidar times together, inclusive). Then the test set is K contiguous time blocks, the same for camera and lidar, centred at k/(K+1) of the window, each (1−f)/K of it long (T60, `VikingHillDataParser.test_block_count`). K is the session config's `split.test_block_count` (2), exported as `TEST_BLOCK_COUNT`. f is the manifest's `session.train_fraction` (0.9) unless overridden. Runs from before T60 used neurad's per-sensor linspace split instead (every ~10th frame).
+**The split has no randomness, and the seed does not affect it.** SplatAD keeps the frames inside the time window (`DATASET_START/END_FRACTION`, over camera and lidar times together, inclusive). Then (since 2026-11-01, session config `split.method: shared_interleaved`, exported as `TEST_SPLIT_METHOD`) every ~1/(1−f)-th lidar sweep is held out (neurad's linspace on the sweeps; exactly every 10th on the full May and June recordings) and the camera holds out the frame nearest each of those sweeps, so the held-out instants are the same for both sensors (T71, `VikingHillDataParser.test_split_method`). f is the manifest's `session.train_fraction` (0.9) unless overridden. Runs from 2026-10-26 to 2026-11-01 used K = 2 contiguous test blocks instead (T60, `split.method: middle_blocks`, whose `test_block_count` / `test_block_core_fraction` the session configs still carry and the job still exports as `TEST_BLOCK_COUNT` / `TEST_BLOCK_CORE_FRACTION`); runs before T60 used neurad's per-sensor linspace split.
 
-**Only each block's core is test (T62).** The session config's `split.test_block_core_fraction` c (0.1), exported as `TEST_BLOCK_CORE_FRACTION` and passed as `--test-block-core-fraction`, keeps as test only the frames in [m − c·L/2, m + c·L/2) around each block's centre m. The rest of each block (45% on each side at c = 0.1) is **guard**: never trained on (train is unchanged), never rendered, in neither split. **The eval during training uses the whole blocks** (cores plus guard; see "Overfitting monitor"); only the renders use the cores. The guard also puts 45% of a block of time between the nearest train frame and any test frame. Whole May recording (241.09 s): camera 2162 train / 22 test / 217 guard, lidar 2172 / 24 / 216; blocks 74.34–86.39 s and 154.70–166.76 s, cores 79.76–80.97 s and 160.13–161.33 s (camera frames 795–806 and 1595–1604, lidar sweeps 798–809 and 1602–1613). At the session's 0.9 / 0.1 the 15 s smoke window would keep only 1 camera and 1 lidar test frame, so the smoke profile sets its own split (user's choice 2026-10-27): `train_fraction: 0.8` and `test_block_core_fraction: 0.2` in `configs/slurm.yaml`, giving 1.5 s blocks with 0.3 s cores, ~3 test frames per block per sensor. A profile's `train_fraction` is exported as both `TRAIN_SPLIT_FRACTION` and `TRAIN_SPLIT_FRACTION_OVERRIDE` (viking-data `--train-split-fraction-override`), because the dataparser otherwise resolves the manifest's value (T27). Any profile may set either key (`profile_split_fractions`).
+**Only a render subset of the held-out instants is test (T72).** The session config's `split.test_render_fraction` r (0.1), exported as `TEST_RENDER_FRACTION` and passed as `--test-render-fraction`, keeps as test an evenly spaced r of the held-out sweeps (ranks int(linspace(0, m−1, ceil(m·r)))) and the camera frames nearest them. The other held-out frames are **guard**: never trained on (train is unchanged), never rendered by the run (re-renderable, `rendering-splatad-checkpoints`). **The eval during training uses every held-out frame** (test plus guard; see "Overfitting monitor"); only the renders use the subset. Whole May recording: camera 2160 train / 25 test / 216 guard, lidar 2171 / 25 / 216 (test sweeps 10, 110, 210, …). June: camera 1938 / 22 / 193, lidar 1946 / 22 / 194. At the session's 0.9 / 0.1 the 15 s smoke window would keep ~2 test frames per sensor, so the smoke profile sets its own split (user's choice 2026-10-27, render fraction 2026-11-01): `train_fraction: 0.8` and `test_render_fraction: 0.2` in `configs/slurm.yaml`, giving every 5th sweep held out: 120 train / 6 test / 24 guard per sensor. A profile's `train_fraction` is exported as both `TRAIN_SPLIT_FRACTION` and `TRAIN_SPLIT_FRACTION_OVERRIDE` (viking-data `--train-split-fraction-override`), because the dataparser otherwise resolves the manifest's value (T27). Any profile may set `train_fraction` or `test_render_fraction` (`profile_split_fractions`, `profile_test_render_fraction`).
 
 `scripts/09_extract_run_split.py` rebuilds it on the CPU, without torch, and writes `<run dir>/split.json` and `split_frames.csv`:
 - every frame with its split, index, ns stamp and time;
-- the seed, git SHA, window, train fraction and its source, test block count, block bounds, core fraction and core bounds (`test_cores_s`);
+- the seed, git SHA, window, train fraction and its source, split method, reference sensor, stride 1/(1−f) and render fraction (`test_split_method`, `test_reference_sensor_kind`, `test_stride_frames`, `test_render_fraction`), and for block runs the block count, block bounds, core fraction and core bounds (`test_cores_s`);
 - guard frames as split `guard` (in `frames` and in `counts`);
 - SHA-256 hashes of the dataset's `manifest.json` and `poses.npz`;
 - `membership_sha256`, a fingerprint of the split, and `render_check`.
@@ -81,7 +84,7 @@ Same seed means statistically similar runs, not identical ones. Compare B vs R w
 **Only document runs that successfully returned their outputs. Never write, keep or cite a split record for a failed, killed or incomplete run.** The script enforces this. It writes nothing, and deletes any earlier record, unless:
 - every render step finished and `config.yml` exists;
 - camera and lidar renders exist for every rendered split;
-- the train fractions agree (`job_info.txt`, `config.yml`, manifest), and so do the test block counts and core fractions (`job_info.txt`, `config.yml`);
+- the train fractions agree (`job_info.txt`, `config.yml`, manifest), and so do the test block counts, core fractions, split methods and render fractions (`job_info.txt`, `config.yml`);
 - the render file names equal the rebuilt split.
 
 Exit codes: 0 written, 1 inconsistent, 2 incomplete. `splatad_run.sbatch` runs it once, as the job's last step after the lidar render. It records `split_render_check: match`, or `FAILED (exit N)` and fails the job, before `end_utc`. So a run with `end_utc` has a verified `split.json`, and a run without one has none.
@@ -103,7 +106,7 @@ It was verified against the real dataparser on `may_chunks0_1_smoke`'s smoke win
 
 ## Overfitting monitor (every run)
 Training evaluates held-out data throughout, and the job plots train against test, so a run shows whether the model memorises the training views.
-- **What is evaluated:** SplatAD's all-images eval, split `val` = the **whole T60 test stretches** (`--eval-whole-test-blocks`, set by the job; T65). May: 239 camera frames, 240 lidar sweeps; June: 216 / 216. The renders (`ns-render`, script 08) still use split `test` = the T62 cores.
+- **What is evaluated:** SplatAD's all-images eval, split `val` = **every held-out frame** (test plus guard; `--eval-whole-test-blocks`, set by the job; T65). May: 241 camera frames, 241 lidar sweeps; June: 215 / 216. The renders (`ns-render`, script 08) still use split `test` = the T72 render subset. (Block runs: the whole T60 stretches and the T62 cores.)
 - **Cadence (T63):** the profile key `minimum_eval_points` (50) gives `MINIMUM_EVAL_POINTS`. The eval interval is `k = (max_num_iterations - 1) // minimum_eval_points`, exported as `STEPS_PER_EVAL_ALL_IMAGES`. Full runs (20001 steps since 2026-10-27; the first May run had 30001, every 600): every 400 steps, 50 points. Smoke (3000): every 59, 50 points. `submit` refuses a profile that cannot reach the minimum.
 - **Figure:** after training the job runs `scripts/11_plot_overfitting_curves.py`. It writes `<run dir>/overfitting/overfitting_curves.png` and `overfitting_curves.csv` (columns `metric,split,step,value`; split is `train`, `test` or `train_loss`).
   - One panel per metric: train (thin raw line plus a rolling median) and test (whole stretches, markers), and a Train Loss panel.
@@ -124,6 +127,7 @@ Training evaluates held-out data throughout, and the job plots train against tes
 - Non-finite logged values (nan, inf) do not stop the plot: they are left out of the y-limits, and the CSV keeps them as Python's float text (`nan`, `inf`).
 
 ## Monitor: stuck vs progressing
+- **Overview of every run:** `uv run python scripts/slurm/submit_run.py runs` (read-only; `--all` also lists done runs). For each run it gives the status (`active`, `fetch`, `failed`, `resumable`, `plot-recovery`, `stale-ledger`, `done`), its jobs with their pending reason and Slurm's start estimate, the furthest `job_info.txt` milestone, and the next action. CLAUDE.md runs it at every session start.
 - The log, `job_info.txt` and all outputs are in the run dir: `<stage root>/runs/<run_id>/`.
 - Milestones, in order: `gpu_check` → `train_elapsed_s` → `overfitting_plot: written` → `render_elapsed_s` (camera) → `lidar_render_elapsed_s` → `split_render_check: match` (`split.json` written) → `end_utc`.
 - `overfitting_plot: FAILED (exit N)` does not stop the job (the renders still run), but the job then fails before `end_utc`.
@@ -174,7 +178,7 @@ Then read `job_info.txt`:
   uv run python scripts/slurm/submit_run.py fetch <run_id>
   ```
   Use a background command, since a smoke run is ~2.7 GB.
-- **Any of the three missing (failed run):** don't fetch. Read the Slurm log over ssh, diagnose, and report. Fetch a failed run only if the user asks.
+- **Any of the three missing (failed run):** don't fetch. Read the Slurm log over ssh, diagnose, and report. Then clean the run up at once with the `cleaning-up-splatad-runs` skill, without asking (standing instruction, 2026-10-29), unless it is resumable (see "Render-step failure after training"). Fetch a failed run only if the user asks, and then do not clean it.
 Result on your machine in `runs/<run_id>/`. Every file and key of every run folder is described once, in `runs/RUN_FOLDER_GLOSSARY.md` (committed; the rest of `runs/` is gitignored). Update it whenever the job's outputs change; a test checks that it documents every lidar npz key.
 - `renders/test/{rgb,gt-rgb}/*.jpg`: one per test camera pose; file names are frame index + timestamp. (`renders/train/` exists only in runs from before 2026-10-26, which rendered `train+test`.)
 - `renders/test/lidar/<idx>_<ts_ns>.npz`: one per test lidar pose, named exactly like the input sweep `data/intermediate/<session>/lidar/<sensor>/<idx>_<ts_ns>.npy`.
@@ -206,6 +210,7 @@ Read the clouds with these limits in mind:
 - `test` is two held-out stretches of the drive (T60 block split, runs with `TEST_BLOCK_COUNT`); in older runs it is every ~10th frame interleaved with training frames, which measures interpolation only.
 
 ## Known traps
+- **gpunode16 is excluded** (`excluded_nodes`, see "Excluded nodes" under Submit). If a job dies in seconds with a CUDA index-out-of-bounds assert in the lidar raster step, check `hostname` in `job_info.txt` first.
 - Never remove `--pipeline.calc-fid-steps 99999999` from the sbatch. SplatAD's FIDs at step 30000 edit the dynamic actors, and our scenes have none: `IndexError` in `dynamic_actors.edit_boxes2world` killed jobs 222951/222952 at the last step (the sbatch comment has the details). `ns-eval` turns the FIDs on regardless, so never use it; evaluate with `ns-render` and script 08.
 - Never pass `ns-render --downscale-factor` with viking-data: it asserts (render.py:929). The sbatch omits it when the factor is 1.
 - Never use `ns-render --render-point-clouds` for SplatAD. It calls `get_outputs_for_lidar`, which fails with "Unknown sensor type", and it writes only PNG plots. Lidar goes through `08_render_lidar_pointcloud.py`.

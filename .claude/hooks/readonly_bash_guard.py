@@ -11,8 +11,10 @@ import json
 import re
 import sys
 
-# Command prefixes the agent is allowed to run (matched against the whole command start).
+# Command prefixes the agent is allowed to run (matched against the start of the first pipe stage).
 ALLOWED_COMMAND_PATTERNS = [
+    # The wrapper mounts the repo read-only, so it cannot write into the tree.
+    r"^scripts/test_in_image\.sh\b",
     r"^uv run (python )?scripts/affected_tests\.py\b",
     r"^uv run pytest\b",
     r"^uv run python -m pytest\b",
@@ -21,7 +23,7 @@ ALLOWED_COMMAND_PATTERNS = [
     r"^pwd$",
 ]
 # Shell features that can write files, chain commands or substitute output.
-# Output redirection (>), command chaining (; & &&), substitution ($( ) and backticks)
+# Redirection (> <), command chaining (; & && and newlines), substitution ($( ) and backticks)
 # are rejected; a plain pipe into tail/head/grep/wc is allowed for trimming output.
 FORBIDDEN_SHELL_FRAGMENTS = [">", "<", ";", "&", "`", "$(", "\n"]
 ALLOWED_PIPE_TARGETS = re.compile(r"^(tail|head|grep|wc)\b")

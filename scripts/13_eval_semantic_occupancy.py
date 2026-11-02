@@ -86,6 +86,11 @@ REPORT_MARKDOWN_NAME = "semantic_occupancy.md"
 POINT_SET_NAMES = ("ungated", "gated")
 # Smallest possible T45 threshold (one point), used only when the real sweeps hit no box of a class.
 MINIMUM_POSSIBLE_POINT_COUNT = 1
+# Markdown header of the per-class table (columns in the order class_table_rows writes them).
+CLASS_TABLE_HEADER = [
+    "| class | cuboids | n_min | detection rate | point precision (in/nbhd) | voxel IoU | voxel P | voxel R |",
+    "|---|---|---|---|---|---|---|---|",
+]
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -229,13 +234,15 @@ def pooled_map_points(sweeps: Sequence[RenderedSweep], point_set_name: str, grid
     grid_shape = grid["class_ids"].shape
     point_attribute = {"gated": "gated_points", "ungated": "ungated_points", "real": "real_points"}[point_set_name]
     map_points, voxel_indices, inside_masks = [], [], []
+    # Step 1: each sweep's points to the map frame (p_map = lidar_to_map @ p) and their GT-grid voxels.
     for sweep in sweeps:
-        points_map, indices, inside_grid = points_to_map_voxels(
+        sweep_map_points, sweep_voxel_indices, sweep_inside_grid = points_to_map_voxels(
             getattr(sweep, point_attribute), sweep.lidar_to_map, grid["origin"], float(grid["voxel_size"]), grid_shape
         )
-        map_points.append(points_map)
-        voxel_indices.append(indices)
-        inside_masks.append(inside_grid)
+        map_points.append(sweep_map_points)
+        voxel_indices.append(sweep_voxel_indices)
+        inside_masks.append(sweep_inside_grid)
+    # Step 2: pool over sweeps; voxels outside the grid are counted, not marked occupied.
     all_indices, all_inside = np.concatenate(voxel_indices), np.concatenate(inside_masks)
     return {
         "points": np.concatenate(map_points),
@@ -257,6 +264,9 @@ def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Di
 
     Returns:
         (eval root, report dict).
+
+    Raises:
+        ValueError: Refused input (missing or mismatched split record, renders, dataset or GT).
     """
     # Step 1: inputs, all derived from the run's records.
     eval_root, render_dir, expected_stems, split_record = resolve_render_target(run_dir, rerender_label)
@@ -291,6 +301,7 @@ def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Di
         n_min_source = f"quantile {eval_settings['n_min_quantile']} of real test-sweep counts"
         if n_min is None:
             n_min, n_min_source = MINIMUM_POSSIBLE_POINT_COUNT, "no real hit: minimum possible count"
+        # No box of the class in the session (margin None): no growth, the neighbourhood is the boxes.
         margin = margins[class_id] or 0.0
         neighbourhood = restrict_mask_to_visible(
             cuboid_voxel_mask([grow_cuboid_horizontally(cuboid, margin) for cuboid in class_cuboids],
@@ -393,12 +404,6 @@ def class_table_rows(point_set_report: Dict[str, Any]) -> List[str]:
     return rows
 
 
-CLASS_TABLE_HEADER = [
-    "| class | cuboids | n_min | detection rate | point precision (in/nbhd) | voxel IoU | voxel P | voxel R |",
-    "|---|---|---|---|---|---|---|---|",
-]
-
-
 def report_markdown(report: Dict[str, Any]) -> str:
     """Human-readable report.
 
@@ -442,7 +447,7 @@ def comparison_markdown(reports: Sequence[Dict[str, Any]]) -> str:
         Markdown text.
 
     Raises:
-        ValueError: If the runs come from different sessions or labels samples.
+        ValueError: If the runs differ in session, labels sample or GT cuboids (cuboids.json sha256).
     """
     session_keys = {(report["session"], report["labels_sample_key"], report["ground_truth"]["cuboids_sha256"])
                     for report in reports}

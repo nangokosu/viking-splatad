@@ -34,8 +34,9 @@ Usage:
     # On the cluster (the last step of splatad_run.sbatch, after every render):
     python scripts/09_extract_run_split.py --run-dir <run dir> --dataset-dir <stage>/data/<session>
 
-Exit code 0 when the record was written; 1 when the renders or the train fractions disagree with
-the rebuilt split; 2 when the run did not complete (failed runs are never documented).
+Exit code 0 when the record was written; 1 when the renders disagree with the rebuilt split or the
+recorded split settings (train fraction, test block count, core fraction) disagree; 2 when the run
+did not complete (failed runs are never documented).
 """
 
 import argparse
@@ -50,12 +51,16 @@ from viking_splatad.dataset.run_split import (
     SPLIT_SENSOR_KINDS,
     GUARD_SPLIT_NAME,
     TEST_SPLIT_NAME,
+    REFERENCE_SENSOR_KIND,
+    SHARED_INTERLEAVED_SPLIT_METHOD,
     TRAIN_SPLIT_NAME,
     WHOLE_BLOCK_CORE_FRACTION,
+    WHOLE_TEST_RENDER_FRACTION,
     build_run_split_with_cores,
     compare_with_rendered_stems,
     file_sha256,
     resolve_run_train_fraction,
+    resolve_test_split_method,
     split_digest,
 )
 # read_config_scalar / YAML_NULL_LITERALS moved to the package; the names stay available here.
@@ -77,7 +82,7 @@ REQUIRED_JOB_INFO_KEYS = ("RUN_ID", "SESSION", "DATASET_START_FRACTION", "DATASE
 RENDERS_COMPLETE_JOB_INFO_KEY = "lidar_render_elapsed_s"
 # Separator of the splits in RENDER_POSE_SOURCE (e.g. "train+test").
 POSE_SOURCE_SEPARATOR = "+"
-# Exit codes: written, inconsistent (renders or fractions disagree), run not complete.
+# Exit codes: written, inconsistent (renders or recorded split settings disagree), run not complete.
 EXIT_WRITTEN, EXIT_INCONSISTENT, EXIT_INCOMPLETE = 0, 1, 2
 # Render folder per sensor kind and the file extension each renderer writes there.
 RENDER_FOLDER_BY_KIND = {"camera": ("rgb", ".jpg"), "lidar": ("lidar", ".npz")}
@@ -229,6 +234,55 @@ def resolve_checked_test_block_core_fraction(job_info: Dict[str, str], config_pa
     return config_core_fraction
 
 
+def resolve_checked_test_split_method(job_info: Dict[str, str], config_path: Path) -> Optional[str]:
+    """The run's ``test_split_method`` as config.yml saved it, after checking job_info.txt agrees.
+
+    Runs from before the field have neither entry (the method then follows from the block count).
+
+    Args:
+        job_info: Parsed job_info.txt.
+        config_path: The run's config.yml.
+
+    Returns:
+        The saved method (``middle_blocks`` / ``shared_interleaved``), or None when unset.
+
+    Raises:
+        RunNotDocumented: (inconsistent) if job_info.txt records a different value than config.yml.
+    """
+    config_text = read_config_scalar(config_path, "test_split_method")
+    # nerfstudio dumps plain strings unquoted; strip quotes anyway so a quoted dump reads the same.
+    config_method = None if config_text is None else config_text.strip("'\"")
+    if "TEST_SPLIT_METHOD" in job_info and job_info["TEST_SPLIT_METHOD"] != config_method:
+        raise RunNotDocumented(
+            f"test split methods disagree: job_info.txt TEST_SPLIT_METHOD {job_info['TEST_SPLIT_METHOD']}, "
+            f"config.yml test_split_method {config_method}", EXIT_INCONSISTENT)
+    return config_method
+
+
+def resolve_checked_test_render_fraction(job_info: Dict[str, str], config_path: Path) -> float:
+    """The run's T72 render fraction, after checking job_info.txt and config.yml agree.
+
+    Runs from before T72 have neither entry and rendered every test frame (1.0).
+
+    Args:
+        job_info: Parsed job_info.txt.
+        config_path: The run's config.yml.
+
+    Returns:
+        r in (0, 1].
+
+    Raises:
+        RunNotDocumented: (inconsistent) if job_info.txt records a different value than config.yml.
+    """
+    config_text = read_config_scalar(config_path, "test_render_fraction")
+    config_render_fraction = WHOLE_TEST_RENDER_FRACTION if config_text is None else float(config_text)
+    if "TEST_RENDER_FRACTION" in job_info and float(job_info["TEST_RENDER_FRACTION"]) != config_render_fraction:
+        raise RunNotDocumented(
+            f"test render fractions disagree: job_info.txt TEST_RENDER_FRACTION {job_info['TEST_RENDER_FRACTION']}, "
+            f"config.yml test_render_fraction {config_render_fraction}", EXIT_INCONSISTENT)
+    return config_render_fraction
+
+
 def remove_stale_record(run_dir: Path) -> None:
     """Delete split.json / split_frames.csv left from an earlier extraction, so no run keeps a wrong record.
 
@@ -250,7 +304,8 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
         (split.json content, frames).
 
     Raises:
-        RunNotDocumented: When the run is incomplete or its renders/fractions disagree.
+        RunNotDocumented: When the run is incomplete, or its renders or recorded split settings
+            (train fraction, test block count, core fraction, split method, render fraction) disagree.
     """
     # Step 1: the run must have finished every render step.
     job_info_path = run_dir / "job_info.txt"
@@ -281,6 +336,12 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
     train_fraction, train_fraction_source = resolve_checked_train_fraction(job_info, config_path, view.manifest)
     test_block_count = resolve_checked_test_block_count(job_info, config_path)
     test_block_core_fraction = resolve_checked_test_block_core_fraction(job_info, config_path)
+    saved_split_method = resolve_checked_test_split_method(job_info, config_path)
+    test_render_fraction = resolve_checked_test_render_fraction(job_info, config_path)
+    try:
+        split_method = resolve_test_split_method(saved_split_method, test_block_count)
+    except ValueError as invalid_method:
+        raise RunNotDocumented(f"config.yml split settings are invalid: {invalid_method}", EXIT_INCONSISTENT)
     max_eval_text = read_config_scalar(config_path, "max_eval_frames")
     # Runs from before the overfitting monitor lack the field: their training eval covered the
     # cores only. YAML booleans are case-insensitive in practice, so compare lower-cased.
@@ -295,6 +356,8 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
         max_eval_frames=None if max_eval_text is None else int(max_eval_text),
         test_block_count=test_block_count,
         test_block_core_fraction=test_block_core_fraction,
+        test_split_method=split_method,
+        test_render_fraction=test_render_fraction,
     )
     render_check = compare_with_rendered_stems(frames, rendered_stems)
     mismatched = {check_name: check for check_name, check in render_check.items() if not check["match"]}
@@ -302,22 +365,24 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
         raise RunNotDocumented(f"renders disagree with the rebuilt split: {mismatched}", EXIT_INCONSISTENT)
 
     # Step 5: per-sensor counts (frames in the recording, in the window, per split). "val" is what
-    # training evaluated: the whole test blocks (test + guard frames) or, for old runs, the cores (test).
+    # training evaluated: every held-out frame (test + guard: whole blocks or every T71 instant) or,
+    # for old runs, the cores (test).
     sensor_counts = {}
     for sensor in view.manifest["sensors"]:
         if sensor["kind"] not in SPLIT_SENSOR_KINDS:
             continue
-        sensor_frames = [frame for frame in frames if frame.sensor == sensor["name"]]
-        sensor_counts[sensor["name"]] = {
+        sensor_name = sensor["name"]
+        sensor_frames = [frame for frame in frames if frame.sensor == sensor_name]
+        counts_of_sensor = {
             "kind": sensor["kind"],
-            "frames_in_recording": len(view.sensor_times[sensor["name"]]),
+            "frames_in_recording": len(view.sensor_times[sensor_name]),
             # At fraction 1.0 a frame is in both splits, so count distinct files.
             "frames_in_window": len({frame.file for frame in sensor_frames}),
             TRAIN_SPLIT_NAME: sum(frame.split == TRAIN_SPLIT_NAME for frame in sensor_frames),
             TEST_SPLIT_NAME: sum(frame.split == TEST_SPLIT_NAME for frame in sensor_frames),
             GUARD_SPLIT_NAME: sum(frame.split == GUARD_SPLIT_NAME for frame in sensor_frames),
         }
-        counts_of_sensor = sensor_counts[sensor["name"]]
+        sensor_counts[sensor_name] = counts_of_sensor
         counts_of_sensor["val"] = (
             counts_of_sensor[TEST_SPLIT_NAME] + counts_of_sensor[GUARD_SPLIT_NAME]
             if eval_whole_test_blocks else counts_of_sensor[TEST_SPLIT_NAME])
@@ -335,10 +400,23 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
         "seed_note": SEED_NOTE,
         "selection": {
             "algorithm": (
+                "time window (T58), then every ~1/(1-f)-th lidar sweep and the frames of every sensor "
+                "nearest it held out (T71), an evenly spaced render subset of those test, the rest guard "
+                "(T72, VikingHillDataParser)"
+                if split_method == SHARED_INTERLEAVED_SPLIT_METHOD else
                 "neurad-studio ADDataParser: time window (T58), then per-sensor LINSPACE (T59)"
-                if test_block_count is None else
+                if split_method is None else
                 "time window (T58), then middle test blocks shared by every sensor (T60, VikingHillDataParser)"
             ),
+            # Additive keys (schema unchanged): the method actually used, and for T71/T72 the
+            # reference sensor kind, the nominal stride 1/(1-f) between held-out instants, and r.
+            "test_split_method": split_method,
+            "test_reference_sensor_kind": (
+                REFERENCE_SENSOR_KIND if split_method == SHARED_INTERLEAVED_SPLIT_METHOD else None),
+            "test_stride_frames": (
+                1.0 / (1.0 - train_fraction)
+                if split_method == SHARED_INTERLEAVED_SPLIT_METHOD and train_fraction < 1.0 else None),
+            "test_render_fraction": test_render_fraction,
             "test_block_count": test_block_count,
             "test_blocks_s": [list(block) for block in test_blocks],
             "test_block_core_fraction": test_block_core_fraction,
@@ -353,6 +431,9 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
             "window_bounds_s": None if window_bounds is None else list(window_bounds),
             "train_fraction": train_fraction,
             "train_fraction_source": train_fraction_source,
+            # Always None by construction: build_run_split_with_cores raises when config.yml sets
+            # max_eval_frames (the torch.randperm eval subset is not reproduced), so no record is
+            # written for such a run. Not a lost value; the job exports no such setting either.
             "max_eval_frames": None,
         },
         "dataset": {
@@ -405,7 +486,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               f"train {counts[TRAIN_SPLIT_NAME]}, test {counts[TEST_SPLIT_NAME]}")
     selection = split_record["selection"]
     print(f"train fraction {selection['train_fraction']} ({selection['train_fraction_source']})")
-    if selection["test_block_count"] is not None:
+    if selection["test_split_method"] == SHARED_INTERLEAVED_SPLIT_METHOD:
+        # f == 1 holds nothing out (neurad's viewing convention), so there is no stride to print.
+        stride_text = ("no held-out instants (f = 1)" if selection["test_stride_frames"] is None else
+                       f"test instants every ~{selection['test_stride_frames']:.3g} "
+                       f"{selection['test_reference_sensor_kind']} frames")
+        print(f"shared interleaved split: {stride_text}; render fraction {selection['test_render_fraction']}")
+    elif selection["test_block_count"] is not None:
         block_text = ", ".join(f"[{block_start:.3f}, {block_end:.3f})" for block_start, block_end in selection["test_blocks_s"])
         print(f"{selection['test_block_count']} test blocks (s): {block_text}")
     print(f"membership sha256 {split_record['membership_sha256']}; renders match for "

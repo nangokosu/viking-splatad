@@ -1,4 +1,4 @@
-"""Exact train/test frame membership of one SplatAD run, rebuilt without torch (T58, T59, T60, T62, T66).
+"""Exact train/test frame membership of one SplatAD run, rebuilt without torch (T58, T59, T60, T62, T65, T66, T71, T72).
 
 SplatAD's frame selection has no randomness. ``ADDataParser._generate_dataparser_outputs``
 (neurad-studio ad_dataparser.py) does, in order:
@@ -15,6 +15,10 @@ SplatAD's frame selection has no randomness. ``ADDataParser._generate_dataparser
     4. Render-only jobs (scripts/slurm/render_only.sbatch) set ``render_frame_selection_file`` in a
        copy of a finished run's config.yml: the ``test``/``eval`` split is then exactly the requested
        guard frames (T66) instead of the cores. Train (and ``val``) never change.
+    Alternatively ``test_split_method = "shared_interleaved"`` replaces steps 2-3: every ~1/(1-f)-th
+    lidar sweep is test (T59's LINSPACE on the reference sensor) and every other sensor holds out
+    the frames nearest those sweeps (T71); with ``test_render_fraction = r < 1`` only an evenly
+    spaced r of the held-out instants is the test split, the rest is guard (T72).
 The training seed (``--machine.seed``) only orders sampling during training; it never changes
 which frames are train or test. The only seeded step in split selection, ``max_eval_frames``
 (``torch.manual_seed(123)``), is None for ns-train and forced to None by ns-render and
@@ -61,6 +65,14 @@ EVAL_WHOLE_BLOCKS_SPLIT_NAME = "val"
 # Splits the render-frame selection (T66) replaces: ns-render and scripts/08 ask for "test"; "eval"
 # is the base class's other name for the held-out split. "val" (training's eval) stays as T65 says.
 RENDER_SELECTION_SPLIT_NAMES = ("test", "eval")
+# test_split_method values: T60 (+T62) contiguous blocks, or T71 (+T72) shared interleaved instants.
+MIDDLE_BLOCKS_SPLIT_METHOD = "middle_blocks"
+SHARED_INTERLEAVED_SPLIT_METHOD = "shared_interleaved"
+TEST_SPLIT_METHODS = (MIDDLE_BLOCKS_SPLIT_METHOD, SHARED_INTERLEAVED_SPLIT_METHOD)
+# Sensor kind whose frames define the T71 test instants: lidar geometry is what the study evaluates.
+REFERENCE_SENSOR_KIND = "lidar"
+# T72 render fraction meaning "render every held-out frame" (no guard frames).
+WHOLE_TEST_RENDER_FRACTION = 1.0
 
 
 @dataclass(frozen=True)
@@ -70,7 +82,7 @@ class SplitFrame:
     Attributes:
         sensor: Sensor name (e.g. ``ids_camera``).
         kind: ``camera`` or ``lidar``.
-        split: ``train`` or ``test``.
+        split: ``train``, ``test`` or ``guard`` (T62).
         frame_index: Index in the frame file name ``<frame_index>_<timestamp_ns>.<ext>``.
         timestamp_ns: Stamp in the frame file name (identifies the frame across datasets).
         time_s: ``poses.npz`` time [s] the dataparser uses for this frame.
@@ -109,7 +121,8 @@ def time_window_masks(
     if start_fraction == FULL_RECORDING_START_FRACTION and end_fraction == FULL_RECORDING_END_FRACTION:
         return {name: np.ones(len(times), dtype=bool) for name, times in sensor_times.items()}, None
     # Step 2: min and span over all camera + lidar times together (torch.cat of both sets).
-    all_times = np.concatenate([np.asarray(times, dtype=np.float64) for times in sensor_times.values()])
+    times_by_sensor = {name: np.asarray(times, dtype=np.float64) for name, times in sensor_times.items()}
+    all_times = np.concatenate(list(times_by_sensor.values()))
     end_time = float(all_times.max())
     start_time = float(all_times.min())
     duration = end_time - start_time
@@ -117,10 +130,7 @@ def time_window_masks(
     end_time = start_time + duration * end_fraction
     start_time += duration * start_fraction
     # Step 4: inclusive mask per sensor (_filter_sensordata_on_time).
-    masks = {
-        name: (np.asarray(times, dtype=np.float64) >= start_time) & (np.asarray(times, dtype=np.float64) <= end_time)
-        for name, times in sensor_times.items()
-    }
+    masks = {name: (times >= start_time) & (times <= end_time) for name, times in times_by_sensor.items()}
     return masks, (start_time, end_time)
 
 
@@ -227,6 +237,188 @@ def middle_block_train_eval_indices(
             test_mask |= (times >= block_start) & (times < block_end)
         positions[name] = (np.flatnonzero(~test_mask).astype(np.int64), np.flatnonzero(test_mask).astype(np.int64))
     return positions, block_bounds
+
+
+def resolve_test_split_method(test_split_method: Optional[str], test_block_count: Optional[int]) -> Optional[str]:
+    """The split method a run uses, from its config fields (config.yml files may predate the method field).
+
+    Args:
+        test_split_method: ``test_split_method`` of the dataparser config, or None when unset.
+        test_block_count: ``test_block_count`` of the dataparser config, or None when unset.
+
+    Returns:
+        ``middle_blocks``, ``shared_interleaved``, or None for neurad's per-sensor LINSPACE (T59).
+        An unset method with a block count is ``middle_blocks`` (runs saved before the field existed).
+        With ``shared_interleaved`` a block count is ignored (session configs keep it as the
+        ``middle_blocks`` parameter).
+
+    Raises:
+        ValueError: If the method is unknown, or ``middle_blocks`` has no block count.
+    """
+    # Step 1: unset method -> the rule that was in force before the field existed.
+    if test_split_method is None:
+        return MIDDLE_BLOCKS_SPLIT_METHOD if test_block_count is not None else None
+    # Step 2: an explicit method must be known and complete.
+    if test_split_method not in TEST_SPLIT_METHODS:
+        raise ValueError(f"test_split_method must be one of {TEST_SPLIT_METHODS} or None, got {test_split_method!r}")
+    if test_split_method == MIDDLE_BLOCKS_SPLIT_METHOD and test_block_count is None:
+        raise ValueError("test_split_method middle_blocks needs test_block_count")
+    return test_split_method
+
+
+def nearest_reference_positions(reference_times: np.ndarray, query_times: np.ndarray) -> np.ndarray:
+    """Position of the reference frame nearest in time to each query time.
+
+    Binary search on the sorted reference times: for a query t with insertion point p, the
+    candidates are sorted[p - 1] and sorted[p]; the closer one wins, the earlier one on a tie.
+    Cost O((R + Q) log R) for R reference and Q query times.
+
+    Args:
+        reference_times: float64 [R] reference frame times, R >= 1 (any order).
+        query_times: float64 [Q] times to match.
+
+    Returns:
+        int64 [Q] positions into ``reference_times``.
+    """
+    # Step 1: sort the reference times once, remembering where each came from.
+    reference_order = np.argsort(reference_times, kind="stable")
+    sorted_reference_times = np.asarray(reference_times, dtype=np.float64)[reference_order]
+    last_sorted_position = len(sorted_reference_times) - 1
+    # Step 2: the neighbours on either side of each query (clipped at the ends).
+    insertion_points = np.searchsorted(sorted_reference_times, query_times, side="left")
+    later_positions = np.clip(insertion_points, 0, last_sorted_position)
+    earlier_positions = np.clip(insertion_points - 1, 0, last_sorted_position)
+    # Step 3: the nearer neighbour; <= keeps the earlier one on an exact tie.
+    earlier_is_nearer = (np.abs(query_times - sorted_reference_times[earlier_positions])
+                         <= np.abs(sorted_reference_times[later_positions] - query_times))
+    nearest_sorted_positions = np.where(earlier_is_nearer, earlier_positions, later_positions)
+    return reference_order[nearest_sorted_positions].astype(np.int64)
+
+
+@transform("T71", "shared interleaved split: every ~1/(1-f)-th reference (lidar) frame is test; other sensors hold out the frames nearest those")
+def shared_interleaved_train_test_indices(
+    sensor_times: Dict[str, np.ndarray], train_fraction: float, reference_sensor: str
+) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+    """Train and test positions per sensor when the test set is every ~X-th instant, shared by every sensor.
+
+    The standard 3DGS hold-out (every X-th view), with X = 1 / (1 - f), made time-consistent:
+        * reference sensor: neurad's LINSPACE (T59): train = int(linspace(0, n-1, ceil(n f))),
+          test = the rest. The spacing s = (n-1)/(ceil(n f)-1) is in [1, 2), so truncation skips
+          one integer about every 1 / (1 - 1/s) ~ 1 / (1 - f) positions: test frames are evenly
+          interleaved with gaps of floor or ceil of that stride.
+        * every other sensor: a frame is test iff its nearest reference frame in time is test, i.e.
+          each test reference frame owns the time half-way to its neighbours. A test camera image
+          and the lidar sweep taken with it are then both held out (neurad's per-sensor LINSPACE
+          chooses each sensor's test frames independently, so they rarely coincide).
+    f == 1.0 follows neurad's convention (train and test are both every frame; test is for viewing).
+    Cost O(N log R) for N frames in total and R reference frames.
+
+    Args:
+        sensor_times: sensor name -> float64 [N] times of that sensor's windowed frames.
+        train_fraction: f in (0, 1].
+        reference_sensor: Key of ``sensor_times`` whose frames define the test instants.
+
+    Returns:
+        sensor name -> (train_positions, test_positions), sorted int64 positions into that sensor's array.
+
+    Raises:
+        ValueError: If the reference sensor is unknown, f is outside (0, 1], or another sensor has
+            frames while the reference sensor has none (no instant to match them to).
+    """
+    # Step 1: validate.
+    if reference_sensor not in sensor_times:
+        raise ValueError(f"reference sensor {reference_sensor!r} is not among {sorted(sensor_times)}")
+    if not 0.0 < train_fraction <= ALL_FRAMES_TRAIN_FRACTION:
+        raise ValueError(f"train_fraction {train_fraction} must lie in (0, 1]")
+    times_by_sensor = {name: np.asarray(times, dtype=np.float64) for name, times in sensor_times.items()}
+    # Step 2: neurad's full-dataset case: every frame of every sensor in both splits.
+    if train_fraction == ALL_FRAMES_TRAIN_FRACTION:
+        positions = {}
+        for name, times in times_by_sensor.items():
+            all_positions = np.arange(len(times), dtype=np.int64)
+            positions[name] = (all_positions, all_positions.copy())
+        return positions
+    # Step 3: the reference sensor's interleaved split (T59, identical to T21 for f < 1).
+    reference_times = times_by_sensor[reference_sensor]
+    reference_train_positions, reference_test_positions = neurad_train_eval_indices(len(reference_times), train_fraction)
+    is_test_reference = np.zeros(len(reference_times), dtype=bool)
+    is_test_reference[reference_test_positions] = True
+    # Step 4: every other sensor inherits the verdict of its nearest reference frame.
+    positions = {reference_sensor: (reference_train_positions, reference_test_positions)}
+    for name, times in times_by_sensor.items():
+        if name == reference_sensor:
+            continue
+        if len(times) == 0:
+            positions[name] = (np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64))
+            continue
+        if len(reference_times) == 0:
+            raise ValueError(f"{name} has {len(times)} frames but reference sensor {reference_sensor!r} has none")
+        test_mask = is_test_reference[nearest_reference_positions(reference_times, times)]
+        positions[name] = (np.flatnonzero(~test_mask).astype(np.int64), np.flatnonzero(test_mask).astype(np.int64))
+    return positions
+
+
+@transform("T72", "render subset of the shared interleaved split: an evenly spaced fraction of the held-out instants stays test, the rest is guard")
+def restrict_test_to_render_subset(
+    sensor_times: Dict[str, np.ndarray],
+    positions: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    reference_sensor: str,
+    render_fraction: float,
+) -> Tuple[Dict[str, Tuple[np.ndarray, np.ndarray]], Dict[str, np.ndarray]]:
+    """Keep as test only an evenly spaced fraction r of the T71 test instants; the rest become guard.
+
+    Rendering every held-out frame of a full recording is costly to store and copy back. Among the
+    reference sensor's m test frames, ceil(m r) are kept by LINSPACE over their ranks (T21:
+    int(linspace(0, m-1, ceil(m r))), the first and last test instants included); every other
+    sensor keeps a test frame iff its nearest reference frame was kept, so the rendered instants
+    stay shared. Guard = held out but not rendered: never trained on, not rendered. Train
+    positions are never changed. r == 1, or train and test overlapping (neurad's f == 1 viewing
+    convention, no held-out set), returns the inputs unchanged. Cost O(N log R).
+
+    Args:
+        sensor_times: sensor name -> float64 [N] windowed times (the array T71 was given).
+        positions: T71 output: sensor name -> (train_positions, test_positions).
+        reference_sensor: The reference sensor T71 used.
+        render_fraction: r in (0, 1].
+
+    Returns:
+        (positions, guard_positions): positions with test reduced to the rendered frames (train
+        untouched), and sensor name -> sorted int64 guard positions.
+
+    Raises:
+        ValueError: If r is outside (0, 1] or the reference sensor is not in ``positions``.
+    """
+    # Step 1: validate; r == 0 would leave no test frame.
+    if not 0.0 < render_fraction <= WHOLE_TEST_RENDER_FRACTION:
+        raise ValueError(f"test_render_fraction {render_fraction} must lie in (0, 1]")
+    if reference_sensor not in positions:
+        raise ValueError(f"reference sensor {reference_sensor!r} is not among {sorted(positions)}")
+    no_guard = {name: np.empty(0, dtype=np.int64) for name in positions}
+    # Step 2: nothing to subset: every held-out frame is rendered, or nothing is held out (f == 1).
+    reference_train_positions, reference_test_positions = positions[reference_sensor]
+    if (render_fraction == WHOLE_TEST_RENDER_FRACTION
+            or np.intersect1d(reference_train_positions, reference_test_positions).size > 0):
+        return dict(positions), no_guard
+    # Step 3: evenly spaced ranks among the reference test frames (T21's LINSPACE on m frames).
+    rendered_ranks, _ = linspace_train_eval_split(len(reference_test_positions), render_fraction)
+    rendered_reference_positions = np.asarray(reference_test_positions, dtype=np.int64)[rendered_ranks]
+    reference_times = np.asarray(sensor_times[reference_sensor], dtype=np.float64)
+    is_rendered_reference = np.zeros(len(reference_times), dtype=bool)
+    is_rendered_reference[rendered_reference_positions] = True
+    # Step 4: per sensor, a test frame stays test iff its nearest reference frame is rendered.
+    restricted_positions, guard_positions = {}, {}
+    for name, (train_positions, test_positions) in positions.items():
+        test_positions = np.asarray(test_positions, dtype=np.int64)
+        if name == reference_sensor:
+            keep_mask = is_rendered_reference[test_positions]
+        elif test_positions.size == 0:
+            keep_mask = np.zeros(0, dtype=bool)
+        else:
+            test_times = np.asarray(sensor_times[name], dtype=np.float64)[test_positions]
+            keep_mask = is_rendered_reference[nearest_reference_positions(reference_times, test_times)]
+        restricted_positions[name] = (train_positions, test_positions[keep_mask])
+        guard_positions[name] = test_positions[~keep_mask]
+    return restricted_positions, guard_positions
 
 
 @transform("T65", "held-out split by requester: training eval (val) gets whole test blocks, renders (test/eval) get the cores")
@@ -420,6 +612,7 @@ def resolve_run_train_fraction(manifest: dict, train_fraction_override: Optional
     Returns:
         (fraction, source) with source ``override`` or ``manifest.session.train_fraction``.
     """
+    # An explicit override wins; otherwise the manifest's session fraction (T27 precedence).
     if train_fraction_override is not None:
         return float(train_fraction_override), "override"
     return float(manifest["session"]["train_fraction"]), "manifest.session.train_fraction"
@@ -433,6 +626,8 @@ def build_run_split(
     max_eval_frames: Optional[int] = None,
     test_block_count: Optional[int] = None,
     test_block_core_fraction: float = WHOLE_BLOCK_CORE_FRACTION,
+    test_split_method: Optional[str] = None,
+    test_render_fraction: float = WHOLE_TEST_RENDER_FRACTION,
 ) -> Tuple[List[SplitFrame], Optional[Tuple[float, float]]]:
     """Every camera/lidar frame of a run with its split, in the dataparser's order.
 
@@ -445,18 +640,24 @@ def build_run_split(
             blocks shared by every sensor (T60, the dataparser's ``test_block_count``).
         test_block_core_fraction: c of T62 (the dataparser's ``test_block_core_fraction``): only
             the central c of each block is test, its other frames get split ``guard``. 1.0 = no guard.
+        test_split_method: The dataparser's ``test_split_method`` (``resolve_test_split_method``):
+            ``shared_interleaved`` = T71 instants shared by every sensor (block fields ignored);
+            ``middle_blocks`` or None with a block count = T60; None without = T59.
+        test_render_fraction: r of T72 (``shared_interleaved`` only): an evenly spaced r of the
+            held-out instants is test, the other held-out frames get split ``guard``. 1.0 = no guard.
 
     Returns:
-        (frames, bounds): frames sorted by (sensor order in the manifest, split, frame index); and
-        the window bounds from ``time_window_masks``.
+        (frames, bounds): frames ordered by sensor (manifest order), then split (train, test,
+        guard), then recording position; and the window bounds from ``time_window_masks``.
 
     Raises:
         ValueError: If a sensor's frame files and times differ in count, ``max_eval_frames``
-            is set, or c < 1 without test blocks.
+            is set, c < 1 without test blocks, r < 1 without the shared interleaved split, or the
+            split parameters are invalid (T60, T62, T71, T72).
     """
     frames, window_bounds, _, _ = build_run_split_with_cores(
         view, start_fraction, end_fraction, train_fraction, max_eval_frames, test_block_count,
-        test_block_core_fraction)
+        test_block_core_fraction, test_split_method, test_render_fraction)
     return frames, window_bounds
 
 
@@ -468,12 +669,14 @@ def build_run_split_with_blocks(
     max_eval_frames: Optional[int] = None,
     test_block_count: Optional[int] = None,
     test_block_core_fraction: float = WHOLE_BLOCK_CORE_FRACTION,
+    test_split_method: Optional[str] = None,
+    test_render_fraction: float = WHOLE_TEST_RENDER_FRACTION,
 ) -> Tuple[List[SplitFrame], Optional[Tuple[float, float]], List[Tuple[float, float]]]:
     """``build_run_split`` that also returns the T60 test blocks (for the run's split record).
 
     Args:
         view, start_fraction, end_fraction, train_fraction, max_eval_frames, test_block_count,
-        test_block_core_fraction: As in ``build_run_split``.
+        test_block_core_fraction, test_split_method, test_render_fraction: As in ``build_run_split``.
 
     Returns:
         (frames, window bounds, test blocks): test blocks are the (start, end) seconds of each
@@ -484,7 +687,7 @@ def build_run_split_with_blocks(
     """
     frames, window_bounds, test_blocks, _ = build_run_split_with_cores(
         view, start_fraction, end_fraction, train_fraction, max_eval_frames, test_block_count,
-        test_block_core_fraction)
+        test_block_core_fraction, test_split_method, test_render_fraction)
     return frames, window_bounds, test_blocks
 
 
@@ -496,16 +699,18 @@ def build_run_split_with_cores(
     max_eval_frames: Optional[int] = None,
     test_block_count: Optional[int] = None,
     test_block_core_fraction: float = WHOLE_BLOCK_CORE_FRACTION,
+    test_split_method: Optional[str] = None,
+    test_render_fraction: float = WHOLE_TEST_RENDER_FRACTION,
 ) -> Tuple[List[SplitFrame], Optional[Tuple[float, float]], List[Tuple[float, float]], List[Tuple[float, float]]]:
     """``build_run_split`` that also returns the T60 test blocks and their T62 cores.
 
     Args:
         view, start_fraction, end_fraction, train_fraction, max_eval_frames, test_block_count,
-        test_block_core_fraction: As in ``build_run_split``.
+        test_block_core_fraction, test_split_method, test_render_fraction: As in ``build_run_split``.
 
     Returns:
         (frames, window bounds, test blocks, test cores): blocks and cores are (start, end)
-        seconds, both [] for the LINSPACE split; cores equal blocks when c == 1.
+        seconds, both [] for the LINSPACE and shared interleaved splits; cores equal blocks when c == 1.
 
     Raises:
         ValueError: As in ``build_run_split``.
@@ -527,7 +732,24 @@ def build_run_split_with_cores(
     test_blocks: List[Tuple[float, float]] = []
     test_cores: List[Tuple[float, float]] = []
     guard_positions_by_sensor: Dict[str, np.ndarray] = {}
-    if test_block_count is None:
+    split_method = resolve_test_split_method(test_split_method, test_block_count)
+    # A render subset is a part of the T71 held-out instants; other methods have none to subset.
+    if split_method != SHARED_INTERLEAVED_SPLIT_METHOD and test_render_fraction != WHOLE_TEST_RENDER_FRACTION:
+        raise ValueError("test_render_fraction < 1 needs test_split_method shared_interleaved")
+    if split_method == SHARED_INTERLEAVED_SPLIT_METHOD:
+        # T71 + T72: shared interleaved instants over the windowed times, referenced to the first lidar.
+        if max_eval_frames is not None:
+            raise ValueError("max_eval_frames is set: the shared interleaved split never subsamples its test frames")
+        reference_sensors = [sensor["name"] for sensor in split_sensors if sensor["kind"] == REFERENCE_SENSOR_KIND]
+        if not reference_sensors:
+            raise ValueError(f"the shared interleaved split needs a {REFERENCE_SENSOR_KIND} sensor")
+        windowed_times = {sensor_name: sensor_times[sensor_name][kept_positions]
+                          for sensor_name, kept_positions in kept_positions_by_sensor.items()}
+        split_positions_by_sensor = shared_interleaved_train_test_indices(
+            windowed_times, train_fraction, reference_sensors[0])
+        split_positions_by_sensor, guard_positions_by_sensor = restrict_test_to_render_subset(
+            windowed_times, split_positions_by_sensor, reference_sensors[0], test_render_fraction)
+    elif test_block_count is None:
         # Cores are parts of T60 blocks; without blocks there is nothing to take a core of.
         if test_block_core_fraction != WHOLE_BLOCK_CORE_FRACTION:
             raise ValueError("test_block_core_fraction < 1 needs the block split (test_block_count)")
@@ -548,6 +770,8 @@ def build_run_split_with_cores(
         split_positions_by_sensor, guard_positions_by_sensor, test_cores = restrict_test_to_block_cores(
             windowed_times, split_positions_by_sensor, test_blocks, test_block_core_fraction)
 
+    # Step 5: one SplitFrame per (sensor, split, windowed position), mapping windowed positions back
+    # to recording positions so file and time come from the unfiltered arrays.
     frames: List[SplitFrame] = []
     for sensor in split_sensors:
         sensor_name, sensor_kind = sensor["name"], sensor["kind"]

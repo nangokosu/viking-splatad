@@ -45,6 +45,7 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     except (FileNotFoundError, ValueError, KeyError, OSError) as error:
         print(f"ERROR: dataset {dataset_dir} missing or invalid: {error!r}", file=sys.stderr)
         return 1
+    # Step 3: print the Markdown report generate_align_report wrote, then the verdict.
     print((output_dir / "report.md").read_text())
     print(f"verdict: {report['verdict']}; report written to {output_dir}")
     return 0

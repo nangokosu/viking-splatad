@@ -61,6 +61,8 @@ PANEL_WIDTH_INCHES, PANEL_HEIGHT_INCHES, PANELS_PER_ROW = 5.0, 3.2, 3
 RAW_TRAIN_ALPHA, SHADING_ALPHA = 0.3, 0.15
 # More visual styling only: PNG resolution and font sizes of the legend and the suptitle.
 FIGURE_DPI, LEGEND_FONT_SIZE, TITLE_FONT_SIZE = 120, 7, 10
+# Display-only y-margin on each side, as a fraction of the data range (visual styling only).
+Y_MARGIN_FRACTION = 0.05
 # Display-only reference magnitude for the y-margin of data that is all zero (or has no finite
 # value): the margin is 5% of it, i.e. 1.0 metric unit. Any positive constant would do, because
 # nothing is measured here; it only has to make the lower and upper limit differ.
@@ -197,7 +199,7 @@ def panel_y_limits(
     # Step 2: display margin, with a guard for constant data.
     value_range = highest - lowest
     zero_range_scale = abs(lowest) if lowest != 0 else ZERO_RANGE_REFERENCE_MAGNITUDE
-    margin = 0.05 * value_range if value_range > 0 else 0.05 * zero_range_scale
+    margin = Y_MARGIN_FRACTION * (value_range if value_range > 0 else zero_range_scale)
     return lowest - margin, highest + margin
 
 
@@ -207,8 +209,8 @@ def draw_figure(
     panels: Sequence[MetricPanel],
     eval_interval: Optional[int],
     shading_end_step: Optional[int],
-):
-    """Draw one panel per metric plus a train-loss panel.
+) -> plt.Figure:
+    """Draw one panel per metric plus a train-loss panel when the loss is logged.
 
     Args:
         run_name: Name of the run folder, for the title.
@@ -249,7 +251,10 @@ def draw_figure(
                           label=f"train (median, {window} samples)")
                 warm_curves.append((train_steps, median_values))
         axes.plot(test_steps, test_values, color="tab:red", marker="o", markersize=3, linewidth=1.2, label="test")
-        axes.set_title(panel.metric if panel.train_tag is not None else f"{panel.metric} (no train value logged)")
+        if panel.train_tag is not None:
+            axes.set_title(panel.metric)
+        else:
+            axes.set_title(f"{panel.metric} (no train value logged)")
         axes.set_xlabel("step")
         # y-limits skip the start-up spike so the train/test detail stays visible.
         axes.set_ylim(panel_y_limits(

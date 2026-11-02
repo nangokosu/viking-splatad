@@ -68,6 +68,7 @@ def compute_binary_metrics(predicted: np.ndarray, ground_truth: np.ndarray) -> O
     ground_truth_total = true_positives + false_negatives
     # IoU = |P and G| / |P union G|; empty union -> perfect agreement.
     iou = true_positives / union if union else PERFECT_SCORE
+    # Precision = TP / |P| and recall = TP / |G|, with the 0/0 conventions above.
     if predicted_total:
         precision = true_positives / predicted_total
     else:
@@ -109,22 +110,28 @@ def evaluate_occupancy(
     # Normalise inputs and validate that every supplied grid shares one shape.
     predicted = np.asarray(predicted, dtype=bool)
     ground_truth = np.asarray(ground_truth, dtype=bool)
+    # Class grids are used (and shape-checked) only when both are supplied.
+    has_class_grids = predicted_classes is not None and ground_truth_classes is not None
     provided_grids = [predicted, ground_truth]
-    if predicted_classes is not None and ground_truth_classes is not None:
-        provided_grids += [np.asarray(predicted_classes), np.asarray(ground_truth_classes)]
+    if has_class_grids:
+        predicted_classes = np.asarray(predicted_classes)
+        ground_truth_classes = np.asarray(ground_truth_classes)
+        provided_grids += [predicted_classes, ground_truth_classes]
     if any(grid.shape != predicted.shape for grid in provided_grids):
         raise ValueError(f"Grid shape mismatch: {[grid.shape for grid in provided_grids]}")
 
     overall = compute_binary_metrics(predicted, ground_truth)
     per_class: Dict[int, OccupancyMetrics] = {}
-    if predicted_classes is not None and ground_truth_classes is not None:
-        # Default report set: every non-empty class id appearing in either grid.
+    if has_class_grids:
+        # Default report set: every non-empty class id appearing in either grid
+        # (0 is the empty class by the class-grid convention).
         if class_ids is None:
             present_ids = np.union1d(np.unique(predicted_classes), np.unique(ground_truth_classes))
             class_ids = [int(class_id) for class_id in present_ids if class_id != 0]
+        # One-vs-rest boolean comparison per class.
         for class_id in class_ids:
             per_class[int(class_id)] = compute_binary_metrics(
-                np.asarray(predicted_classes) == class_id,
-                np.asarray(ground_truth_classes) == class_id,
+                predicted_classes == class_id,
+                ground_truth_classes == class_id,
             )
     return OccupancyEvaluation(overall, per_class)

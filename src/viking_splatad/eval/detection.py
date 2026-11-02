@@ -25,8 +25,8 @@ from viking_splatad.labels.cuboids import Cuboid, compute_cuboid_geometry, point
 from viking_splatad.labels.eval_occupancy import OccupancyMetrics, compute_binary_metrics
 from viking_splatad.registry import transform
 
-# Indices of the box's horizontal (x, y) and vertical (z) axes in dimensions_xyz. Every GT box is
-# yaw-only (phase1_findings.md: 0 boxes with nonzero qx/qy), so box z is map z.
+# Indices of the box's horizontal (x, y) axes in dimensions_xyz. Every GT box is yaw-only
+# (phase1_findings.md: 0 boxes with nonzero qx/qy), so box z is map z and growing x/y is horizontal.
 HORIZONTAL_AXES = (0, 1)
 
 
@@ -89,7 +89,8 @@ def median_half_footprint(class_cuboids: Sequence[Cuboid]) -> float:
     """Median horizontal half-size of a class: median over boxes of (dx + dy) / 4.
 
     (dx + dy) / 2 is a box's mean footprint width; half of it is the radius-like size used as the
-    neighbourhood margin, so the neighbourhood is as wide again as a typical object on each side.
+    neighbourhood margin. Growing each face by it adds half a typical width on each side, so a
+    typical object's neighbourhood is about twice its footprint width.
 
     Args:
         class_cuboids: Boxes of one class (non-empty).
@@ -238,6 +239,7 @@ def cuboid_detection_rate(point_counts: np.ndarray, n_min: int) -> DetectionResu
         DetectionResult.
     """
     cuboid_count = int(point_counts.size)
+    # No scored cuboid: rate 0.0 by convention (see DetectionResult) and an empty curve.
     if cuboid_count == 0:
         return DetectionResult(0, n_min, 0.0, [])
     # rate(n) for n = 1..max count, by counting boxes at or above each threshold.
@@ -295,18 +297,23 @@ def cuboid_voxel_mask(
     """
     mask = np.zeros(tuple(grid_shape), dtype=bool)
     shape_array = np.asarray(grid_shape)
+    axis_count = shape_array.size
     for cuboid in cuboids:
         geometry = compute_cuboid_geometry(cuboid)
-        # Step 1: index range of the corner bounding box, clipped to the grid.
-        lower_index = np.clip(np.floor((geometry.corners.min(axis=0) - grid_origin) / voxel_size).astype(int), 0, shape_array)
-        upper_index = np.clip(np.floor((geometry.corners.max(axis=0) - grid_origin) / voxel_size).astype(int) + 1, 0, shape_array)
+        # Step 1: index range of the corner bounding box, clipped to the grid. Voxel index of a
+        # coordinate c is floor((c - origin) / size); the upper bound is exclusive, hence +1.
+        lower_corner_index = np.floor((geometry.corners.min(axis=0) - grid_origin) / voxel_size).astype(int)
+        upper_corner_index = np.floor((geometry.corners.max(axis=0) - grid_origin) / voxel_size).astype(int)
+        lower_index = np.clip(lower_corner_index, 0, shape_array)
+        upper_index = np.clip(upper_corner_index + 1, 0, shape_array)
+        # The box lies entirely outside the grid along some axis.
         if np.any(upper_index <= lower_index):
             continue
         # Step 2: centres of that block, exact box test, write back.
         block_indices = np.stack(np.meshgrid(
-            *[np.arange(lower_index[axis], upper_index[axis]) for axis in range(3)], indexing="ij"
-        ), axis=-1).reshape(-1, 3)
-        block_centers = grid_origin + (block_indices + 0.5) * voxel_size
+            *[np.arange(lower_index[axis], upper_index[axis]) for axis in range(axis_count)], indexing="ij"
+        ), axis=-1).reshape(-1, axis_count)
+        block_centers = voxel_centers(block_indices, grid_origin, voxel_size)
         inside_indices = block_indices[points_in_cuboid(geometry, block_centers)]
         mask[inside_indices[:, 0], inside_indices[:, 1], inside_indices[:, 2]] = True
     return mask
@@ -448,6 +455,7 @@ def voxel_centers(voxel_indices: np.ndarray, grid_origin: np.ndarray, voxel_size
     Returns:
         (V, 3) centres.
     """
+    # 0.5 is not a tuning value: it is the half-voxel offset from a voxel's minimum corner to its centre.
     return grid_origin + (voxel_indices + 0.5) * voxel_size
 
 
@@ -468,10 +476,12 @@ def restrict_mask_to_visible(
     Returns:
         Bool grid, a subset of ``mask``.
     """
+    # Step 1: visibility test on the centres of the set voxels only.
     set_indices = np.argwhere(mask)
     visible = visible_from_any_pose(
         voxel_centers(set_indices, grid_origin, voxel_size), sensor_to_map_poses, max_range, vertical_half_fov
     )
+    # Step 2: write the visible ones into an empty grid of the same shape.
     restricted = np.zeros_like(mask)
     kept_indices = set_indices[visible]
     restricted[kept_indices[:, 0], kept_indices[:, 1], kept_indices[:, 2]] = True

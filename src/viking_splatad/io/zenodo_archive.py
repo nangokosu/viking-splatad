@@ -192,7 +192,8 @@ def fetch_range_into(download_url: str, first_byte: int, last_byte: int,
         download_url: Direct URL honouring HTTP Range.
         first_byte: First remote byte (inclusive).
         last_byte: Last remote byte (inclusive).
-        output_path: Existing file opened ``r+b`` (own handle, so threads do not share state).
+        output_path: Existing file; opened here in ``r+b`` mode with its own handle, so threads
+            do not share file state.
         write_offset: Position in the output file where first_byte is stored.
 
     Returns:
@@ -244,15 +245,20 @@ def fetch_virtual_range(volumes: List[VolumeInfo], virtual_start: int, virtual_e
 
     Returns:
         Total bytes fetched.
+
+    Raises:
+        ValueError: If ``connections`` < 1 or the range is empty or exceeds the archive.
     """
+    # Step 1: validate the connection count, then split the range at volume boundaries.
     if connections < 1:
         raise ValueError("connections must be >= 1")
     volume_sizes = [volume.size for volume in volumes]
     pieces = split_virtual_range(volume_sizes, virtual_start, virtual_end)
     total_bytes = virtual_end - virtual_start
-    # Ceil division so segments of this size cover the range with at most
-    # `connections` segments per piece (plus one leftover segment per extra piece).
+    # Ceil division: segments of this size cover the whole range in at most `connections`
+    # segments, plus at most one extra short segment per additional volume piece.
     segment_bytes = -(-total_bytes // connections)
+    # Step 2: cut each piece into (url, first_remote_byte, last_remote_byte, write_offset) jobs.
     segment_jobs: List[Tuple[str, int, int, int]] = []
     for piece in pieces:
         piece_cursor = 0
@@ -265,10 +271,18 @@ def fetch_virtual_range(volumes: List[VolumeInfo], virtual_start: int, virtual_e
             piece_cursor += segment_length
 
     def run_segment(job: Tuple[str, int, int, int]) -> int:
-        """Fetch one (url, first_byte, last_byte, write_offset) segment."""
-        job_url, job_first, job_last, job_write_offset = job
-        return fetch_range_into(job_url, job_first, job_last, sparse_path, job_write_offset)
+        """Fetch one segment job into the sparse file.
 
+        Args:
+            job: (url, first_byte, last_byte, write_offset) tuple.
+
+        Returns:
+            Bytes written for this segment.
+        """
+        job_url, job_first_byte, job_last_byte, job_write_offset = job
+        return fetch_range_into(job_url, job_first_byte, job_last_byte, sparse_path, job_write_offset)
+
+    # Step 3: run the jobs on at most `connections` threads and total the bytes written.
     with ThreadPoolExecutor(max_workers=connections) as executor:
         return sum(executor.map(run_segment, segment_jobs))
 
@@ -297,6 +311,9 @@ def archive_is_openable(archive_path: Path) -> bool:
 
     Args:
         archive_path: Sparse or complete archive.
+
+    Returns:
+        True if the entry list can be read, False on any parse failure.
     """
     try:
         with py7zr.SevenZipFile(archive_path) as archive:
@@ -321,9 +338,14 @@ def ensure_archive_header(sparse_path: Path, volumes: List[VolumeInfo], connecti
 
     Returns:
         Bytes fetched (0 when the archive already opens).
+
+    Raises:
+        RuntimeError: If the first volume lacks the 7z signature, or the archive is still
+            unreadable after the header regions are fetched.
     """
     ensure_sparse_file(sparse_path, sum(volume.size for volume in volumes))
-    # Step 1: nothing to do when the index is already readable (re-run / reuse).
+    # Step 1: nothing to do when the index is already readable (re-run / reuse); otherwise
+    # fetch the 32-byte start header.
     if archive_is_openable(sparse_path):
         return 0
     fetched_bytes = fetch_virtual_range(volumes, 0, SEVENZIP_START_HEADER_BYTES, sparse_path, connections)
@@ -474,7 +496,11 @@ def extract_matching(archive_path: Path, name_predicate: Callable[[str], bool], 
     wanted_names = [entry.name for entry in wanted_entries]
 
     def remove_partial_outputs() -> None:
-        """Delete files left behind by a failed extraction."""
+        """Delete files left behind by a failed extraction.
+
+        Returns:
+            None.
+        """
         for entry_name in wanted_names:
             (out_dir / entry_name).unlink(missing_ok=True)
 

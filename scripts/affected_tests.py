@@ -61,13 +61,14 @@ def imported_module_names(python_file: Path) -> Set[str]:
         Set of imported dotted names, over-approximating submodule imports.
     """
     imported: Set[str] = set()
-    for node in ast.walk(ast.parse(python_file.read_text())):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.add(node.module)
+    for ast_node in ast.walk(ast.parse(python_file.read_text())):
+        if isinstance(ast_node, ast.Import):
+            imported.update(alias.name for alias in ast_node.names)
+        # Relative imports with no module part (`from . import x`) have module None and are skipped.
+        elif isinstance(ast_node, ast.ImportFrom) and ast_node.module:
+            imported.add(ast_node.module)
             # `from pkg import module` may import a submodule, so also record pkg.module.
-            imported.update(f"{node.module}.{alias.name}" for alias in node.names)
+            imported.update(f"{ast_node.module}.{alias.name}" for alias in ast_node.names)
     return imported
 
 
@@ -81,7 +82,14 @@ def changed_paths(base_ref: str) -> List[Path]:
         Absolute paths of changed or new files that still exist.
     """
     def git_lines(arguments: List[str]) -> List[str]:
-        """Run git in the project root and return non-empty output lines."""
+        """Run git in the project root and return non-empty output lines.
+
+        Args:
+            arguments: git arguments after ``git``.
+
+        Returns:
+            Non-empty stdout lines (raises CalledProcessError on a non-zero exit).
+        """
         completed = subprocess.run(
             ["git", *arguments], cwd=PROJECT_ROOT, capture_output=True, text=True, check=True
         )
@@ -108,14 +116,15 @@ def reverse_dependency_closure(changed_modules: Set[str], source_root: Path = SO
     module_files = {module_name_of(path, source_root): path for path in source_root.rglob("*.py")}
     imports_of = {name: imported_module_names(path) for name, path in module_files.items()}
     # Step 2: fixed-point expansion: add any module importing something already affected.
+    # Each pass adds at least one module or stops, so at most (modules + 1) passes.
     affected = set(changed_modules)
-    grew = True
-    while grew:
-        grew = False
+    closure_grew = True
+    while closure_grew:
+        closure_grew = False
         for module_name, imported in imports_of.items():
             if module_name not in affected and imported & affected:
                 affected.add(module_name)
-                grew = True
+                closure_grew = True
     return affected
 
 
@@ -129,10 +138,12 @@ def covered_transform_ids(test_file: Path) -> Set[str]:
         Set of transform ids the file claims to cover.
     """
     covered: Set[str] = set()
-    for node in ast.walk(ast.parse(test_file.read_text())):
+    for ast_node in ast.walk(ast.parse(test_file.read_text())):
         # Match the call form covers("T1", ...) regardless of how the marker is spelled.
-        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "covers":
-            covered.update(arg.value for arg in node.args if isinstance(arg, ast.Constant))
+        if isinstance(ast_node, ast.Call) and getattr(ast_node.func, "attr", None) == "covers":
+            covered.update(
+                argument_node.value for argument_node in ast_node.args if isinstance(argument_node, ast.Constant)
+            )
     return covered
 
 
@@ -176,6 +187,7 @@ def select_tests(changed_files: Iterable[Path], tests_root: Path = TESTS_ROOT,
     if triggers_full_suite:
         selected = set(all_tests)
 
+    # Step 4: keep tests that exist on disk, and collect the transform ids they cover.
     existing_selected = sorted(path for path in selected if path.exists())
     transform_ids: Set[str] = set()
     for test_file in existing_selected:
@@ -188,7 +200,8 @@ def select_tests(changed_files: Iterable[Path], tests_root: Path = TESTS_ROOT,
     }
 
 
-# Substrings that indicate an assertion or a numeric tolerance on a diff line.
+# Diff-line regexes: ASSERTION_PATTERN matches any check (assert or tolerance call),
+# TOLERANCE_PATTERN only the numeric-tolerance expressions.
 ASSERTION_PATTERN = re.compile(r"\bassert\b|pytest\.approx|allclose|atol|rtol|tolerance|abs=|rel=")
 TOLERANCE_PATTERN = re.compile(r"atol|rtol|tolerance|abs=|rel=|pytest\.approx")
 
@@ -209,13 +222,21 @@ def audit_modified_tests(base_ref: str, project_root: Path = PROJECT_ROOT) -> Li
         "added_assertions", "tolerance_lines_changed", "suspicious" (bool).
     """
     def git_output(arguments: List[str]) -> str:
-        """Run git in the project root and return stdout."""
+        """Run git in the project root and return stdout.
+
+        Args:
+            arguments: git arguments after ``git``.
+
+        Returns:
+            Full stdout text (raises CalledProcessError on a non-zero exit).
+        """
         return subprocess.run(
             ["git", *arguments], cwd=project_root, capture_output=True, text=True, check=True
         ).stdout
 
     findings: List[Dict[str, object]] = []
     for status_line in git_output(["diff", "--name-status", base_ref, "--", "tests"]).splitlines():
+        # A --name-status line is "<status>\t<path>".
         status, _, relative_path = status_line.partition("\t")
         # Only modified/deleted files existed before; additions are new tests and are fine.
         if status not in ("M", "D"):
@@ -253,6 +274,7 @@ def main() -> int:
     parser.add_argument("--all", action="store_true", help="ignore the diff and select the full suite")
     arguments = parser.parse_args()
 
+    # Step 1: select tests; --all fakes a pyproject.toml change, which triggers the full suite.
     if arguments.all:
         selection = select_tests([PROJECT_ROOT / "pyproject.toml"])
     else:

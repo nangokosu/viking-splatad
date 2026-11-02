@@ -41,7 +41,8 @@ def split_problems(
     """Sanity-check a split.
 
     Args:
-        train_indices, eval_indices: Output of ``linspace_train_eval_split``.
+        train_indices: Train frame indices from ``linspace_train_eval_split``.
+        eval_indices: Eval frame indices from ``linspace_train_eval_split``.
         num_frames: Total frame count.
         train_fraction: Fraction used to build the split.
 
@@ -60,7 +61,7 @@ def split_problems(
         problems.append("train + eval do not cover all frames")
     # For fraction < 1 an eval frame must precede the last train frame; otherwise
     # eval is a contiguous tail (temporal extrapolation, not neurad's interleaving).
-    if train_fraction < 1.0 and eval_indices.size and train_indices.size:
-        if eval_indices.min() > train_indices.max():
-            problems.append("eval frames are not interleaved (contiguous tail)")
+    both_sides_non_empty = eval_indices.size > 0 and train_indices.size > 0
+    if train_fraction < 1.0 and both_sides_non_empty and eval_indices.min() > train_indices.max():
+        problems.append("eval frames are not interleaved (contiguous tail)")
     return problems

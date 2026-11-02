@@ -45,13 +45,20 @@ def values_equal(left: Any, right: Any) -> bool:
         return len(left) == len(right) and all(
             values_equal(left_item, right_item) for left_item, right_item in zip(left, right)
         )
-    if isinstance(left, numbers.Real) and isinstance(right, numbers.Real):
+    # bool subclasses int, so it is excluded here and compared by type and value below.
+    if (
+        isinstance(left, numbers.Real)
+        and isinstance(right, numbers.Real)
+        and not isinstance(left, bool)
+        and not isinstance(right, bool)
+    ):
         # np.float64 vs float is immaterial, but int vs float must stay distinguishable
         # (the contract requires integer image sizes).
         return (
             isinstance(left, numbers.Integral) == isinstance(right, numbers.Integral)
             and left == right
         )
+    # Everything else (str, bool, None, dataclasses via their own __eq__): same type, then ==.
     return type(left) is type(right) and left == right
 
 
@@ -181,17 +188,18 @@ class SensorStream(ExactEqualityMixin):
         for spec in dataclasses.fields(self):
             left, right = getattr(self, spec.name), getattr(other, spec.name)
             if spec.name == "frames" and self.kind == "camera":
-                same = len(left) == len(right) and all(
+                # Camera images: same count, then shape and dtype per frame (pixels are lossy).
+                field_matches = len(left) == len(right) and all(
                     left_frame.shape == right_frame.shape and left_frame.dtype == right_frame.dtype
                     for left_frame, right_frame in zip(left, right)
                 )
             else:
-                same = values_equal(left, right)
-            if not same:
+                field_matches = values_equal(left, right)
+            if not field_matches:
                 return False
         return True
 
-    __hash__ = None
+    __hash__ = None  # overriding __eq__ again; keep it unhashable like the mixin
 
 
 @dataclass(eq=False)

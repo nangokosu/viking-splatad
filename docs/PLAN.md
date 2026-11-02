@@ -75,7 +75,7 @@
 
 ## 3. May Scene A: does SplatAD work out of the box?
 - **Data:** the May Scene A chunks. May chunk 1 (forest, on disk) is the first Slurm/Docker smoke test.
-- **Run:** stock `splatad`, lidar + camera, with the middle-block train/test split (§5; `train_fraction` and `test_block_count` from the session config).
+- **Run:** stock `splatad`, lidar + camera, with the shared interleaved train/test split (§5; `train_fraction`, `method` and `test_render_fraction` from the session config).
 - **Held-out metrics:**
   - PSNR, SSIM and LPIPS on eval cameras;
   - lidar depth, Chamfer and ray-drop on eval lidars;
@@ -144,11 +144,12 @@ Two extra runs: the same as core B and R with camera training on (`train-lidar-o
 - **Caveat 3, what the extension answers:** does adding the RGB loss improve or degrade the lidar geometry of B and R? Compare the §5 lidar metrics of core vs +cam for each model.
 
 ## 5. Evaluation: Model 1 vs Model 2 (June only, held-out June poses)
-**Held-out poses: middle-block split (decided 2026-10-26; May, B and R all use it):**
-- **Middle blocks (T60, in use):** the test set is two contiguous time stretches, centred at 1/3 and 2/3 of the run's window, each (1 − `train_fraction`)/2 of it long. They are the same for camera and lidar. Config: `split.test_block_count: 2` in the session config. It replaced the interleaved split, whose eval frames sat 0.1 s from a train frame and were chosen per sensor (a test camera image usually had a training lidar sweep from the same instant). Test poses still lie on the training trajectory, inside a stretch of a few metres the model never trained on.
-- **Block cores (T62, in use):** only the middle 10% of each block is the test split (`split.test_block_core_fraction: 0.1`, decided 2026-10-26; first 0.5 the same day). The other 90% of each block is guard: not trained on, not rendered. Runs render the test split only, so far less is copied back to the Mac (full May run: 22 camera frames, 24 lidar sweeps), and every test frame is at least 45% of a block of time from the nearest train frame.
-- **Eval during training vs renders:** the all-images eval during training uses the **whole** test stretches (cores plus guard; split `val`, T65), at least 50 points per run (T63). The renders and metrics in this section use the cores only (T62). The job plots train against test from the training log (`overfitting/overfitting_curves.png`, script 11): overfitting = test worsening over a sustained stretch after the reduced-resolution warm-up while train keeps improving; a constant gap is not.
-- **Interleaved (retired):** SplatAD's LINSPACE split. Still the dataparser default when `test_block_count` is unset, so pre-T60 runs keep their meaning.
+**Held-out poses: shared interleaved split (decided 2026-11-01; May, B and R all use it):**
+- **Shared interleaved (T71, in use):** the standard 3DGS hold-out. Every X-th instant is held out, X = 1/(1 − `train_fraction`) = 10. The instants come from the lidar: neurad's LINSPACE on the sweeps (exactly every 10th sweep on the full May and June recordings). The camera holds out the frame nearest each held-out sweep, so no sensor trains on a held-out instant. That was the flaw of the retired per-sensor interleaved split, where a test camera image usually had a training lidar sweep from the same instant. Config: `split.method: shared_interleaved` in the session config. Test frames sit 0.1 s from a train frame, so this is an interpolation check, as in 3DGS's own evaluation.
+- **Render subset (T72, in use):** only an evenly spaced 10% of the held-out instants is the test split (`split.test_render_fraction: 0.1`). The other 90% are guard: not trained on, not rendered, re-renderable later (T66). The full May run renders ~25 of its ~241 held-out sweeps and the camera frames nearest them, about the same volume as the retired block cores.
+- **Eval during training vs renders:** the all-images eval during training uses **every** held-out frame (test plus guard; split `val`, T65), at least 50 points per run (T63). The renders and metrics in this section use the render subset only (T72). The job plots train against test from the training log (`overfitting/overfitting_curves.png`, script 11): overfitting = test worsening over a sustained stretch after the reduced-resolution warm-up while train keeps improving; a constant gap is not.
+- **Middle blocks (T60 + T62, retired 2026-11-01):** two contiguous test stretches centred at 1/3 and 2/3 of the window, with only their central 10% rendered. Still selected by `split.method: middle_blocks` (the session configs keep `test_block_count` / `test_block_core_fraction` for it), and by runs whose config.yml predates `test_split_method`.
+- **Per-sensor interleaved (retired):** SplatAD's LINSPACE split. Still the dataparser default when neither `test_split_method` nor `test_block_count` is set, so pre-T60 runs keep their meaning.
 - **Backtrack hold-out (candidate):** June 21 → 22 is an out-and-back through the dense stand. Train on chunks 20+21, evaluate on the return pass (chunk 22), which views the same trunks from a few metres to the side.
   - It is harder (lateral novel views) but closer to the question: does the trunk geometry hold from a viewpoint the model never trained on?
   - It needs a split override in `VikingHillDataParser`: eval = frames inside a configured time range, i.e. the backtrack chunk. That is a new transform, T48, with a known-answer test.
@@ -164,7 +165,7 @@ R must beat B on at least one of them on blocked and no-return cells (below), an
 **P1, rendered lidar point cloud** (`08_render_lidar_pointcloud.py`, in the SplatAD job on Slurm). For each eval lidar pose:
 1. call `get_lidar_outputs` on the scan's rays;
 2. **ungated extraction (binding):** keep a ray as a point if its accumulation is above `eval.render_accumulation_threshold` (config), the same for May, B, R and R+depth. SplatAD's ray-drop gate (`sigmoid(ray_drop) ≤ 0.5`) is primary for no metric:
-   - with Ouster no-returns on, it replays the neighbouring frames' drop-outs on the interleaved split;
+   - with Ouster no-returns on, it replays the neighbouring frames' drop-outs on an interleaved split (the shared interleaved split in use included);
    - so it would remove radar-recovered trunks in exactly the directions the lidar missed (`docs/research/no_return_impact.md`).
    - Gated numbers are reported beside the ungated ones.
 3. go lidar → world, then apply `inv(w2m)` to reach the map frame (T50);
@@ -246,6 +247,8 @@ The radar claim concerns blocked and no-return cells. B and R should agree on se
 | T60 (done) | middle-block test split shared by every sensor | camera 0..12 s and lidar 0.5..11.5 s, f = 0.5, K = 2 give blocks [2.5, 5.5) and [6.5, 9.5) with the exact test frames (half-open edges); the real dataparser and scripts/09 pick identical frames |
 | T61 (done) | manifest elevation mapping = T51 far-field elevation per ring (replaces T16's parallax-biased medians; T16 now only supplies the ring set) | synthetic beams with elevation_inf + k/r give back elevation_inf exactly while T16's median sits at least k/r_max above it; rings come out ascending; the pipeline writes the cached beam model's far-field angles |
 | T62 (done) | test block cores: the central fraction c of each T60 block stays test, the rest is guard (neither split) | camera 0..12 s, f = 0.5, K = 2, c = 0.5 give cores [3.25, 4.75) and [7.25, 8.75), test 4 and 8, guard 3, 5, 7, 9, train untouched; c = 1 changes nothing; scripts/09 records guard counts and refuses whole-block renders |
+| T71 (done) | shared interleaved split: every ~1/(1−f)-th lidar sweep is test, every other sensor holds out its frames nearest those sweeps | lidar test = the integers int(j·(n−1)/(c−1)) skips (c = ceil(n f)); exactly every 10th sweep at the May/June counts and f = 0.9; a jittered 20 Hz camera is test iff its brute-force nearest sweep is; ties go to the earlier sweep; f = 1 puts everything in both splits; the real dataparser and scripts/09 pick identical frames |
+| T72 (done) | render subset: an evenly spaced fraction r of the T71 held-out instants stays test, the rest is guard | 150 frames, f = 0.8, r = 0.2: 30 held out, ranks int(linspace(0, 29, 6)) rendered, 24 guard per sensor, camera on the same instants, train untouched; r = 1 and f = 1 change nothing; val = test + guard in scripts/09 |
 | T48 | time-range split override (backtrack hold-out, only if chosen) | frames inside the eval range go to eval and all others to train; both splits non-empty and disjoint |
 | T51 | Ouster beam directions fitted from raw returns (Phase B) | synthetic beams with a known parallax and either column direction give back the exact far-field angles; a cloud the model cannot describe fails the gate |
 | T52 | (ring, column) → unit direction | known angles give the exact vectors |

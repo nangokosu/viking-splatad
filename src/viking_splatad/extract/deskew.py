@@ -49,8 +49,10 @@ def deskew_points(
     homogeneous_points = np.concatenate(
         [points_lidar, np.ones((points_lidar.shape[0], 1))], axis=1
     )
-    # Per-point relative transform T_ref_point = inv(T_ref) @ T_point (batched).
+    # Per-point relative transform T_ref_point = inv(T_ref) @ T_point, batched over
+    # points (subscript n); a,b,c index the 4x4 matrix rows/columns. O(n) 4x4 products.
     poses_reference_point = np.einsum("ab,nbc->nac", pose_reference_world, poses_world_lidar_at_points)
+    # Apply each point's own transform, then drop the homogeneous coordinate.
     points_reference = np.einsum("nac,nc->na", poses_reference_point, homogeneous_points)[:, :3]
     # Signed time offset relative to the reference.
     relative_time = point_times - float(reference_time)
