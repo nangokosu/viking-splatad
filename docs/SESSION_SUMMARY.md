@@ -1,48 +1,27 @@
-# Last session summary (2026-10-26)
+# Last session summary (2026-11-01)
 
 ## Done
-- **Public-repo prep** (`90e089b`), so collaborators can use their own CS Lab logins from Codex or Claude Code:
-  - `AGENTS.md` → `CLAUDE.md` and `.agents/skills` → `../.claude/skills` are symlinks; `tests/test_agent_instructions_sync.py` fails on drift.
-  - CLAUDE.md is self-contained: the general code rules are inlined; the phase-1 findings live at `docs/research/phase1_findings.md`; a test workflow for agents without `transform-test-runner`.
-  - Both Slurm skills have a per-user one-time setup (own `~/.ssh/config` `User` or `VIKING_SLURM_USER`, ssh key or ControlMaster, never a stored password) and agent-neutral wording.
-  - `tests/test_no_personal_info.py` scans tracked files for the running user's home path, logins (local, `VIKING_SLURM_USER`, ssh-config `User`) and private git email. A planted leak fails it.
-  - `.gitignore` covers local agent state and `.env` files.
-- **History rewritten** with `git filter-repo`: the cluster username → `<user>`, the home path → `~/`, and every author/committer email → the GitHub noreply address. **Every SHA changed.**
-  - The repo-local `user.email` is the noreply address.
-  - A pre-rewrite mirror is at `../viking-splatad-prerewrite-backup.git`. It is local only: never push it.
-  - Old → new SHA map: `.git/filter-repo/commit-map`.
-- **Split record per successful run** (`88fdbfd`, then the follow-up commit): `scripts/09_extract_run_split.py` (T58 window, T59 split) writes `<run dir>/split.json` + `split_frames.csv`. They hold the exact train/test frames, the seed, the window, the train fraction and its source, dataset hashes, `membership_sha256` and a render-name check.
-  - Only successful runs are documented: the job runs it once, as its last step after every render, before `end_utc`. Incomplete runs get exit 2, inconsistent ones exit 1; in both cases nothing is written and a stale record is deleted.
-  - `config.yml` is still needed (it loads the model). It now records the real train fraction: `submit_run.py` exports `TRAIN_SPLIT_FRACTION` from the manifest, and the job passes it as `--train-split-fraction`. Older runs say 0.5.
-  - Verified against the real dataparser in the image: identical frames on the smoke window (135/15 camera and lidar).
-  - `config.yml`'s `train_split_fraction` (0.5) is wrong: nerfstudio saves it before the dataparser runs. The real value is the manifest's 0.9.
-- **Your cluster login is configured locally:** `~/.ssh/config` has a `comps0.cs.toronto.edu` block (User + ControlMaster), and key auth works non-interactively. Nothing about it is in the repo.
-- Full suite: 333 passed, 3 skipped (all pre-existing). One test file was changed on purpose: `tests/unit/test_run_split.py` (added earlier in this session); the follow-up commit message explains why.
+- Branch `intermittent-splits`: the test split is now the standard 3DGS hold-out instead of two contiguous blocks.
+  - `342b1ad`: T71 `shared_interleaved_train_test_indices` holds out every 1/(1 − f)-th lidar sweep (neurad LINSPACE complement); a camera frame is test iff its nearest sweep is, so camera and lidar share the held-out instants. T72 `restrict_test_to_render_subset` renders an evenly spaced fraction r of those instants; the rest are guard. Session YAMLs: `split.method: shared_interleaved`, `train_fraction: 0.9`, `test_render_fraction: 0.1`. Wired through `submit_run.py`, the sbatch scripts, the dataparser, scripts/09 (split record) and scripts/12.
+  - `852a745`: Slurm profile `smoke_a4500_scene_split` (A4500, the Scene A f = 0.9 and r = 0.1); the `smoke` / `smoke_a4500` profiles keep 0.8 / 0.2 because existing tests pin them. Glossary: the eval during training uses every held-out frame (T65).
+  - Full suite in the image: 638 passed, 1 allowed skip; no existing test modified.
+- All earlier runs (smoke, May A, June A, and the 80/20 smoke 226449 cancelled at the user's request) were cleaned from the cluster, the Mac and the ledger.
+- Re-trained at `852a745`, all successful (`split_render_check: match`, `overfitting_plot: written`, `ADD_MISSING_POINTS: True`) and fetched to `runs/`:
+
+  | Run | Job | Train (s) | Camera train/test/guard | Lidar train/test/guard |
+  |---|---|---|---|---|
+  | `may_chunks0_1_smoke-smoke_a4500_scene_split-20261101-205035-852a745` | 226469 | 827 | 135/2/13 | 135/2/13 |
+  | `may_short_grass-may_scene_a-20261101-211146-852a745` | 226539 | 11809 | 2160/25/216 | 2171/25/216 |
+  | `june_tall_grass-june_scene_a-20261101-211347-852a745` | 226540 | 11381 | 1938/22/193 | 1946/22/194 |
 
 ## Current state
-- **No remote yet.** The repo has not been pushed or made public.
-- **Cluster (`/w/20262/<user>/viking-splatad`):**
-  - All three datasets (with the no-return sidecar) are staged.
-  - The staged code folders carry **pre-rewrite** SHAs, so they no longer match any commit. The next `stage` uploads HEAD.
-  - `runs/` is empty, and `envs/` holds only `splatad-3f478d42f203`. The env name is a content hash, so the rewrite does not affect it.
-  - Run IDs in the local `runs/submitted.tsv` keep their pre-rewrite SHAs. They are names of deleted runs.
-- **Environment: `envs/splatad-3f478d42f203` is built and marked complete** (job 222829). GPU check OK; the locks match the committed ones.
-- **Elevation-mapping bias (not fixed):** T16's per-ring median includes near-return parallax. For example, ring 31 is −38.1° in the map but −44.5° in the fitted beam model. Consider using the T51 far-field elevations.
-- Home: `~/.cache/yarn` (cluster) is left as is, pending a decision.
-- Carried over:
-  - The test split is interleaved, so it tests interpolation only.
-  - The viser client doesn't build on the nodes.
-  - The local Docker image predates `6ad8039`, so bind-mount `src/` for CPU checks.
+- Branch `intermittent-splits` is not merged into `main` or pushed.
+- The June run is Scene A arm **B** (stock SplatAD, no photometric loss). Arm R (radar seeds + opacity loss) has not been run on the new split.
+- Run-to-run noise is accepted (CLAUDE.md rule 10), so B vs R needs repeats per arm.
+- Carried over: the T16 elevation-mapping bias (per-ring median vs. far-field fit) is undecided; the viser client does not build on the nodes.
 
 ## Next steps
-1. Create the GitHub repo, push, make it public and add the collaborators (the user's call). Delete the backup mirror once the push is verified.
-2. Each collaborator does the one-time setup in `running-splatad-render-jobs`, then stages the data and builds the env under their own workdisk directory.
-3. Smoke run on `may_chunks0_1_smoke` with `add_missing_points` on (only when the user asks).
-   - Run `stage --session may_chunks0_1_smoke` first.
-   - Check that `ray_drop_accuracy` falls below 1 and that `job_info.txt` shows `ADD_MISSING_POINTS: True` and `split_render_check: match`. This is the first check of script 09 against real renders.
-   - Compare times with job 222633 (train 538 s, lidar render 73 s, without no-returns).
-4. Decide on the T16 elevation mapping (median vs. far-field fit) before the full runs.
-5. Full May Scene A run, then June B and R, all with the same seed and with `add_missing_points` on.
-6. Evaluation per PLAN §5:
-   - first the §1 June frame check and `05_extract_cuboids.py` for `june_tall_grass`;
-   - then P1 (T45–T47) and P2 (T56–T57), with the seen / blocked / no-return breakdown.
+1. Review the May and June overfitting curves (`runs/<run>/overfitting/`) and held-out metrics.
+2. Merge or push `intermittent-splits` (user's call).
+3. June arm R on the same split and seed, then repeats of B and R to measure within-arm spread.
+4. Evaluation per PLAN §5 (June frame check, `05_extract_cuboids.py`, P1 T45–T47, P2 T56–T57).
