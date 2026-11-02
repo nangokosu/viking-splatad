@@ -116,6 +116,22 @@ def inside_outside_colors(
     return np.where(np.asarray(inside_mask, dtype=bool)[:, None], np.array(inside_rgb), np.array(outside_rgb)).astype(np.uint8)
 
 
+def beam_elevation_degrees(points_lidar: np.ndarray) -> np.ndarray:
+    """Elevation of each lidar-frame point as seen from the sensor at the origin.
+
+    A lidar ring is a cone of constant elevation, so colouring points by this angle separates the rings. A
+    point (x, y, z) has elevation atan2(z, hypot(x, y)), the beam's own elevation up to the sweep's small motion term.
+
+    Args:
+        points_lidar: (N, 3) points in the lidar frame (x forward, y left, z up).
+
+    Returns:
+        (N,) float64 elevation in degrees (negative below the horizon).
+    """
+    points_lidar = np.asarray(points_lidar, dtype=np.float64).reshape(-1, 3)
+    return np.degrees(np.arctan2(points_lidar[:, 2], np.hypot(points_lidar[:, 0], points_lidar[:, 1])))
+
+
 def ground_facing_points(points_lidar: np.ndarray, radius_meters: float) -> Tuple[np.ndarray, np.ndarray]:
     """The points a downward beam can have hit the ground with, and each one's beam elevation.
 
@@ -134,7 +150,7 @@ def ground_facing_points(points_lidar: np.ndarray, radius_meters: float) -> Tupl
     points_lidar = np.asarray(points_lidar, dtype=np.float64).reshape(-1, 3)
     # Step 1: horizontal range and elevation of every point as seen from the sensor at the origin.
     horizontal_range = np.hypot(points_lidar[:, 0], points_lidar[:, 1])
-    elevation_degrees = np.degrees(np.arctan2(points_lidar[:, 2], horizontal_range))
+    elevation_degrees = beam_elevation_degrees(points_lidar)
     # Step 2: below the horizon and inside the radius.
     keep = (elevation_degrees < 0.0) & (horizontal_range <= radius_meters)
     return points_lidar[keep], elevation_degrees[keep]

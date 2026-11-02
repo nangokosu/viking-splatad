@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from viking_splatad.viz.pyvista_scene import ground_facing_points
+from viking_splatad.viz.pyvista_scene import beam_elevation_degrees, ground_facing_points
 
 VIEWER_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "15_view_pose_pyvista.py"
 CONFIG_TEXT = "eval: {render_accumulation_threshold: 0.5, viz_radius_meters: 25.0, scored_class_ids: {tree_trunk: 1}}\n"
@@ -68,15 +68,25 @@ def test_an_empty_cloud_gives_empty_arrays():
     assert points.shape == (0, 3) and elevations.shape == (0,)
 
 
-def test_ripples_without_a_pose_or_with_two_runs_is_refused(tmp_path, monkeypatch, capsys):
-    """--ripples draws one sweep of one run: without --pose, or with two --run folders, main refuses with exit 1."""
+def test_beam_elevation_is_the_angle_above_the_horizontal_from_the_sensor():
+    """Points on a 3-4-5 horizontal triangle at heights 0, +5 and -5 m: the horizontal range is 5, so the
+    elevations are 0, +45 and -45 degrees (atan(opposite / adjacent), computed here)."""
+    points = np.array([[3.0, 4.0, 0.0], [3.0, 4.0, 5.0], [3.0, 4.0, -5.0]])
+    np.testing.assert_allclose(beam_elevation_degrees(points), [0.0, math.degrees(math.atan(1.0)), -math.degrees(math.atan(1.0))])
+
+
+def test_ripples_with_two_runs_is_refused_and_without_a_pose_it_means_pooled(tmp_path, monkeypatch, capsys):
+    """--ripples draws one run: two --run folders are refused with exit 1. Without --pose it is allowed (the pooled
+    twin of the voxel map): main hands render_ripples the pooled stem."""
     viewer = load_viewer_script()
     config_path = tmp_path / "eval.yaml"
     config_path.write_text(CONFIG_TEXT)
-    sweep_names = ["000005_1000"]
-    scene = type("Scene", (), {"sweeps": {name: None for name in sweep_names}, "membership_sha256": "m", "gt_cuboids_sha256": "g"})()
+    scene = type("Scene", (), {"sweeps": {"000005_1000": None}, "membership_sha256": "m", "gt_cuboids_sha256": "g"})()
     monkeypatch.setattr(viewer, "load_run_scene", lambda *arguments: scene)
+    drawn_stems = []
+    monkeypatch.setattr(viewer, "render_ripples", lambda scene_, stem, *rest: drawn_stems.append(stem))
     base = ["--eval-config", str(config_path), "--output-dir", str(tmp_path / "out"), "--ripples"]
-    assert viewer.main(["--run", str(tmp_path / "a")] + base) == 1
-    assert viewer.main(["--run", str(tmp_path / "a"), "--run", str(tmp_path / "b"), "--pose", "5"] + base) == 1
-    assert capsys.readouterr().err.count("--ripples draws one sweep of one run") == 2
+    assert viewer.main(["--run", str(tmp_path / "a"), "--run", str(tmp_path / "b")] + base) == 1
+    assert "--ripples draws one run" in capsys.readouterr().err
+    assert viewer.main(["--run", str(tmp_path / "a")] + base) == 0
+    assert drawn_stems == [viewer.POOLED_STEM]
