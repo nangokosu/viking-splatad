@@ -19,8 +19,8 @@ the caption counts are over the whole scored region, the drawing is cut to the r
 is the same computation for one sweep and illustrates the report without being its numbers.
 ``--classes`` filters which scored classes are drawn.
 ``--ripples`` (one ``--run``) instead draws ``<pooled|stem>_ripples.png``, the points twin of the voxel map: the same
-sweeps, map frame, straight-down camera, radius, classes and box wireframes, with the real (left) and rendered
-(right) returns as points coloured by beam elevation, so the lidar ring ripples are visible.
+sweeps, map frame, straight-down camera, radius, classes and box wireframes, with the rendered returns as
+translucent points coloured by beam elevation (so the lidar ring ripples are visible) and thick black GT boxes.
 ``--show-points`` (with ``--pose``) adds the rendered and real returns to the precision map. Several ``--run`` folders give
 side-by-side panels with linked cameras (e.g. B and R of one session).
 
@@ -105,6 +105,12 @@ VOXEL_AMBIENT_LIGHT = 0.7
 # colormap for the beam elevation.
 RIPPLE_POINT_SIZE = 2.0
 RIPPLE_COLORMAP = "turbo"
+# Ripple view declutter, as the voxel map does it: the cloud is context, so its points are translucent (dense
+# ring regions still stack into visible arcs), and the GT boxes are the emphasis, drawn thick and near-black.
+# Both are presentation choices found by eye on the smoke run, not derived values.
+RIPPLE_POINT_OPACITY = 0.25
+RIPPLE_BOX_LINE_WIDTH = 4.0
+RIPPLE_BOX_RGB = (0, 0, 0)
 
 
 @dataclass
@@ -166,7 +172,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
                         help="with --show-points: draw every point in the radius, not only the scored neighbourhood")
     parser.add_argument("--ripples", action="store_true",
                         help="with one --run: draw <pooled|stem>_ripples.png, the points twin of the voxel map (same sweeps, frame, camera, radius, classes "
-                             "and boxes): real (left) and rendered (right) returns coloured by beam elevation, to compare the lidar ring ripples")
+                             "and boxes): rendered returns coloured by beam elevation, to see the lidar ring ripples")
     parser.add_argument("--gated", action="store_true",
                         help="use the ray-drop-gated points instead of the ungated set the metric binds to")
     parser.add_argument("--output-dir", type=Path, default=None, help="write <pooled|stem>_<map>.png here; default: interactive window")
@@ -700,14 +706,15 @@ def render_pose(scenes: Sequence[RunScene], stem: str, selected_class_ids: Seque
 
 def render_ripples(scene: RunScene, stem: str, selected_class_ids: Sequence[int], use_gated: bool, output_dir: Optional[Path],
                    radius_meters: float) -> None:
-    """Top-down view of the real and the rendered returns coloured by beam elevation: the voxel map's twin.
+    """Top-down view of the rendered returns coloured by beam elevation: the voxel map's twin.
 
     It covers exactly what ``render_pose`` covers: the same sweeps (all test sweeps pooled, or one ``--pose``), the
     same map frame and straight-down camera, the same radius around any drawn lidar, the same selected classes and
     the same scored-box wireframes, and the same rendered point set (ungated unless ``--gated``). Only the
     encoding differs: points instead of voxels, so the lidar's ring ripples stay visible. Each ring is a cone of
     constant elevation meeting flat ground in a circle of radius h / tan(depression), so the returns form concentric
-    arcs around every sensor position. Real (left) and rendered (right) share the camera and the colour scale.
+    arcs around every sensor position. Only the rendered returns are drawn (the real ones are not needed, user's choice
+    2026-11-02); the points are translucent and the GT boxes thick, so the boxes stand out.
 
     Args:
         scene: The run's scene.
@@ -727,18 +734,18 @@ def render_ripples(scene: RunScene, stem: str, selected_class_ids: Sequence[int]
     sweeps = list(scene.sweeps.values()) if stem == POOLED_STEM else [scene.sweeps[stem]]
     lidar_positions_xy = np.array([sweep.lidar_to_map[:2, 3] for sweep in sweeps])
     point_set = "gated" if use_gated or any(sweep.ungated_points is None for sweep in sweeps) else "ungated"
-    cloud_parts = {"real": ([], []), "rendered": ([], [])}
+    cloud_parts = {"rendered": ([], [])}
     grid_shape = scene.ground_truth_class_ids.shape
     for sweep in sweeps:
         rendered_lidar_points = sweep.gated_points if point_set == "gated" else sweep.ungated_points
-        for cloud_key, lidar_points in (("real", sweep.real_points), ("rendered", rendered_lidar_points)):
+        for cloud_key, lidar_points in (("rendered", rendered_lidar_points),):
             # Points outside the GT grid are dropped, as the voxel map (and the report) drop them.
             map_points, _, inside_grid = points_to_map_voxels(lidar_points, sweep.lidar_to_map, scene.grid_origin, scene.voxel_size, grid_shape)
             cloud_parts[cloud_key][0].append(map_points[inside_grid])
             cloud_parts[cloud_key][1].append(beam_elevation_degrees(lidar_points)[inside_grid])
     # Step 2: pool the sweeps and keep what lies within the radius of any lidar position (as the voxel map does).
     panels = []
-    for cloud_key, label in (("real", "real"), ("rendered", f"rendered ({point_set})")):
+    for cloud_key, label in (("rendered", f"rendered ({point_set})"),):
         map_parts, elevation_parts = cloud_parts[cloud_key]
         map_points, elevations = np.vstack(map_parts), np.concatenate(elevation_parts)
         near = within_radius_of_any(map_points, lidar_positions_xy, radius_meters)
@@ -766,17 +773,16 @@ def render_ripples(scene: RunScene, stem: str, selected_class_ids: Sequence[int]
                 cloud = pyvista.PolyData(points)
                 cloud["elevation (deg)"] = elevations
                 plotter.add_mesh(cloud, scalars="elevation (deg)", cmap=RIPPLE_COLORMAP, clim=colour_limits,
-                                 point_size=RIPPLE_POINT_SIZE, render_points_as_spheres=False,
+                                 point_size=RIPPLE_POINT_SIZE, render_points_as_spheres=False, opacity=RIPPLE_POINT_OPACITY,
                                  show_scalar_bar=column == last_panel_with_points)
             if corner_points.shape[0]:
                 plotter.add_mesh(pyvista.PolyData(corner_points, lines=line_cells),
-                                 color=np.array(CUBOID_WIREFRAME_RGB) / 255.0, line_width=WIREFRAME_LINE_WIDTH)
+                                 color=np.array(RIPPLE_BOX_RGB) / 255.0, line_width=RIPPLE_BOX_LINE_WIDTH)
             plotter.add_text(f"{scene.run_id}\n{stem} {label}: {points.shape[0]} points of {len(sweeps)} test sweep(s), "
                              f"within {radius_meters:g} m of a lidar\nclasses: {class_names} (straight down, map frame)", font_size=8)
             plotter.view_xy()
             # Orthographic, so a box edge and a return at another height are not shifted radially against each other.
             plotter.enable_parallel_projection()
-        # One shared camera so the two panels are compared from the same viewpoint.
         plotter.link_views()
         if output_dir is None:
             plotter.show()
