@@ -101,14 +101,17 @@ PANEL_PIXELS = 800
 REAL_POINT_OPACITY = 0.5
 # Share of ambient (direction-free) light on voxel faces, a presentation choice.
 VOXEL_AMBIENT_LIGHT = 0.7
-# Ripple view (presentation choices): small points so neighbouring returns stay separate, and a perceptual
-# colormap for the beam elevation.
+# Ripple view (presentation choices): small points so neighbouring returns stay separate, and a colormap for the beam
+# elevation.
 RIPPLE_POINT_SIZE = 2.0
-RIPPLE_COLORMAP = "turbo"
+# One hue (green), light to dark with rising elevation, so that with translucent points the overlap darkens the
+# same way for every elevation and the density reads directly. The light end is a mid green, not white, so a lone
+# faint point still shows on the white background.
+RIPPLE_COLOR_ENDS = ("#74c476", "#00441b")
 # Ripple view declutter, as the voxel map does it: the cloud is context, so its points are translucent (dense
 # ring regions still stack into visible arcs), and the GT boxes are the emphasis, drawn thick and near-black.
 # Both are presentation choices found by eye on the smoke run, not derived values.
-RIPPLE_POINT_OPACITY = 0.25
+RIPPLE_POINT_OPACITY = 0.10
 RIPPLE_BOX_LINE_WIDTH = 4.0
 RIPPLE_BOX_RGB = (0, 0, 0)
 
@@ -729,6 +732,10 @@ def render_ripples(scene: RunScene, stem: str, selected_class_ids: Sequence[int]
     """
     # PyVista (VTK) is imported here so the module loads in environments without it (tests).
     import pyvista
+    from matplotlib.colors import LinearSegmentedColormap
+
+    # Continuous light-to-dark green between the two end colours (a bare list would be read as two discrete bins).
+    ripple_colormap = LinearSegmentedColormap.from_list("ripple_green", RIPPLE_COLOR_ENDS)
 
     # Step 1: per sweep, both clouds in the map frame (T70) with each point's beam elevation from the lidar frame.
     sweeps = list(scene.sweeps.values()) if stem == POOLED_STEM else [scene.sweeps[stem]]
@@ -772,7 +779,7 @@ def render_ripples(scene: RunScene, stem: str, selected_class_ids: Sequence[int]
             if points.shape[0]:
                 cloud = pyvista.PolyData(points)
                 cloud["elevation (deg)"] = elevations
-                plotter.add_mesh(cloud, scalars="elevation (deg)", cmap=RIPPLE_COLORMAP, clim=colour_limits,
+                plotter.add_mesh(cloud, scalars="elevation (deg)", cmap=ripple_colormap, clim=colour_limits,
                                  point_size=RIPPLE_POINT_SIZE, render_points_as_spheres=False, opacity=RIPPLE_POINT_OPACITY,
                                  show_scalar_bar=column == last_panel_with_points)
             if corner_points.shape[0]:
