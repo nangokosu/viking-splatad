@@ -115,3 +115,34 @@ def test_neighbourhood_crop_keeps_exactly_the_points_in_the_grown_boxes():
         # Non-vacuous: the crop actually drops points here, yet keeps some.
         assert 0 < expected_kept.sum() < expected_kept.size
         assert everything["inside"].any()
+
+
+def test_voxel_maps_of_each_smoke_sweep_match_an_independent_count():
+    """Per smoke test sweep (the run's own returned test points), with every scored class selected and a
+    radius larger than the scan: the render voxels (correct + incorrect) are exactly the distinct grid
+    voxels hit by that sweep's ungated points (floor((p - origin) / voxel), counted by numpy) that lie in
+    the sweep's scoring neighbourhood, and the GT voxels (hit + miss) are the GT voxels of the scored
+    classes in that neighbourhood. Both counts must be non-zero, so the check cannot pass vacuously."""
+    viewer = load_viewer_script()
+    eval_settings = yaml.safe_load((PROJECT_ROOT / "configs" / "eval.yaml").read_text())["eval"]
+    scene = viewer.load_run_scene(smoke_run_dirs[-1], None, eval_settings, accumulation_threshold(), PROJECT_ROOT)
+    scored_class_ids = list(viewer.resolve_selected_class_ids(eval_settings, None))
+    assert len(scene.sweeps) == len(smoke_sweep_paths)
+    huge_radius = 1e6
+    for stem, sweep in scene.sweeps.items():
+        maps = viewer.sweep_voxel_maps(sweep, scene, scored_class_ids, False, huge_radius)
+        # The sweep's own region: union over classes of the neighbourhood this pose sees.
+        region = np.zeros(scene.ground_truth_class_ids.shape, dtype=bool)
+        for class_id in scored_class_ids:
+            region |= viewer.restrict_mask_to_visible(scene.class_neighbourhoods[class_id], scene.grid_origin,
+                                                      scene.voxel_size, [sweep.lidar_to_map], scene.max_range,
+                                                      scene.vertical_half_fov)
+        points_map = sweep.ungated_points @ sweep.lidar_to_map[:3, :3].T + sweep.lidar_to_map[:3, 3]
+        indices = np.floor((points_map - scene.grid_origin) / scene.voxel_size).astype(int)
+        in_grid = np.all((indices >= 0) & (indices < np.array(region.shape)), axis=1)
+        occupied_in_region = {tuple(index) for index in indices[in_grid] if region[tuple(index)]}
+        gt_in_region = int(np.count_nonzero(region & np.isin(scene.ground_truth_class_ids, scored_class_ids)))
+        render_total = maps["render_correct"].shape[0] + maps["render_incorrect"].shape[0]
+        assert render_total == len(occupied_in_region) > 0, stem
+        assert maps["gt_hit"].shape[0] + maps["gt_miss"].shape[0] == gt_in_region > 0, stem
+        assert maps["point_count"] == sweep.ungated_points.shape[0], stem

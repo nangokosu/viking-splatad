@@ -25,12 +25,20 @@ CORNERS_PER_CUBOID = CORNER_SIGN_TRIPLES.shape[0]
 INSIDE_CUBOID_RGB = (214, 39, 40)
 OUTSIDE_CUBOID_RGB = (31, 119, 180)
 REAL_POINT_RGB = (160, 160, 160)
-# Voxel classes of the picture: occupied in both (true positive), rendered only (false positive),
-# GT only (missed). Wireframes are dark so they do not compete with the voxels.
-TRUE_POSITIVE_VOXEL_RGB = (44, 160, 44)
-FALSE_POSITIVE_VOXEL_RGB = (214, 39, 40)
-FALSE_NEGATIVE_VOXEL_RGB = (127, 127, 127)
+# Voxel maps of the picture (0-255 RGB and 0-1 opacity are presentation choices with no data-derived
+# value). Ground-truth voxels are grey, rendered voxels light blue in the overlay, a hit is green and
+# a rendered voxel off every GT voxel red. In the overlay the GT is the more opaque layer, so it
+# shows through the translucent render. Wireframes are dark so they do not compete with the voxels.
+GROUND_TRUTH_VOXEL_RGB = (127, 127, 127)
+RENDER_VOXEL_RGB = (135, 195, 245)
+HIT_VOXEL_RGB = (44, 160, 44)
+NON_HIT_VOXEL_RGB = (214, 39, 40)
 CUBOID_WIREFRAME_RGB = (60, 60, 60)
+GROUND_TRUTH_OVERLAY_OPACITY = 0.8
+SOLID_VOXEL_OPACITY = 1.0
+RENDER_OVERLAY_OPACITY = 0.3
+# The three maps drawn for every pose, in file-name order: <stem>_<map name>.png.
+MAP_NAMES = ("overlay", "recall", "precision")
 # Script that renders the pictures, and the isolated project (viz/) that has PyVista installed.
 VIEWER_SCRIPT_RELATIVE_PATH = Path("scripts") / "15_view_pose_pyvista.py"
 VIEWER_PROJECT_RELATIVE_DIR = Path("viz")
@@ -106,6 +114,7 @@ def viz_command(
     accumulation_threshold: float,
     rerender_label: Optional[str] = None,
     radius_meters: Optional[float] = None,
+    class_names: Optional[Sequence[str]] = None,
 ) -> List[str]:
     """Argument list that renders pictures for runs, in the isolated viz/ environment.
 
@@ -120,6 +129,7 @@ def viz_command(
         accumulation_threshold: T67 threshold the evaluation used (so the points match).
         rerender_label: ``rerenders/<label>`` of the (single) run, or None.
         radius_meters: Horizontal radius around each sweep to draw, or None for the config value.
+        class_names: Scored class names to draw, or None for the config value (all scored classes).
 
     Returns:
         The command, program first.
@@ -133,4 +143,6 @@ def viz_command(
         command += ["--rerender", rerender_label]
     if radius_meters is not None:
         command += ["--radius-meters", repr(float(radius_meters))]
+    if class_names is not None:
+        command += ["--classes", ",".join(class_names)]
     return command

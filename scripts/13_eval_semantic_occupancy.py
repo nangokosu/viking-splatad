@@ -114,6 +114,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--accumulation-threshold", type=float, default=None,
                         help="override eval.render_accumulation_threshold (recorded in the report)")
     parser.add_argument("--no-viz", action="store_true", help="do not draw the PyVista pictures (scripts/15)")
+    parser.add_argument("--viz-classes", default=None,
+                        help="comma-separated scored class names scripts/15 draws (default: eval.viz_classes, else all scored)")
     parser.add_argument("--viz-radius-meters", type=float, default=None,
                         help="horizontal radius around each sweep drawn by scripts/15 (default: eval.viz_radius_meters)")
     return parser
@@ -489,7 +491,7 @@ def repo_relative(text: str, project_root: Path) -> str:
 
 def launch_pose_viz(run_dir: Path, rerender_label: Optional[str], eval_output_dir: Path, eval_config_path: Path,
                     accumulation_threshold: float, project_root: Path, run_command=subprocess.run,
-                    viz_radius_meters: Optional[float] = None) -> str:
+                    viz_radius_meters: Optional[float] = None, viz_class_names: Optional[List[str]] = None) -> str:
     """Draw the scored poses with scripts/15 in the isolated viz/ environment.
 
     Never raises: the report is already written, so a drawing problem must not touch the metrics.
@@ -505,13 +507,14 @@ def launch_pose_viz(run_dir: Path, rerender_label: Optional[str], eval_output_di
         project_root: Repo root (working directory of the subprocess).
         run_command: ``subprocess.run`` stand-in, injectable for tests.
         viz_radius_meters: Radius override for the pictures, or None for the config value.
+        viz_class_names: Class names to draw, or None for the config value (all scored classes).
 
     Returns:
         "written: <folder>" or "failed: <reason>".
     """
     viz_output_dir = (eval_output_dir / VIZ_OUTPUT_DIR_NAME).resolve()
     command = viz_command([Path(run_dir).resolve()], viz_output_dir, Path(eval_config_path).resolve(),
-                          accumulation_threshold, rerender_label, viz_radius_meters)
+                          accumulation_threshold, rerender_label, viz_radius_meters, viz_class_names)
     # Step 1: run the viewer; a missing launcher (uv) is a failure to report, not a crash.
     try:
         # errors="replace": undecodable viewer output must not raise out of this never-raises helper.
@@ -547,6 +550,12 @@ def main(argument_list: Optional[List[str]] = None, run_command=subprocess.run) 
     eval_config_path = arguments.eval_config or project_root / DEFAULT_EVAL_CONFIG_RELATIVE_PATH
     eval_settings = yaml.safe_load(Path(eval_config_path).read_text())["eval"]
     reports = []
+    # A misspelt class name is caught now, before the evaluation runs, not inside the viewer afterwards.
+    viz_class_names = None if arguments.viz_classes is None else [name.strip() for name in arguments.viz_classes.split(",")]
+    unknown_class_names = [name for name in (viz_class_names or []) if name not in eval_settings["scored_class_ids"]]
+    if unknown_class_names:
+        print(f"--viz-classes {unknown_class_names} are not scored classes (have {sorted(eval_settings['scored_class_ids'])})", file=sys.stderr)
+        return 1
     try:
         for run_dir in arguments.run_dirs:
             # One run: score, then write json + md next to its renders.
@@ -563,7 +572,7 @@ def main(argument_list: Optional[List[str]] = None, run_command=subprocess.run) 
             else:
                 report["viz"] = launch_pose_viz(run_dir, arguments.rerender, output_dir, eval_config_path,
                                                 report["settings"]["accumulation_threshold"], project_root, run_command,
-                                                arguments.viz_radius_meters)
+                                                arguments.viz_radius_meters, viz_class_names)
                 if report["viz"].startswith("failed"):
                     print(f"WARNING: no pictures ({report['viz']}). Set up their environment with: "
                           f"{VIZ_ENVIRONMENT_FIX_COMMAND}", file=sys.stderr)

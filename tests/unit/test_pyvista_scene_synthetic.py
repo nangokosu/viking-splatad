@@ -86,3 +86,10 @@ def test_viz_command_names_every_run_and_the_isolated_project():
     assert "--radius-meters" not in command
     with_radius = viz_command([Path("/r/B")], Path("/out"), Path("/cfg/eval.yaml"), 0.5, radius_meters=15)
     assert float(with_radius[with_radius.index("--radius-meters") + 1]) == 15.0
+
+
+def test_viz_command_passes_the_class_filter_only_when_given():
+    """--classes carries the comma-joined names; absent when no filter is asked for."""
+    command = viz_command([Path("/r/B")], Path("/out"), Path("/cfg/eval.yaml"), 0.5, class_names=["tree_trunk", "rock"])
+    assert command[command.index("--classes") + 1] == "tree_trunk,rock"
+    assert "--classes" not in viz_command([Path("/r/B")], Path("/out"), Path("/cfg/eval.yaml"), 0.5)

@@ -144,3 +144,26 @@ def test_recorded_messages_also_hide_the_home_directory():
 
     eval_script = load_eval_script()
     assert eval_script.repo_relative(f"cache at {Path.home()}/.cache/uv", Path("/nowhere")) == "cache at ~/.cache/uv"
+
+
+def test_viz_classes_reach_the_viewer_command(tmp_path, monkeypatch):
+    """--viz-classes is passed on as --classes with the names stripped; without it the viewer uses the config value."""
+    eval_script, run_dir, eval_config_path = prepare_session(tmp_path, monkeypatch)
+    for extra_arguments, expected_names in (([], None), (["--viz-classes", "tree_trunk, rock"], "tree_trunk,rock")):
+        runner = FakeRunner()
+        assert eval_script.main(["--eval-config", str(eval_config_path), *extra_arguments, str(run_dir)],
+                                run_command=runner) == 0
+        command = runner.calls[0][0]
+        if expected_names is None:
+            assert "--classes" not in command
+        else:
+            assert command[command.index("--classes") + 1] == expected_names
+
+
+def test_an_unknown_viz_class_is_refused_before_the_evaluation(tmp_path, monkeypatch, capsys):
+    """A misspelt --viz-classes name exits 1 at once: no viewer launch and no report written."""
+    eval_script, run_dir, eval_config_path = prepare_session(tmp_path, monkeypatch)
+    runner = FakeRunner()
+    assert eval_script.main(["--eval-config", str(eval_config_path), "--viz-classes", "oak", str(run_dir)],
+                            run_command=runner) == 1
+    assert runner.calls == [] and "not scored classes" in capsys.readouterr().err
