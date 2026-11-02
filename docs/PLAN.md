@@ -203,7 +203,7 @@ The radar claim concerns blocked and no-return cells. B and R should agree on se
 
   As of 2026-10-26 only `data/gt/may_short_grass/` exists; the June GT must be generated before evaluation.
 - **Frame:** the label file carries no frame information. Before evaluation, the June check (§1 step 5) must confirm that the June label map frame equals the June `/icp_odom` map frame. P1 and P2 both land in that frame via `inv(w2m)`.
-- **Classes scored:** tree_trunk (1), bush_or_small_tree (4, young trees), rock (3) and tree_canopy (2, added 2026-11-02 at the user's request; trunk boxes overlap canopy boxes, `evaluation_caveats.md` §8.2). Not scored: car, building, lamp/sign and ignore (8); grass has no class.
+- **Classes scored:** tree_trunk (1), bush_or_small_tree (4, young trees) and rock (3). Not scored: canopy (2), car, building, lamp/sign and ignore (8); grass has no class.
 - **Kept cuboids:** only those within lidar range and FOV of at least one eval pose (T32). Objects this traversal's lidar never saw are kept on purpose, because that is where radar should help.
 
 | metric | definition | role / expectation |

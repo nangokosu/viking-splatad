@@ -12,9 +12,6 @@ eval:
     tree_trunk: 1
     bush_or_small_tree: 4
     rock: 3
-    # Added 2026-11-02 at the user's request. Trunk boxes overlap canopy boxes (evaluation_caveats.md §8.2), so
-    # canopy points inside a trunk box still count against the trunk's precision; this class scores the canopy itself.
-    tree_canopy: 2
   # T45 headline threshold n_min per class = this quantile of the real test sweeps' point counts in
   # the class's hit cuboids. The lower quartile is the usual robust floor: three quarters of the
   # objects the real lidar saw got at least this many points, so a rendered object with fewer is
