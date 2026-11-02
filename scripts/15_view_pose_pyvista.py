@@ -1,19 +1,15 @@
-"""Draw a run's test sweeps as three occupancy-voxel maps against the GT with PyVista (visual aid of scripts/13).
+"""Draw a run's test sweeps as an occupancy-voxel precision map against the GT with PyVista (visual aid of scripts/13).
 
 By default the sweeps are POOLED exactly as the report pools them: one occupied-voxel grid over all
 test sweeps, one scoring neighbourhood, so for a single drawn class the recall and precision in the
 captions are the report's voxel recall and precision. With several classes the captions count the union of
 their cells, not the per-class report values. ``--pose`` draws single sweeps instead.
-For each run, three PNGs ``pooled_overlay.png``, ``pooled_recall.png`` and ``pooled_precision.png``
-(or ``<stem>_<map>.png`` per ``--pose``) show, in the map frame within ``--radius-meters``
-(horizontal) of a test lidar position (of any pooled sweep), voxels of the selected classes:
-    - overlay: GT voxels grey and every render voxel light blue (translucent, so the GT always shows);
-    - recall: GT voxels green where the render also occupies the voxel (hit), grey if missed; the other
-      render voxels are drawn very faint green as context;
-    - precision: render voxels solid green on a GT voxel of a selected class, faint red off every one;
-      no GT voxels.
-All three maps show the whole rendered cloud, including the voxels outside the metric's scoring
-neighbourhood of the selected classes (``render_outside``): they are drawn but never counted.
+For each run, one PNG ``pooled_precision.png`` (or ``<stem>_precision.png`` per ``--pose``) shows, in the
+map frame within ``--radius-meters`` (horizontal) of a test lidar position (of any pooled sweep), the
+whole rendered cloud: voxels solid green on a GT voxel of a selected class, faint red off every one;
+no GT voxels. It carries what the overlay and recall maps showed, so only it is drawn (``DRAWN_MAP_NAMES``);
+``map_layers`` still knows the overlay and recall layouts. The cloud includes the voxels outside the metric's
+scoring neighbourhood of the selected classes (``render_outside``): drawn but never counted.
 Dark wireframes mark the scored GT cuboids. The render voxels come from the run's own rendered
 test-split lidar returns (ungated, the set the metric binds to, unless ``--gated``), pooled over the
 drawn sweeps (all of them, or the ``--pose`` ones). The counted ones lie in the metric's scoring neighbourhood: each box grown horizontally by its class
@@ -22,7 +18,7 @@ cells are those of the voxel IoU / precision / recall in scripts/13, unioned ove
 the caption counts are over the whole scored region, the drawing is cut to the radius. A ``--pose`` map
 is the same computation for one sweep and illustrates the report without being its numbers.
 ``--classes`` filters which scored classes are drawn.
-``--show-points`` (with ``--pose``) adds the rendered and real returns to the overlay. Several ``--run`` folders give
+``--show-points`` (with ``--pose``) adds the rendered and real returns to the precision map. Several ``--run`` folders give
 side-by-side panels with linked cameras (e.g. B and R of one session).
 
 Everything is derived as scripts/13 derives it, through the same functions: the run's split record,
@@ -72,6 +68,7 @@ from viking_splatad.viz.pyvista_scene import (
     GROUND_TRUTH_OVERLAY_OPACITY,
     GROUND_TRUTH_VOXEL_RGB,
     HIT_VOXEL_RGB,
+    DRAWN_MAP_NAMES,
     MAP_NAMES,
     NON_HIT_PRECISION_OPACITY,
     NON_HIT_VOXEL_RGB,
@@ -156,7 +153,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--view", choices=VIEW_CHOICES, default=VIEW_CHOICES[0],
                         help="camera: oblique 3D or straight down (default: oblique)")
     parser.add_argument("--show-points", action="store_true",
-                        help="with --pose: also draw the real (grey) and rendered (red inside a cuboid, blue otherwise) returns on the overlay")
+                        help="with --pose: also draw the real (grey) and rendered (red inside a cuboid, blue otherwise) returns on the precision map")
     parser.add_argument("--all-points", action="store_true",
                         help="with --show-points: draw every point in the radius, not only the scored neighbourhood")
     parser.add_argument("--gated", action="store_true",
@@ -599,7 +596,7 @@ def draw_panel(plotter, pyvista_module, column: int, map_name: str, scene: RunSc
         maps: ``pooled_voxel_maps`` result.
         radius_meters: Horizontal radius drawn around the lidar positions.
         lidar_positions_xy: (K, 2) map-frame lidar positions of the drawn sweeps.
-        point_arrays: ``panel_arrays`` result for the optional point overlay (overlay map only), or None.
+        point_arrays: ``panel_arrays`` result for the optional point overlay (precision map only), or None.
     """
     plotter.subplot(0, column)
     # Step 1: the map's voxel layers, back to front.
@@ -633,7 +630,7 @@ def draw_panel(plotter, pyvista_module, column: int, map_name: str, scene: RunSc
 def render_pose(scenes: Sequence[RunScene], stem: str, selected_class_ids: Sequence[int], use_gated: bool,
                 output_dir: Optional[Path], radius_meters: float, view: str = VIEW_CHOICES[0],
                 show_points: bool = False, crop_points_to_neighbourhood: bool = True) -> None:
-    """Draw the three maps of every run side by side, for one pose or for all pooled sweeps, to PNGs or windows.
+    """Draw the maps (``DRAWN_MAP_NAMES``) of every run side by side, for one pose or for all pooled sweeps, to PNGs or windows.
 
     Args:
         scenes: One scene per run.
@@ -643,25 +640,25 @@ def render_pose(scenes: Sequence[RunScene], stem: str, selected_class_ids: Seque
         output_dir: Folder for ``<stem>_<map>.png`` (``pooled_<map>.png``), or None for an interactive window per map.
         radius_meters: Horizontal radius around any drawn sweep's lidar position to draw.
         view: ``oblique`` or ``top``.
-        show_points: Also draw the real and rendered returns (overlay map, single pose only).
+        show_points: Also draw the real and rendered returns (precision map, single pose only).
         crop_points_to_neighbourhood: With ``show_points``, only points in the scored neighbourhood.
     """
     # PyVista (VTK) is imported here so the module loads in environments without it (tests).
     import pyvista
 
-    # Step 1: each run's voxels, once; the three maps are different views of the same arrays.
+    # Step 1: each run's voxels, once; the maps are different views of the same arrays.
     is_pooled = stem == POOLED_STEM
     run_sweeps = [list(scene.sweeps.values()) if is_pooled else [scene.sweeps[stem]] for scene in scenes]
     run_maps = [pooled_voxel_maps(sweeps, scene, selected_class_ids, use_gated, radius_meters)
                 for scene, sweeps in zip(scenes, run_sweeps)]
-    for map_name in MAP_NAMES:
+    for map_name in DRAWN_MAP_NAMES:
         plotter = pyvista.Plotter(shape=(1, len(scenes)), off_screen=output_dir is not None,
                                   window_size=(PANEL_PIXELS * len(scenes), PANEL_PIXELS))
         # The window is closed even when drawing fails, so one bad map cannot leak it.
         try:
             for column, (scene, sweeps, maps) in enumerate(zip(scenes, run_sweeps, run_maps)):
                 point_arrays = None
-                if show_points and map_name == "overlay" and not is_pooled:
+                if show_points and map_name == "precision" and not is_pooled:
                     # Cropping to an empty neighbourhood would blank the points, so with no scored box keep them all.
                     # The points follow the class filter too: only the selected classes' boxes crop and colour them.
                     selected_scored = [box for box in scene.scored_cuboids if box.class_id in selected_class_ids]

@@ -43,8 +43,11 @@ SOLID_VOXEL_OPACITY = 1.0
 NON_HIT_PRECISION_OPACITY = 0.03
 RECALL_CONTEXT_OPACITY = 0.03
 RENDER_OVERLAY_OPACITY = 0.03
-# The three maps drawn for every pose, in file-name order: <stem>_<map name>.png.
+# The map layouts ``map_layers`` / ``map_caption`` know, and the ones drawn (<stem>_<map name>.png). With the whole
+# rendered cloud in every map, the precision map carries all the information (user's choice 2026-11-02), so it is
+# the only one drawn; overlay and recall stay available as layouts.
 MAP_NAMES = ("overlay", "recall", "precision")
+DRAWN_MAP_NAMES = ("precision",)
 # Script that renders the pictures, and the isolated project (viz/) that has PyVista installed.
 VIEWER_SCRIPT_RELATIVE_PATH = Path("scripts") / "15_view_pose_pyvista.py"
 VIEWER_PROJECT_RELATIVE_DIR = Path("viz")
