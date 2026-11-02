@@ -1,5 +1,7 @@
 # FiftyOne viewer (read-only)
 
+For a simpler per-pose look at the occupancy evaluation (no database), see `pyvista_viewer.md`.
+
 Browse a fetched run's renders next to the real data, with the GT cuboids, in FiftyOne.
 
 ```

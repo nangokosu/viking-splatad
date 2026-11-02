@@ -1,13 +1,16 @@
-# Isolated environment for the FiftyOne viewer (scripts/14_build_fiftyone_dataset.py).
+# Isolated environment for the run viewers: FiftyOne (scripts/14_build_fiftyone_dataset.py) and
+# PyVista (scripts/15_view_pose_pyvista.py, launched by scripts/13). PyVista is kept out of the root
+# project because the root pyproject.toml is a Docker/cluster recipe file (a change forces rebuilds).
 # Kept apart from the root project: FiftyOne requires opencv-python-headless<5, which would
 # otherwise change the root uv.lock pin (opencv 5.0.0.93) that every other script relies on.
 [project]
 name = "viking-splatad-viz"
 version = "0.1.0"
-description = "FiftyOne viewer for SplatAD run outputs (read-only)"
+description = "FiftyOne and PyVista viewers for SplatAD run outputs (read-only)"
 requires-python = ">=3.10"
 dependencies = [
   "fiftyone>=1.22.1",
+  "pyvista>=0.43",
   "numpy>=1.24",
   "scipy>=1.10",
   "pyyaml>=6",

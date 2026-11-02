@@ -17,7 +17,7 @@ evaluated sweep pose (as T32, horizontal FOV 360°). No occlusion reasoning is d
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -442,6 +442,37 @@ def visible_cuboid_mask(
         (B,) bool.
     """
     return visible_from_any_pose(cuboid_centers(cuboids), sensor_to_map_poses, max_range, vertical_half_fov)
+
+
+def scored_region_cuboids(
+    cuboids: Sequence[Cuboid],
+    scored_class_ids: Sequence[int],
+    sweep_poses: Sequence[np.ndarray],
+    real_points_per_sweep: Sequence[np.ndarray],
+    elevation_mapping_radians: Dict[str, float],
+) -> Tuple[Dict[int, List[Cuboid]], float, float]:
+    """The scored cuboids of each class, with the range and FOV limits that define the scored region.
+
+    One definition shared by the metric (scripts/13) and its picture (scripts/15), so the boxes that
+    are drawn are the boxes that are counted. Both limits come from the data: the range is the
+    farthest real return, the half FOV is the largest beam elevation.
+
+    Args:
+        cuboids: All GT boxes.
+        scored_class_ids: Scored class ids (configs/eval.yaml).
+        sweep_poses: (4, 4) lidar_to_map pose of each evaluated sweep.
+        real_points_per_sweep: (N_s, 3) real returns per sweep, lidar frame.
+        elevation_mapping_radians: ring -> elevation (rad), ``manifest.lidar.elevation_mapping``.
+
+    Returns:
+        (class id -> visible boxes, range limit in m, half vertical FOV in rad).
+    """
+    # Step 1: the scored region's two limits, read from the evaluated sweeps and the sensor model.
+    max_range = range_limit_from_real_points(real_points_per_sweep)
+    vertical_half_fov = vertical_half_fov_from_elevations(elevation_mapping_radians)
+    # Step 2: a box is scored when its centre is inside that region for at least one pose.
+    box_visible = visible_cuboid_mask(cuboids, sweep_poses, max_range, vertical_half_fov)
+    return scored_cuboids_by_class(cuboids, scored_class_ids, box_visible), max_range, vertical_half_fov
 
 
 def voxel_centers(voxel_indices: np.ndarray, grid_origin: np.ndarray, voxel_size: float) -> np.ndarray:

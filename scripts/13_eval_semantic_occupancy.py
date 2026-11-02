@@ -17,6 +17,10 @@ whose lidar renders exist. Everything else is derived from the run's own records
        sweeps' per-cuboid counts), T46 neighbourhood point precision, voxel IoU/P/R on the GT grid.
     6. Writes ``<eval root>/eval/semantic_occupancy.{json,md}``. With several runs, also prints a
        side-by-side table, refused unless all runs share one session (no May <-> June mixing).
+    7. Visual aid: after the report is safely written, launches scripts/15 (PyVista, isolated viz/
+       environment) to draw each scored pose with its cuboids into ``<eval root>/eval/viz/``. A
+       failure there is reported and recorded as ``viz`` in the JSON, never changes the metrics or
+       the exit code. ``--no-viz`` skips it.
 
 Usage:
     uv run python scripts/13_eval_semantic_occupancy.py runs/<run_id> [runs/<run_id> ...]
@@ -26,6 +30,7 @@ Usage:
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -44,12 +49,9 @@ from viking_splatad.eval.detection import (
     n_min_from_real_counts,
     neighbourhood_point_precision,
     neighbourhood_voxel_metrics,
-    range_limit_from_real_points,
     restrict_mask_to_visible,
-    scored_cuboids_by_class,
+    scored_region_cuboids,
     summarise_metrics,
-    vertical_half_fov_from_elevations,
-    visible_cuboid_mask,
 )
 from viking_splatad.eval.rendered_pointcloud import (
     RenderedSweep,
@@ -57,6 +59,7 @@ from viking_splatad.eval.rendered_pointcloud import (
     occupied_voxel_grid,
     points_to_map_voxels,
 )
+from viking_splatad.viz.pyvista_scene import viz_command
 
 # Report schema id (bump when keys change).
 REPORT_SCHEMA = "viking-splatad/semantic-occupancy/1"
@@ -82,6 +85,13 @@ OCCUPANCY_FILE_NAME = "occupancy.npz"
 EVAL_OUTPUT_DIR_NAME = "eval"
 REPORT_JSON_NAME = "semantic_occupancy.json"
 REPORT_MARKDOWN_NAME = "semantic_occupancy.md"
+# Pictures of the scored poses (scripts/15) next to the report, and the command that installs their environment.
+VIZ_OUTPUT_DIR_NAME = "viz"
+VIZ_ENVIRONMENT_FIX_COMMAND = "uv sync --project viz --locked"
+# Longest the pictures may take before the evaluation gives up on them. A hardcoded safety net, not a
+# measured value: a cold `uv run` may first resolve and install the viz environment, which can take
+# minutes, so 10 minutes leaves room for that while stopping a hung off-screen render.
+VIZ_TIMEOUT_SECONDS = 600
 # Point sets scored, binding one first (PLAN §5 P1: ungated is binding, gated reported beside it).
 POINT_SET_NAMES = ("ungated", "gated")
 # Smallest possible T45 threshold (one point), used only when the real sweeps hit no box of a class.
@@ -105,6 +115,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-config", type=Path, default=None, help="default: configs/eval.yaml")
     parser.add_argument("--accumulation-threshold", type=float, default=None,
                         help="override eval.render_accumulation_threshold (recorded in the report)")
+    parser.add_argument("--no-viz", action="store_true", help="do not draw the PyVista pictures (scripts/15)")
     return parser
 
 
@@ -283,12 +294,11 @@ def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Di
 
     # Step 2: scored region = within range/FOV of a test pose (both limits from the data).
     sweep_poses = [sweep.lidar_to_map for sweep in sweeps]
-    max_range = range_limit_from_real_points([sweep.real_points for sweep in sweeps])
-    vertical_half_fov = vertical_half_fov_from_elevations(manifest["lidar"]["elevation_mapping"])
     scored_class_ids = dict(eval_settings["scored_class_ids"])
     class_ids = list(scored_class_ids.values())
-    visible_by_class = scored_cuboids_by_class(
-        cuboids, class_ids, visible_cuboid_mask(cuboids, sweep_poses, max_range, vertical_half_fov)
+    # The same helper scripts/15 calls, so the drawn boxes are the counted boxes.
+    visible_by_class, max_range, vertical_half_fov = scored_region_cuboids(
+        cuboids, class_ids, sweep_poses, [sweep.real_points for sweep in sweeps], manifest["lidar"]["elevation_mapping"]
     )
     margins = class_margin_table(cuboids, class_ids)
 
@@ -462,14 +472,71 @@ def comparison_markdown(reports: Sequence[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def main(argument_list: Optional[List[str]] = None) -> int:
+def repo_relative(text: str, project_root: Path) -> str:
+    """Replace the absolute repo root in a message by ``<repo>``, so recorded text carries no home path.
+
+    The report is meant to be shareable, and CLAUDE.md rule 5 keeps account names (which a home
+    directory contains) out of recorded output.
+
+    Args:
+        text: A path or message.
+        project_root: Repo root.
+
+    Returns:
+        ``text`` with the root replaced.
+    """
+    return text.replace(str(Path(project_root).resolve()), "<repo>").replace(str(project_root), "<repo>")
+
+
+def launch_pose_viz(run_dir: Path, rerender_label: Optional[str], eval_output_dir: Path, eval_config_path: Path,
+                    accumulation_threshold: float, project_root: Path, run_command=subprocess.run) -> str:
+    """Draw the scored poses with scripts/15 in the isolated viz/ environment.
+
+    Never raises: the report is already written, so a drawing problem must not touch the metrics.
+    The command runs from the repo root because ``viz_command`` uses repo-relative script and
+    project paths; every user path in it is made absolute here.
+
+    Args:
+        run_dir: Fetched run folder.
+        rerender_label: Render-only job label, or None.
+        eval_output_dir: ``<eval root>/eval``; the pictures go to its ``viz`` subfolder.
+        eval_config_path: configs/eval.yaml the evaluation used.
+        accumulation_threshold: T67 threshold the evaluation used.
+        project_root: Repo root (working directory of the subprocess).
+        run_command: ``subprocess.run`` stand-in, injectable for tests.
+
+    Returns:
+        "written: <folder>" or "failed: <reason>".
+    """
+    viz_output_dir = (eval_output_dir / VIZ_OUTPUT_DIR_NAME).resolve()
+    command = viz_command([Path(run_dir).resolve()], viz_output_dir, Path(eval_config_path).resolve(),
+                          accumulation_threshold, rerender_label)
+    # Step 1: run the viewer; a missing launcher (uv) is a failure to report, not a crash.
+    try:
+        # errors="replace": undecodable viewer output must not raise out of this never-raises helper.
+        completed = run_command(command, cwd=project_root, capture_output=True, text=True, errors="replace",
+                                timeout=VIZ_TIMEOUT_SECONDS)
+    except (OSError, ValueError) as error:
+        return f"failed: could not start {command[0]}: {repo_relative(str(error), project_root)}"
+    except subprocess.TimeoutExpired:
+        return f"failed: no result within {VIZ_TIMEOUT_SECONDS} s"
+    # Step 2: a non-zero exit carries the viewer's last stderr line as the reason.
+    if completed.returncode != 0:
+        stderr_lines = (completed.stderr or "").strip().splitlines()
+        last_line = repo_relative(stderr_lines[-1], project_root) if stderr_lines else "no error output"
+        return f"failed: exit code {completed.returncode}: {last_line}"
+    return f"written: {repo_relative(str(viz_output_dir), project_root)}"
+
+
+def main(argument_list: Optional[List[str]] = None, run_command=subprocess.run) -> int:
     """Evaluate each given run and write its report.
 
     Args:
         argument_list: CLI arguments (default: sys.argv).
+        run_command: ``subprocess.run`` stand-in for the viz launch, injectable for tests.
 
     Returns:
-        Exit code: 0 success, 1 refused input.
+        Exit code: 0 success, 1 refused input (a viz failure does not change it).
     """
     arguments = build_argument_parser().parse_args(argument_list)
     project_root = find_project_root()
@@ -489,6 +556,18 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             (output_dir / REPORT_JSON_NAME).write_text(json.dumps(report, indent=1, sort_keys=True))
             (output_dir / REPORT_MARKDOWN_NAME).write_text(report_markdown(report))
             print(f"wrote {output_dir / REPORT_JSON_NAME}")
+            # Visual aid, only after the metrics are safely on disk; its outcome is recorded beside them.
+            if arguments.no_viz:
+                report["viz"] = "skipped: --no-viz"
+            else:
+                report["viz"] = launch_pose_viz(run_dir, arguments.rerender, output_dir, eval_config_path,
+                                                report["settings"]["accumulation_threshold"], project_root, run_command)
+                if report["viz"].startswith("failed"):
+                    print(f"WARNING: no pictures ({report['viz']}). Set up their environment with: "
+                          f"{VIZ_ENVIRONMENT_FIX_COMMAND}", file=sys.stderr)
+                else:
+                    print(report["viz"])
+            (output_dir / REPORT_JSON_NAME).write_text(json.dumps(report, indent=1, sort_keys=True))
             reports.append(report)
         if len(reports) > 1:
             print(comparison_markdown(reports))
