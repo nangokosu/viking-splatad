@@ -86,6 +86,8 @@ REAL_POINT_SIZE, RENDERED_POINT_SIZE, WIREFRAME_LINE_WIDTH = 2.0, 4.0, 1.0
 PANEL_PIXELS = 800
 # Opacity of the real returns, so rendered points over them stay readable (presentation choice).
 REAL_POINT_OPACITY = 0.5
+# Share of ambient (direction-free) light on voxel faces, a presentation choice.
+VOXEL_AMBIENT_LIGHT = 0.7
 
 
 @dataclass
@@ -491,7 +493,10 @@ def draw_voxels(plotter, pyvista_module, centres: np.ndarray, voxel_size: float,
     # One cube per voxel centre: glyph copies the cube to every point (no rotation, no scaling).
     cube = pyvista_module.Cube(x_length=voxel_size, y_length=voxel_size, z_length=voxel_size)
     cubes = pyvista_module.PolyData(centres).glyph(geom=cube, orient=False, scale=False)
-    plotter.add_mesh(cubes, color=np.array(colour_rgb) / 255.0, opacity=opacity)
+    # High ambient light keeps the side faces near the true colour (with default lighting they darken, which
+    # washed green against grey); the remaining diffuse share still separates the faces of neighbouring cubes.
+    plotter.add_mesh(cubes, color=np.array(colour_rgb) / 255.0, opacity=opacity,
+                     ambient=VOXEL_AMBIENT_LIGHT, diffuse=1.0 - VOXEL_AMBIENT_LIGHT)
 
 
 def draw_panel(plotter, pyvista_module, column: int, map_name: str, scene: RunScene, selected_class_ids: Sequence[int],

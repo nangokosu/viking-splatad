@@ -31,7 +31,7 @@ REAL_POINT_RGB = (160, 160, 160)
 # shows through the translucent render. Wireframes are dark so they do not compete with the voxels.
 GROUND_TRUTH_VOXEL_RGB = (205, 205, 205)
 RENDER_VOXEL_RGB = (70, 160, 255)
-HIT_VOXEL_RGB = (44, 160, 44)
+HIT_VOXEL_RGB = (0, 255, 60)
 NON_HIT_VOXEL_RGB = (214, 39, 40)
 CUBOID_WIREFRAME_RGB = (60, 60, 60)
 GROUND_TRUTH_OVERLAY_OPACITY = 0.8
