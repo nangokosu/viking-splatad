@@ -1,27 +1,26 @@
-# Last session summary (2026-11-01)
+# Last session summary (2026-11-02)
 
 ## Done
-- Branch `intermittent-splits`: the test split is now the standard 3DGS hold-out instead of two contiguous blocks.
-  - `342b1ad`: T71 `shared_interleaved_train_test_indices` holds out every 1/(1 − f)-th lidar sweep (neurad LINSPACE complement); a camera frame is test iff its nearest sweep is, so camera and lidar share the held-out instants. T72 `restrict_test_to_render_subset` renders an evenly spaced fraction r of those instants; the rest are guard. Session YAMLs: `split.method: shared_interleaved`, `train_fraction: 0.9`, `test_render_fraction: 0.1`. Wired through `submit_run.py`, the sbatch scripts, the dataparser, scripts/09 (split record) and scripts/12.
-  - `852a745`: Slurm profile `smoke_a4500_scene_split` (A4500, the Scene A f = 0.9 and r = 0.1); the `smoke` / `smoke_a4500` profiles keep 0.8 / 0.2 because existing tests pin them. Glossary: the eval during training uses every held-out frame (T65).
-  - Full suite in the image: 638 passed, 1 allowed skip; no existing test modified.
-- All earlier runs (smoke, May A, June A, and the 80/20 smoke 226449 cancelled at the user's request) were cleaned from the cluster, the Mac and the ledger.
-- Re-trained at `852a745`, all successful (`split_render_check: match`, `overfitting_plot: written`, `ADD_MISSING_POINTS: True`) and fetched to `runs/`:
-
-  | Run | Job | Train (s) | Camera train/test/guard | Lidar train/test/guard |
-  |---|---|---|---|---|
-  | `may_chunks0_1_smoke-smoke_a4500_scene_split-20261101-205035-852a745` | 226469 | 827 | 135/2/13 | 135/2/13 |
-  | `may_short_grass-may_scene_a-20261101-211146-852a745` | 226539 | 11809 | 2160/25/216 | 2171/25/216 |
-  | `june_tall_grass-june_scene_a-20261101-211347-852a745` | 226540 | 11381 | 1938/22/193 | 1946/22/194 |
+- Git: the PR merging `intermittent-splits` into `main` was accepted on GitHub (`a1d161f`). Local `main` fast-forwarded to it and the local `intermittent-splits` branch deleted (`git branch -d`, merged). `origin/intermittent-splits` was left alone.
+- Agent `comment-reviewer` renamed `code-reviewer` (`~/.claude/agents`, hook updated; local, not in the repo). Script 13 `evaluate_run` split into `build_class_setup` / `score_point_set` / report step (no metric change).
+- Branch `pyvista-pose-viewer` (from `a1d161f`, not pushed), commit `1303108` (point-cloud version) and the voxel/radius rework committed after it: a PyVista per-pose viewer that always accompanies the semantic-occupancy evaluation (CLAUDE.md rule 11, `docs/research/pyvista_viewer.md`).
+  - `scripts/15_view_pose_pyvista.py`: per run, **one POOLED voxel map, the precision map** (`pooled_precision.png`; overlay and recall layouts remain in `map_layers` but are not drawn, `DRAWN_MAP_NAMES`): all test sweeps pooled as the report pools them (union of occupied voxels, one scoring neighbourhood), so the caption's precision equals the report's voxel precision (one class; the union of cells for several). It draws the WHOLE rendered cloud within `--radius-meters` of any test lidar (default `eval.viz_radius_meters` = 25 m; captions count the whole scored region) at opacity 0.03 (the lowest that still reads): solid green = on a GT voxel of a selected class, faint red = not on GT, inside the neighbourhood (the metric's false positives) or outside it (not scored, named in the caption, never counted). `--pose <stem>` draws a single sweep instead (`<stem>_precision.png`; `--show-points` needs it). Render voxels are the run's own ungated test-sweep returns (`--gated` available). `--classes tree_trunk,rock` (config `eval.viz_classes`, null = all scored; script 13 `--viz-classes`) filters GT, render voxels, wireframes and points. `--view top` available. Several `--run` folders give linked side-by-side panels, refused unless `membership_sha256` and the GT cuboids hash agree.
+  - `--ripples` (one `--run`; pooled, or one `--pose`) writes `pooled_ripples.png`: the points twin of the voxel map (same sweeps, map frame, straight-down camera, radius, classes, box wireframes, point set), real (left) vs rendered (right) as points coloured by beam elevation, to compare the lidar ring ripples. Script 13 does not launch it. `ground_facing_points` remains but is unused.
+  - Tried and reverted: scoring `tree_canopy` (class 2) swamped the overlay (`15a1066`, reverted in `41814ca`). Trunk precision still counts canopy hits as false positives (`evaluation_caveats.md` §8.2, fix 2 not adopted).
+  - `scripts/13` launches it after the report is written, as a subprocess into the isolated `viz/` project (`uv run --project viz`), `--no-viz` to skip. A failure is recorded as `"viz"` in `semantic_occupancy.json` and warned, and never changes the metrics or exit code. PyVista is only in `viz/pyproject.toml`/`viz/uv.lock`, so the root `pyproject.toml` (a recipe file) is untouched: no image or cluster env rebuild.
+  - `eval.detection.scored_region_cuboids` and `visible_neighbourhood_mask` are the single definitions of the scored boxes and voxel neighbourhood, used by both scripts; `viz/pyvista_scene.py` holds the pure numpy helpers.
+  - Tests: new files, except `test_pose_viewer_script.py` whose voxel cases were rewritten for the redesigned `sweep_voxel_maps` (same hand-computed grid; the file is only on this unmerged branch): synthetic, real smoke run + May GT (`real_data`, run with `-m real_data`), the launch with a fake runner, and the script-15 logic. Full suite in the image: 687 passed, 1 allowed skip (`test_traceability`), 8 deselected (real_data, run explicitly: 8 passed before the ripple view).
+  - Checked end to end on the smoke run only (this redesign): `pooled_precision.png` in `runs/<run>/eval/viz/`; May and June not yet redrawn with the new maps.
 
 ## Current state
-- Branch `intermittent-splits` is not merged into `main` or pushed.
-- The June run is Scene A arm **B** (stock SplatAD, no photometric loss). Arm R (radar seeds + opacity loss) has not been run on the new split.
-- Run-to-run noise is accepted (CLAUDE.md rule 10), so B vs R needs repeats per arm.
+- `pyvista-pose-viewer` is not merged or pushed. `viz/` must be synced once: `uv sync --project viz --locked`.
+- `real_data` tests skip on a clone without the fetched smoke run (`runs/`) and `data/gt/may_short_grass` (both gitignored).
+- Known limits of the viewer (from the whole-branch review, accepted): script 13 launches one viewer per run, so no automatic B-vs-R figure (call script 15 with both `--run` folders); the viewer timeout kills only the `uv` child, not a hung grandchild; script 15 loads scripts 13's helpers by file path (they could move into `src/eval`); the recorded `viz` text hides the repo root and the home directory but not other absolute paths.
+- The June run is still Scene A arm **B** only; arm R has not been run on the 90/10 split. Run-to-run noise is accepted (rule 10), so B vs R needs repeats per arm.
 - Carried over: the T16 elevation-mapping bias (per-ring median vs. far-field fit) is undecided; the viser client does not build on the nodes.
 
 ## Next steps
-1. Review the May and June overfitting curves (`runs/<run>/overfitting/`) and held-out metrics.
-2. Merge or push `intermittent-splits` (user's call).
-3. June arm R on the same split and seed, then repeats of B and R to measure within-arm spread.
+1. Look at the smoke maps, then on approval redraw May and June (`scripts/13 runs/<run>`) and the overfitting curves (`runs/<run>/overfitting/`).
+2. Merge or push `pyvista-pose-viewer` (user's call).
+3. June arm R on the same split and seed, then repeats of B and R to measure within-arm spread; compare B and R with `scripts/15 --run <B> --run <R>`.
 4. Evaluation per PLAN §5 (June frame check, `05_extract_cuboids.py`, P1 T45–T47, P2 T56–T57).

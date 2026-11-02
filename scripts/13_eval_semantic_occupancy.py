@@ -17,6 +17,10 @@ whose lidar renders exist. Everything else is derived from the run's own records
        sweeps' per-cuboid counts), T46 neighbourhood point precision, voxel IoU/P/R on the GT grid.
     6. Writes ``<eval root>/eval/semantic_occupancy.{json,md}``. With several runs, also prints a
        side-by-side table, refused unless all runs share one session (no May <-> June mixing).
+    7. Visual aid: after the report is safely written, launches scripts/15 (PyVista, isolated viz/
+       environment) to draw the pooled voxel precision map into ``<eval root>/eval/viz/``. A
+       failure there is reported and recorded as ``viz`` in the JSON, never changes the metrics or
+       the exit code. ``--no-viz`` skips it.
 
 Usage:
     uv run python scripts/13_eval_semantic_occupancy.py runs/<run_id> [runs/<run_id> ...]
@@ -26,6 +30,7 @@ Usage:
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -38,18 +43,13 @@ from viking_splatad.eval.detection import (
     class_margin_table,
     cuboid_detection_rate,
     cuboid_point_counts,
-    cuboid_voxel_mask,
-    grow_cuboid_horizontally,
     load_cuboids_json,
     n_min_from_real_counts,
     neighbourhood_point_precision,
     neighbourhood_voxel_metrics,
-    range_limit_from_real_points,
-    restrict_mask_to_visible,
-    scored_cuboids_by_class,
+    scored_region_cuboids,
     summarise_metrics,
-    vertical_half_fov_from_elevations,
-    visible_cuboid_mask,
+    visible_neighbourhood_mask,
 )
 from viking_splatad.eval.rendered_pointcloud import (
     RenderedSweep,
@@ -57,6 +57,7 @@ from viking_splatad.eval.rendered_pointcloud import (
     occupied_voxel_grid,
     points_to_map_voxels,
 )
+from viking_splatad.viz.pyvista_scene import viz_command
 
 # Report schema id (bump when keys change).
 REPORT_SCHEMA = "viking-splatad/semantic-occupancy/1"
@@ -82,6 +83,13 @@ OCCUPANCY_FILE_NAME = "occupancy.npz"
 EVAL_OUTPUT_DIR_NAME = "eval"
 REPORT_JSON_NAME = "semantic_occupancy.json"
 REPORT_MARKDOWN_NAME = "semantic_occupancy.md"
+# Pictures of the scored poses (scripts/15) next to the report, and the command that installs their environment.
+VIZ_OUTPUT_DIR_NAME = "viz"
+VIZ_ENVIRONMENT_FIX_COMMAND = "uv sync --project viz --locked"
+# Longest the pictures may take before the evaluation gives up on them. A hardcoded safety net, not a
+# measured value: a cold `uv run` may first resolve and install the viz environment, which can take
+# minutes, so 10 minutes leaves room for that while stopping a hung off-screen render.
+VIZ_TIMEOUT_SECONDS = 600
 # Point sets scored, binding one first (PLAN §5 P1: ungated is binding, gated reported beside it).
 POINT_SET_NAMES = ("ungated", "gated")
 # Smallest possible T45 threshold (one point), used only when the real sweeps hit no box of a class.
@@ -105,6 +113,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--eval-config", type=Path, default=None, help="default: configs/eval.yaml")
     parser.add_argument("--accumulation-threshold", type=float, default=None,
                         help="override eval.render_accumulation_threshold (recorded in the report)")
+    parser.add_argument("--no-viz", action="store_true", help="do not draw the PyVista pictures (scripts/15)")
+    parser.add_argument("--viz-classes", default=None,
+                        help="comma-separated scored class names scripts/15 draws (default: eval.viz_classes, else all scored)")
+    parser.add_argument("--viz-radius-meters", type=float, default=None,
+                        help="horizontal radius around each sweep drawn by scripts/15 (default: eval.viz_radius_meters)")
     return parser
 
 
@@ -251,6 +264,91 @@ def pooled_map_points(sweeps: Sequence[RenderedSweep], point_set_name: str, grid
     }
 
 
+def build_class_setup(scored_class_ids: Dict[str, int], visible_by_class: Dict[int, list], margins: Dict[int, Optional[float]],
+                      real_points_map: np.ndarray, grid: Dict[str, np.ndarray], sweep_poses: Sequence[np.ndarray],
+                      max_range: float, vertical_half_fov: float, n_min_quantile: float) -> Dict[str, Dict[str, Any]]:
+    """Per-class GT set-up shared by every point set: n_min, margin, neighbourhood and GT voxels.
+
+    Args:
+        scored_class_ids: Class name -> id of the scored classes.
+        visible_by_class: Class id -> its scored (visible) cuboids.
+        margins: Class id -> neighbourhood margin in metres (None if the session has no box of the class).
+        real_points_map: Pooled real test-sweep points in the map frame (source of n_min).
+        grid: GT occupancy arrays.
+        sweep_poses: lidar_to_map of every test sweep.
+        max_range: Scored range in metres.
+        vertical_half_fov: Scored vertical half field of view in radians.
+        n_min_quantile: Quantile of the real per-box point counts that sets n_min.
+
+    Returns:
+        Class name -> {class_id, cuboids, margin, n_min, n_min_source, neighbourhood, ground_truth}.
+    """
+    grid_origin, voxel_size = np.asarray(grid["origin"], dtype=np.float64), float(grid["voxel_size"])
+    grid_shape = grid["class_ids"].shape
+    class_setup: Dict[str, Dict[str, Any]] = {}
+    for class_name, class_id in scored_class_ids.items():
+        class_cuboids = visible_by_class[class_id]
+        # T45 threshold: a quantile of how many real points each scored box of the class received.
+        n_min = n_min_from_real_counts(cuboid_point_counts(real_points_map, class_cuboids), n_min_quantile)
+        n_min_source = f"quantile {n_min_quantile} of real test-sweep counts"
+        if n_min is None:
+            n_min, n_min_source = MINIMUM_POSSIBLE_POINT_COUNT, "no real hit: minimum possible count"
+        # No box of the class in the session (margin None): no growth, the neighbourhood is the boxes.
+        margin = margins[class_id] or 0.0
+        # Voxels within the margin of the class's boxes and within range/FOV of a test pose; GT voxels are
+        # the class's own voxels inside that neighbourhood.
+        neighbourhood = visible_neighbourhood_mask(
+            class_cuboids, margin, grid_origin, voxel_size, grid_shape, sweep_poses, max_range, vertical_half_fov)
+        class_setup[class_name] = {
+            "class_id": class_id, "cuboids": class_cuboids, "margin": margin, "n_min": n_min,
+            "n_min_source": n_min_source, "neighbourhood": neighbourhood,
+            "ground_truth": (grid["class_ids"] == class_id) & neighbourhood,
+        }
+    return class_setup
+
+
+def score_point_set(sweeps: Sequence[RenderedSweep], point_set_name: str, grid: Dict[str, np.ndarray],
+                    class_setup: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Score one pooled point set for every class (T45 detection, T46 precision, voxel IoU/P/R).
+
+    Args:
+        sweeps: Rendered test sweeps.
+        point_set_name: ``gated`` or ``ungated``.
+        grid: GT occupancy arrays.
+        class_setup: Output of ``build_class_setup``.
+
+    Returns:
+        The point set's report entry; ``{"available": False, ...}`` when the ungated set cannot be built.
+    """
+    # Older renders lack the accumulation array, so the ungated set cannot be built: record that, score the rest.
+    if point_set_name == "ungated" and any(sweep.ungated_points is None for sweep in sweeps):
+        return {"available": False, "reason": "lidar npz has no pred_accumulation"}
+    # Step 1: pool the point set over all sweeps in the map frame (shared by every class).
+    pooled = pooled_map_points(sweeps, point_set_name, grid)
+    class_reports = {}
+    # Step 2: per class, the three metric families against that class's set-up.
+    for class_name, setup in class_setup.items():
+        # T45: share of scored boxes holding at least n_min points.
+        detection = cuboid_detection_rate(cuboid_point_counts(pooled["points"], setup["cuboids"]), setup["n_min"])
+        # T46: points inside the boxes over points inside the margin-grown neighbourhood.
+        precision = neighbourhood_point_precision(pooled["points"], setup["cuboids"], setup["margin"])
+        # Voxel IoU/P/R of the occupied-voxel grid against the class's GT voxels, within the neighbourhood.
+        voxel_metrics = neighbourhood_voxel_metrics(pooled["occupied"], setup["ground_truth"], setup["neighbourhood"])
+        class_reports[class_name] = {
+            "detection": {"cuboid_count": detection.cuboid_count, "n_min": detection.n_min,
+                          "detection_rate": detection.detection_rate,
+                          "rate_by_min_points": detection.rate_by_min_points},
+            "point_precision": {"inside_count": precision.inside_count,
+                                "neighbourhood_count": precision.neighbourhood_count,
+                                "precision": precision.precision},
+            "voxel": summarise_metrics(voxel_metrics),
+        }
+    return {
+        "available": True, "point_count": int(pooled["points"].shape[0]),
+        "outside_grid_count": pooled["outside_grid"], "classes": class_reports,
+    }
+
+
 def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Dict[str, Any],
                  accumulation_threshold_override: Optional[float], project_root: Path) -> Tuple[Path, Dict[str, Any]]:
     """Score one run (or render-only job) and build its report.
@@ -273,8 +371,6 @@ def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Di
     session_config, manifest = resolve_session(split_record, project_root)
     gt_dir = Path(session_config["session"]["gt_dir"])
     cuboids, grid = load_ground_truth(gt_dir)
-    grid_origin, voxel_size = np.asarray(grid["origin"], dtype=np.float64), float(grid["voxel_size"])
-    grid_shape = grid["class_ids"].shape
     if accumulation_threshold_override is None:
         accumulation_threshold, threshold_source = float(eval_settings["render_accumulation_threshold"]), "configs/eval.yaml"
     else:
@@ -283,62 +379,22 @@ def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Di
 
     # Step 2: scored region = within range/FOV of a test pose (both limits from the data).
     sweep_poses = [sweep.lidar_to_map for sweep in sweeps]
-    max_range = range_limit_from_real_points([sweep.real_points for sweep in sweeps])
-    vertical_half_fov = vertical_half_fov_from_elevations(manifest["lidar"]["elevation_mapping"])
     scored_class_ids = dict(eval_settings["scored_class_ids"])
     class_ids = list(scored_class_ids.values())
-    visible_by_class = scored_cuboids_by_class(
-        cuboids, class_ids, visible_cuboid_mask(cuboids, sweep_poses, max_range, vertical_half_fov)
+    # The same helper scripts/15 calls, so the drawn boxes are the counted boxes.
+    visible_by_class, max_range, vertical_half_fov = scored_region_cuboids(
+        cuboids, class_ids, sweep_poses, [sweep.real_points for sweep in sweeps], manifest["lidar"]["elevation_mapping"]
     )
-    margins = class_margin_table(cuboids, class_ids)
 
-    # Step 3: per-class GT set-up shared by both point sets (n_min from the real sweeps, voxel region).
+    # Step 3: per-class GT set-up shared by both point sets.
     real_points_map = pooled_map_points(sweeps, "real", grid)["points"]
-    class_setup: Dict[str, Dict[str, Any]] = {}
-    for class_name, class_id in scored_class_ids.items():
-        class_cuboids = visible_by_class[class_id]
-        n_min = n_min_from_real_counts(cuboid_point_counts(real_points_map, class_cuboids), float(eval_settings["n_min_quantile"]))
-        n_min_source = f"quantile {eval_settings['n_min_quantile']} of real test-sweep counts"
-        if n_min is None:
-            n_min, n_min_source = MINIMUM_POSSIBLE_POINT_COUNT, "no real hit: minimum possible count"
-        # No box of the class in the session (margin None): no growth, the neighbourhood is the boxes.
-        margin = margins[class_id] or 0.0
-        neighbourhood = restrict_mask_to_visible(
-            cuboid_voxel_mask([grow_cuboid_horizontally(cuboid, margin) for cuboid in class_cuboids],
-                              grid_origin, voxel_size, grid_shape),
-            grid_origin, voxel_size, sweep_poses, max_range, vertical_half_fov,
-        )
-        class_setup[class_name] = {
-            "class_id": class_id, "cuboids": class_cuboids, "margin": margin, "n_min": n_min,
-            "n_min_source": n_min_source, "neighbourhood": neighbourhood,
-            "ground_truth": (grid["class_ids"] == class_id) & neighbourhood,
-        }
+    n_min_quantile = float(eval_settings["n_min_quantile"])
+    class_setup = build_class_setup(
+        scored_class_ids, visible_by_class, class_margin_table(cuboids, class_ids), real_points_map, grid,
+        sweep_poses, max_range, vertical_half_fov, n_min_quantile)
 
     # Step 4: score each point set.
-    point_set_reports: Dict[str, Any] = {}
-    for point_set_name in POINT_SET_NAMES:
-        if point_set_name == "ungated" and any(sweep.ungated_points is None for sweep in sweeps):
-            point_set_reports[point_set_name] = {"available": False, "reason": "lidar npz has no pred_accumulation"}
-            continue
-        pooled = pooled_map_points(sweeps, point_set_name, grid)
-        class_reports = {}
-        for class_name, setup in class_setup.items():
-            detection = cuboid_detection_rate(cuboid_point_counts(pooled["points"], setup["cuboids"]), setup["n_min"])
-            precision = neighbourhood_point_precision(pooled["points"], setup["cuboids"], setup["margin"])
-            voxel_metrics = neighbourhood_voxel_metrics(pooled["occupied"], setup["ground_truth"], setup["neighbourhood"])
-            class_reports[class_name] = {
-                "detection": {"cuboid_count": detection.cuboid_count, "n_min": detection.n_min,
-                              "detection_rate": detection.detection_rate,
-                              "rate_by_min_points": detection.rate_by_min_points},
-                "point_precision": {"inside_count": precision.inside_count,
-                                    "neighbourhood_count": precision.neighbourhood_count,
-                                    "precision": precision.precision},
-                "voxel": summarise_metrics(voxel_metrics),
-            }
-        point_set_reports[point_set_name] = {
-            "available": True, "point_count": int(pooled["points"].shape[0]),
-            "outside_grid_count": pooled["outside_grid"], "classes": class_reports,
-        }
+    point_set_reports = {name: score_point_set(sweeps, name, grid, class_setup) for name in POINT_SET_NAMES}
 
     # Step 5: the report, with every derived setting and its source.
     report = {
@@ -352,12 +408,12 @@ def evaluate_run(run_dir: Path, rerender_label: Optional[str], eval_settings: Di
             "dir": str(gt_dir.relative_to(project_root)),
             "cuboids_sha256": file_sha256(gt_dir / CUBOIDS_FILE_NAME),
             "occupancy_sha256": file_sha256(gt_dir / OCCUPANCY_FILE_NAME),
-            "voxel_size_m": voxel_size,
+            "voxel_size_m": float(grid["voxel_size"]),
         },
         "sweep_count": len(sweeps),
         "settings": {
             "accumulation_threshold": accumulation_threshold, "accumulation_threshold_source": threshold_source,
-            "n_min_quantile": float(eval_settings["n_min_quantile"]),
+            "n_min_quantile": n_min_quantile,
             "max_range_m": max_range, "max_range_source": "farthest real return of the scored sweeps",
             "vertical_half_fov_rad": vertical_half_fov, "vertical_half_fov_source": "manifest lidar.elevation_mapping",
         },
@@ -462,23 +518,94 @@ def comparison_markdown(reports: Sequence[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def main(argument_list: Optional[List[str]] = None) -> int:
+def repo_relative(text: str, project_root: Path) -> str:
+    """Replace the absolute repo root by ``<repo>`` and the home directory by ``~`` in a message.
+
+    The report is meant to be shareable, and CLAUDE.md rule 5 keeps account names (which a home
+    directory contains) out of recorded output.
+
+    Args:
+        text: A path or message.
+        project_root: Repo root.
+
+    Returns:
+        ``text`` with the root replaced.
+    """
+    text = text.replace(str(Path(project_root).resolve()), "<repo>").replace(str(project_root), "<repo>")
+    # Any other path under the home directory (e.g. the uv cache) would still carry the account name.
+    return text.replace(str(Path.home()), "~")
+
+
+def launch_pose_viz(run_dir: Path, rerender_label: Optional[str], eval_output_dir: Path, eval_config_path: Path,
+                    accumulation_threshold: float, project_root: Path, run_command=subprocess.run,
+                    viz_radius_meters: Optional[float] = None, viz_class_names: Optional[List[str]] = None) -> str:
+    """Draw the scored poses with scripts/15 in the isolated viz/ environment.
+
+    Never raises: the report is already written, so a drawing problem must not touch the metrics.
+    The command runs from the repo root because ``viz_command`` uses repo-relative script and
+    project paths; every user path in it is made absolute here.
+
+    Args:
+        run_dir: Fetched run folder.
+        rerender_label: Render-only job label, or None.
+        eval_output_dir: ``<eval root>/eval``; the pictures go to its ``viz`` subfolder.
+        eval_config_path: configs/eval.yaml the evaluation used.
+        accumulation_threshold: T67 threshold the evaluation used.
+        project_root: Repo root (working directory of the subprocess).
+        run_command: ``subprocess.run`` stand-in, injectable for tests.
+        viz_radius_meters: Radius override for the pictures, or None for the config value.
+        viz_class_names: Class names to draw, or None for the config value (all scored classes).
+
+    Returns:
+        "written: <folder>" or "failed: <reason>".
+    """
+    viz_output_dir = (eval_output_dir / VIZ_OUTPUT_DIR_NAME).resolve()
+    command = viz_command([Path(run_dir).resolve()], viz_output_dir, Path(eval_config_path).resolve(),
+                          accumulation_threshold, rerender_label, viz_radius_meters, viz_class_names)
+    # Step 1: run the viewer; a missing launcher (uv) is a failure to report, not a crash.
+    try:
+        # errors="replace": undecodable viewer output must not raise out of this never-raises helper.
+        completed = run_command(command, cwd=project_root, capture_output=True, text=True, errors="replace",
+                                timeout=VIZ_TIMEOUT_SECONDS)
+    except (OSError, ValueError) as error:
+        return f"failed: could not start {command[0]}: {repo_relative(str(error), project_root)}"
+    except subprocess.TimeoutExpired:
+        return f"failed: no result within {VIZ_TIMEOUT_SECONDS} s"
+    # Step 2: a non-zero exit carries the viewer's last stderr line as the reason.
+    if completed.returncode != 0:
+        stderr_lines = (completed.stderr or "").strip().splitlines()
+        last_line = repo_relative(stderr_lines[-1], project_root) if stderr_lines else "no error output"
+        return f"failed: exit code {completed.returncode}: {last_line}"
+    return f"written: {repo_relative(str(viz_output_dir), project_root)}"
+
+
+def main(argument_list: Optional[List[str]] = None, run_command=subprocess.run) -> int:
     """Evaluate each given run and write its report.
 
     Args:
         argument_list: CLI arguments (default: sys.argv).
+        run_command: ``subprocess.run`` stand-in for the viz launch, injectable for tests.
 
     Returns:
-        Exit code: 0 success, 1 refused input.
+        Exit code: 0 success, 1 refused input (a viz failure does not change it).
     """
     arguments = build_argument_parser().parse_args(argument_list)
     project_root = find_project_root()
+    # Step 1: a rerender label names one run's folder, so it cannot be combined with several runs.
     if arguments.rerender is not None and len(arguments.run_dirs) != 1:
         print("--rerender takes exactly one run folder", file=sys.stderr)
         return 1
+    # Step 2: eval settings and the viz class filter.
     eval_config_path = arguments.eval_config or project_root / DEFAULT_EVAL_CONFIG_RELATIVE_PATH
     eval_settings = yaml.safe_load(Path(eval_config_path).read_text())["eval"]
     reports = []
+    # A misspelt class name is caught now, before the evaluation runs, not inside the viewer afterwards.
+    viz_class_names = None if arguments.viz_classes is None else [name.strip() for name in arguments.viz_classes.split(",")]
+    unknown_class_names = [name for name in (viz_class_names or []) if name not in eval_settings["scored_class_ids"]]
+    if unknown_class_names:
+        print(f"--viz-classes {unknown_class_names} are not scored classes (have {sorted(eval_settings['scored_class_ids'])})", file=sys.stderr)
+        return 1
+    # Step 3: per run, score and write the report, then draw; any refused input aborts with exit 1.
     try:
         for run_dir in arguments.run_dirs:
             # One run: score, then write json + md next to its renders.
@@ -489,7 +616,22 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             (output_dir / REPORT_JSON_NAME).write_text(json.dumps(report, indent=1, sort_keys=True))
             (output_dir / REPORT_MARKDOWN_NAME).write_text(report_markdown(report))
             print(f"wrote {output_dir / REPORT_JSON_NAME}")
+            # Visual aid, only after the metrics are safely on disk; its outcome is recorded beside them.
+            if arguments.no_viz:
+                report["viz"] = "skipped: --no-viz"
+            else:
+                report["viz"] = launch_pose_viz(run_dir, arguments.rerender, output_dir, eval_config_path,
+                                                report["settings"]["accumulation_threshold"], project_root, run_command,
+                                                arguments.viz_radius_meters, viz_class_names)
+                if report["viz"].startswith("failed"):
+                    print(f"WARNING: no pictures ({report['viz']}). Set up their environment with: "
+                          f"{VIZ_ENVIRONMENT_FIX_COMMAND}", file=sys.stderr)
+                else:
+                    print(report["viz"])
+            # Rewrite the JSON so it also carries the "viz" outcome (the first write kept the metrics safe).
+            (output_dir / REPORT_JSON_NAME).write_text(json.dumps(report, indent=1, sort_keys=True))
             reports.append(report)
+        # Step 4: print one report, or the side-by-side table for several runs.
         if len(reports) > 1:
             print(comparison_markdown(reports))
         else:
