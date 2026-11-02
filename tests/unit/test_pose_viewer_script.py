@@ -359,6 +359,68 @@ def test_a_failing_pose_is_reported_and_the_other_poses_are_still_drawn(tmp_path
 
     monkeypatch.setattr(viewer, "render_pose", fake_render_pose)
     exit_code = viewer.main(["--run", str(tmp_path / "r"), "--eval-config", str(config_path),
-                             "--output-dir", str(tmp_path / "out")])
+                             "--output-dir", str(tmp_path / "out"), "--pose", "5", "--pose", "9"])
     assert exit_code == 1 and attempted_stems == ["000005_1000", "000009_2000"]
     assert "failed 000005_1000" in capsys.readouterr().err
+
+
+def test_pooled_maps_are_the_union_over_sweeps_like_the_report():
+    """One sweep returns the trunk voxel [20,10,4], the other the neighbourhood voxel [18,10,4]. Pooled, both
+    are render voxels (1 correct, 1 incorrect) and the GT voxel is hit; each sweep alone sees only its own voxel.
+    The point count is the sum over the sweeps."""
+    viewer = load_viewer_script()
+    scene = make_voxel_scene(viewer)
+    on_trunk = lifted_sweep(np.array([[10.0, 0.0, 0.0]]))
+    beside_trunk = lifted_sweep(np.array([[9.0, 0.0, 0.0]]))
+    scene.sweeps = {"a": on_trunk, "b": beside_trunk}
+    pooled = viewer.pooled_voxel_maps([on_trunk, beside_trunk], scene, [TRUNK_CLASS_ID], False, 25.0)
+    assert pooled["gt_hit"].shape[0] == 1 and pooled["render_correct"].shape[0] == 1
+    assert pooled["render_incorrect"].shape[0] == 1 and pooled["point_count"] == 2 and pooled["sweep_count"] == 2
+    assert pooled["totals"] == {"gt_hit": 1, "gt_miss": GROUND_TRUTH_VOXEL_COUNT - 1, "render_correct": 1, "render_incorrect": 1}
+    alone = viewer.pooled_voxel_maps([beside_trunk], scene, [TRUNK_CLASS_ID], False, 25.0)
+    assert alone["gt_hit"].shape[0] == 0 and alone["render_incorrect"].shape[0] == 1
+
+
+def test_pooled_maps_never_mix_point_sets():
+    """If any pooled sweep lacks the ungated set, all sweeps use the gated one (and the caption says so)."""
+    viewer = load_viewer_script()
+    scene = make_voxel_scene(viewer)
+    with_ungated = lifted_sweep(np.array([[10.0, 0.0, 0.0]]))
+    without_ungated = lifted_sweep(None)
+    scene.sweeps = {"a": with_ungated, "b": without_ungated}
+    maps = viewer.pooled_voxel_maps([with_ungated, without_ungated], scene, [TRUNK_CLASS_ID], False, 25.0)
+    assert maps["point_set"] == "gated" and maps["point_count"] == 2
+
+
+def test_caption_counts_the_whole_region_not_only_the_drawn_radius():
+    """Radius 9.5 m leaves only the incorrect voxel drawn, but recall/precision still count every voxel."""
+    viewer = load_viewer_script()
+    scene = make_voxel_scene(viewer)
+    sweep = lifted_sweep(np.array([[10.0, 0.0, 0.0], [9.0, 0.0, 0.0]]))
+    maps = viewer.sweep_voxel_maps(sweep, scene, [TRUNK_CLASS_ID], False, 9.5)
+    assert maps["gt_hit"].shape[0] == 0
+    assert "recall 0.06: 1 of 16" in viewer.map_caption("recall", maps)
+    assert "precision 0.50: 1 of 2" in viewer.map_caption("precision", maps)
+
+
+def test_within_radius_of_any_is_the_union_of_discs():
+    """A point is kept if it is within the radius of at least one centre."""
+    viewer = load_viewer_script()
+    points = np.array([[1.0, 0.0, 0.0], [11.0, 0.0, 0.0], [30.0, 0.0, 0.0]])
+    centres = np.array([[0.0, 0.0], [10.0, 0.0]])
+    np.testing.assert_array_equal(viewer.within_radius_of_any(points, centres, 2.0), [True, True, False])
+
+
+def test_main_draws_the_pooled_maps_by_default_and_refuses_points_without_a_pose(tmp_path, monkeypatch, capsys):
+    """No --pose: one render_pose call with the pooled stem. --show-points needs a single sweep: refused."""
+    viewer = load_viewer_script()
+    scene = make_scene(viewer, ["000005_1000", "000009_2000"])
+    monkeypatch.setattr(viewer, "load_run_scene", lambda *arguments: scene)
+    config_path = tmp_path / "eval.yaml"
+    config_path.write_text("eval: {render_accumulation_threshold: 0.5, viz_radius_meters: 25.0, scored_class_ids: {tree_trunk: 1}}\n")
+    drawn_stems = []
+    monkeypatch.setattr(viewer, "render_pose", lambda scenes, stem, *remaining: drawn_stems.append(stem))
+    base = ["--run", str(tmp_path / "r"), "--eval-config", str(config_path), "--output-dir", str(tmp_path / "out")]
+    assert viewer.main(base) == 0 and drawn_stems == [viewer.POOLED_STEM]
+    for points_flag in ("--show-points", "--all-points"):
+        assert viewer.main(base + [points_flag]) == 1 and "give --pose" in capsys.readouterr().err

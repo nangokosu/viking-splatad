@@ -146,3 +146,23 @@ def test_voxel_maps_of_each_smoke_sweep_match_an_independent_count():
         assert render_total == len(occupied_in_region) > 0, stem
         assert maps["gt_hit"].shape[0] + maps["gt_miss"].shape[0] == gt_in_region > 0, stem
         assert maps["point_count"] == sweep.ungated_points.shape[0], stem
+
+
+def test_pooled_maps_reproduce_the_reports_voxel_counts_per_class():
+    """The pooled maps of one class are the report's cells: TP/FP/FN of semantic_occupancy.json's ungated voxel
+    metrics equal hit GT voxels / incorrect render voxels / missed GT voxels of the same class. Recomputed
+    here by the eval script's own pooling (scripts/13 evaluate_run), not copied from the saved report."""
+    viewer = load_viewer_script()
+    eval_script = viewer.load_eval_script()
+    eval_settings = yaml.safe_load((PROJECT_ROOT / "configs" / "eval.yaml").read_text())["eval"]
+    run_dir = smoke_run_dirs[-1]
+    scene = viewer.load_run_scene(run_dir, None, eval_settings, accumulation_threshold(), PROJECT_ROOT)
+    _, report = eval_script.evaluate_run(run_dir, None, eval_settings, None, PROJECT_ROOT)
+    for class_name, class_id in dict(eval_settings["scored_class_ids"]).items():
+        voxel = report["point_sets"]["ungated"]["classes"][class_name]["voxel"]
+        maps = viewer.pooled_voxel_maps(list(scene.sweeps.values()), scene, [class_id], False, 1e6)
+        assert maps["totals"]["gt_hit"] == voxel["true_positives"], class_name
+        assert maps["totals"]["gt_miss"] == voxel["false_negatives"], class_name
+        # With one class selected, incorrect = occupied in the neighbourhood and not this class's GT (the report's FP).
+        assert maps["totals"]["render_incorrect"] == voxel["false_positives"], class_name
+    assert voxel is not None and maps["sweep_count"] == len(smoke_sweep_paths)

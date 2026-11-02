@@ -1,19 +1,24 @@
-"""Draw one lidar pose of a run as three occupancy-voxel maps against the GT with PyVista (visual aid of scripts/13).
+"""Draw a run's test sweeps as three occupancy-voxel maps against the GT with PyVista (visual aid of scripts/13).
 
-For each chosen test pose and run, three PNGs ``<stem>_overlay.png``, ``<stem>_recall.png`` and
-``<stem>_precision.png`` show, in the map frame within ``--radius-meters`` (horizontal) of that
-sweep's lidar, voxels of the selected classes:
+By default the sweeps are POOLED exactly as the report pools them: one occupied-voxel grid over all
+test sweeps, one scoring neighbourhood, so for a single drawn class the recall and precision in the
+captions are the report's voxel recall and precision. With several classes the captions count the union of
+their cells, not the per-class report values. ``--pose`` draws single sweeps instead.
+For each run, three PNGs ``pooled_overlay.png``, ``pooled_recall.png`` and ``pooled_precision.png``
+(or ``<stem>_<map>.png`` per ``--pose``) show, in the map frame within ``--radius-meters``
+(horizontal) of a test lidar position (of any pooled sweep), voxels of the selected classes:
     - overlay: GT voxels grey and render voxels light blue (translucent, so the GT always shows);
     - recall: only the GT voxels; green where the render also occupies the voxel (hit), grey if missed;
     - precision: only the render voxels; green on a GT voxel of a selected class, red off every one.
 Dark wireframes mark the scored GT cuboids. The render voxels come from the run's own rendered
-test-split lidar returns (ungated, the set the metric binds to, unless ``--gated``), one sweep per
-pose, and are limited to the metric's scoring neighbourhood: each box grown horizontally by its class
-margin, within the sweep's range and vertical FOV (``visible_neighbourhood_mask``). The grid, classes and
-cells are those of the voxel IoU / precision / recall in scripts/13 evaluated for this one sweep,
-unioned over the selected classes (the report pools all test sweeps, so a single pose's counts
-illustrate it and are not its numbers). ``--classes`` filters which scored classes are drawn.
-``--show-points`` adds the rendered and real returns to the overlay. Several ``--run`` folders give
+test-split lidar returns (ungated, the set the metric binds to, unless ``--gated``), pooled over the
+drawn sweeps (all of them, or the ``--pose`` ones), and are limited to the metric's scoring neighbourhood: each box grown horizontally by its class
+margin, within the range and vertical FOV of the pooled sweeps (``visible_neighbourhood_mask``). The
+cells are those of the voxel IoU / precision / recall in scripts/13, unioned over the selected classes;
+the caption counts are over the whole scored region, the drawing is cut to the radius. A ``--pose`` map
+is the same computation for one sweep and illustrates the report without being its numbers.
+``--classes`` filters which scored classes are drawn.
+``--show-points`` (with ``--pose``) adds the rendered and real returns to the overlay. Several ``--run`` folders give
 side-by-side panels with linked cameras (e.g. B and R of one session).
 
 Everything is derived as scripts/13 derives it, through the same functions: the run's split record,
@@ -75,6 +80,8 @@ from viking_splatad.viz.pyvista_scene import (
 )
 from viking_splatad.viz.viewer_export import sweep_points_to_map
 
+# File-name stem of the pooled maps (all test sweeps in one grid, as the report pools them).
+POOLED_STEM = "pooled"
 EVAL_SCRIPT_PATH = Path(__file__).resolve().parent / "13_eval_semantic_occupancy.py"
 DEFAULT_EVAL_CONFIG_RELATIVE_PATH = Path("configs") / "eval.yaml"
 # Camera choices: the default oblique 3D view, or straight down (map x-y plane).
@@ -136,20 +143,20 @@ def build_argument_parser() -> argparse.ArgumentParser:
                         help="fetched run folder (runs/<run_id>); repeat for side-by-side panels")
     parser.add_argument("--rerender", default=None, help="draw rerenders/<label> of the (single) run instead")
     parser.add_argument("--pose", action="append", default=None,
-                        help="sweep stem or frame index to draw (repeatable); default: every scored sweep")
+                        help="draw this single sweep (stem or frame index, repeatable) instead of the pooled maps")
     parser.add_argument("--radius-meters", type=float, default=None,
-                        help="horizontal radius around each sweep's lidar to draw (default: eval.viz_radius_meters)")
+                        help="horizontal radius around the test lidar positions to draw (default: eval.viz_radius_meters)")
     parser.add_argument("--classes", default=None,
                         help="comma-separated scored class names to draw (default: eval.viz_classes, else all scored)")
     parser.add_argument("--view", choices=VIEW_CHOICES, default=VIEW_CHOICES[0],
                         help="camera: oblique 3D or straight down (default: oblique)")
     parser.add_argument("--show-points", action="store_true",
-                        help="also draw the real (grey) and rendered (red inside a cuboid, blue otherwise) returns on the overlay")
+                        help="with --pose: also draw the real (grey) and rendered (red inside a cuboid, blue otherwise) returns on the overlay")
     parser.add_argument("--all-points", action="store_true",
                         help="with --show-points: draw every point in the radius, not only the scored neighbourhood")
     parser.add_argument("--gated", action="store_true",
                         help="use the ray-drop-gated points instead of the ungated set the metric binds to")
-    parser.add_argument("--output-dir", type=Path, default=None, help="write <stem>_<map>.png here; default: interactive window")
+    parser.add_argument("--output-dir", type=Path, default=None, help="write <pooled|stem>_<map>.png here; default: interactive window")
     parser.add_argument("--eval-config", type=Path, default=None, help="default: configs/eval.yaml")
     parser.add_argument("--accumulation-threshold", type=float, default=None,
                         help="override eval.render_accumulation_threshold (scripts/13 passes the value it used)")
@@ -304,6 +311,23 @@ def within_radius(points_xyz: np.ndarray, centre_xy: np.ndarray, radius_meters: 
     return np.linalg.norm(np.asarray(points_xyz)[:, :2] - np.asarray(centre_xy), axis=1) <= radius_meters
 
 
+def within_radius_of_any(points_xyz: np.ndarray, centres_xy: np.ndarray, radius_meters: float) -> np.ndarray:
+    """Which points lie within a horizontal radius of at least one centre (height ignored).
+
+    Args:
+        points_xyz: (N, 3) map-frame points.
+        centres_xy: (K, 2) map-frame centres, e.g. the lidar positions of the pooled sweeps.
+        radius_meters: Radius (m), inclusive.
+
+    Returns:
+        (N,) bool: the union of the K discs.
+    """
+    near_any = np.zeros(np.asarray(points_xyz).shape[0], dtype=bool)
+    for centre_xy in np.atleast_2d(centres_xy):
+        near_any |= within_radius(points_xyz, centre_xy, radius_meters)
+    return near_any
+
+
 def resolve_selected_class_ids(eval_settings: Dict[str, Any], requested_names: Optional[Sequence[str]]) -> Dict[int, str]:
     """The scored classes to draw, by id.
 
@@ -330,56 +354,89 @@ def resolve_selected_class_ids(eval_settings: Dict[str, Any], requested_names: O
     return {scored_ids_by_name[name]: name for name in chosen_names}
 
 
+def pooled_voxel_maps(sweeps: Sequence[RenderedSweep], scene: RunScene, selected_class_ids: Sequence[int],
+                      use_gated: bool, radius_meters: float) -> Dict[str, Any]:
+    """The GT and render voxels of one or several pooled sweeps for the three maps (map-frame voxel centres).
+
+    Pooling is the report's (scripts/13 ``pooled_map_points``): every sweep's points go to the map frame
+    and onto the GT grid, and a voxel is occupied when any sweep put a point in it. Per selected class,
+    inside its scoring neighbourhood (for a subset of the run's sweeps, the part those poses see):
+    GT voxels = the class's GT, hit when the render occupies it (recall), missed otherwise; render
+    voxels = occupied voxels, correct when on a GT voxel of the class (precision), incorrect
+    otherwise. These are the cells ``neighbourhood_voxel_metrics`` counts, unioned over the selected
+    classes; a voxel correct for one class and incorrect for another (overlapping neighbourhoods) is
+    drawn as correct.
+
+    Args:
+        sweeps: Rendered test sweeps of this run (their own returned points only).
+        scene: The run's scene (grid, GT classes, class neighbourhoods).
+        selected_class_ids: Scored class ids to include.
+        use_gated: Use the gated point set.
+        radius_meters: Horizontal radius around any of the sweeps' lidar positions to keep.
+
+    Returns:
+        {"gt_hit" / "gt_miss" / "render_correct" / "render_incorrect": (V, 3) voxel centres within the
+        radius, "totals": the same four names -> voxel counts over the whole scored region (what the
+        report counts), "point_set": name, "point_count": returned points voxelised, "sweep_count": int}.
+    """
+    # Step 1: one point set for all sweeps (ungated unless gated is asked for or any sweep lacks it, so sweeps never mix sets).
+    point_set = "gated" if use_gated or any(sweep.ungated_points is None for sweep in sweeps) else "ungated"
+    grid_shape = scene.ground_truth_class_ids.shape
+    # Step 2: pooled occupied voxels on the GT grid (T68), outside-grid points dropped as in the report.
+    voxel_indices, inside_masks, point_count = [], [], 0
+    for sweep in sweeps:
+        lidar_points = sweep.gated_points if point_set == "gated" else sweep.ungated_points
+        point_count += int(lidar_points.shape[0])
+        _, sweep_indices, sweep_inside = points_to_map_voxels(
+            lidar_points, sweep.lidar_to_map, scene.grid_origin, scene.voxel_size, grid_shape)
+        voxel_indices.append(sweep_indices)
+        inside_masks.append(sweep_inside)
+    occupied = occupied_voxel_grid(np.concatenate(voxel_indices), np.concatenate(inside_masks), grid_shape)
+    # Step 3: per class, GT and rendered voxels inside the neighbourhood. The run's neighbourhood already is the
+    # union over all its poses, so it is restricted again only when fewer sweeps are drawn.
+    draws_all_sweeps = {id(sweep) for sweep in sweeps} == {id(sweep) for sweep in scene.sweeps.values()}
+    ground_truth_mask = np.zeros(grid_shape, dtype=bool)
+    correct_mask = np.zeros(grid_shape, dtype=bool)
+    incorrect_mask = np.zeros(grid_shape, dtype=bool)
+    for class_id in selected_class_ids:
+        region = scene.class_neighbourhoods[class_id]
+        if not draws_all_sweeps:
+            region = restrict_mask_to_visible(region, scene.grid_origin, scene.voxel_size,
+                                              [sweep.lidar_to_map for sweep in sweeps], scene.max_range,
+                                              scene.vertical_half_fov)
+        class_ground_truth = (scene.ground_truth_class_ids == class_id) & region
+        ground_truth_mask |= class_ground_truth
+        correct_mask |= occupied & class_ground_truth
+        incorrect_mask |= occupied & region & ~class_ground_truth
+    # Step 4: one colour per voxel: correct beats incorrect; the hit GT voxels are the correct render voxels.
+    incorrect_mask &= ~correct_mask
+    voxel_masks = {"gt_hit": ground_truth_mask & occupied, "gt_miss": ground_truth_mask & ~occupied,
+                   "render_correct": correct_mask, "render_incorrect": incorrect_mask}
+    # Step 5: voxel centres within the radius of any lidar position; the totals keep the uncut counts.
+    lidar_positions_xy = np.array([sweep.lidar_to_map[:2, 3] for sweep in sweeps])
+    maps: Dict[str, Any] = {"point_set": point_set, "point_count": point_count, "sweep_count": len(sweeps), "totals": {}}
+    for map_name, voxel_mask in voxel_masks.items():
+        centres = voxel_centers(np.argwhere(voxel_mask), scene.grid_origin, scene.voxel_size)
+        maps["totals"][map_name] = int(centres.shape[0])
+        maps[map_name] = centres[within_radius_of_any(centres, lidar_positions_xy, radius_meters)]
+    return maps
+
+
 def sweep_voxel_maps(sweep: RenderedSweep, scene: RunScene, selected_class_ids: Sequence[int], use_gated: bool,
                      radius_meters: float) -> Dict[str, Any]:
-    """The GT and render voxels of one sweep for the three maps, as map-frame voxel centres within a radius.
-
-    Per selected class, inside the part of its scoring neighbourhood this pose can see:
-    GT voxels = the class's GT, a GT voxel is hit when the render occupies it (recall) and missed
-    otherwise; render voxels = occupied voxels, correct when on a GT voxel of the class (precision)
-    and incorrect otherwise. These are the cells ``neighbourhood_voxel_metrics`` counts, for one
-    sweep and unioned over the selected classes; a voxel that is correct for one class and incorrect
-    for another (overlapping neighbourhoods) is drawn as correct.
+    """The voxel maps of one sweep (``pooled_voxel_maps`` of a single sweep).
 
     Args:
         sweep: Rendered test sweep (its own returned points only).
-        scene: The run's scene (grid, GT classes, class neighbourhoods).
+        scene: The run's scene.
         selected_class_ids: Scored class ids to include.
         use_gated: Use the gated point set.
         radius_meters: Horizontal radius around the sweep's lidar to keep.
 
     Returns:
-        {"gt_hit" / "gt_miss" / "render_correct" / "render_incorrect": (V, 3) voxel centres,
-        "point_set": name, "point_count": number of returned points voxelised}.
+        See ``pooled_voxel_maps``.
     """
-    # Step 1: this sweep's occupied voxels on the GT grid (T68).
-    rendered_lidar_points, point_set = rendered_point_set(sweep, use_gated)
-    grid_shape = scene.ground_truth_class_ids.shape
-    _, voxel_indices, inside_grid = points_to_map_voxels(
-        rendered_lidar_points, sweep.lidar_to_map, scene.grid_origin, scene.voxel_size, grid_shape)
-    occupied = occupied_voxel_grid(voxel_indices, inside_grid, grid_shape)
-    # Step 2: per class, GT and rendered voxels inside the neighbourhood this pose can see.
-    ground_truth_mask = np.zeros(grid_shape, dtype=bool)
-    correct_mask = np.zeros(grid_shape, dtype=bool)
-    incorrect_mask = np.zeros(grid_shape, dtype=bool)
-    for class_id in selected_class_ids:
-        sweep_region = restrict_mask_to_visible(scene.class_neighbourhoods[class_id], scene.grid_origin, scene.voxel_size,
-                                                [sweep.lidar_to_map], scene.max_range, scene.vertical_half_fov)
-        class_ground_truth = (scene.ground_truth_class_ids == class_id) & sweep_region
-        ground_truth_mask |= class_ground_truth
-        correct_mask |= occupied & class_ground_truth
-        incorrect_mask |= occupied & sweep_region & ~class_ground_truth
-    # Step 3: one colour per voxel: correct beats incorrect; the hit GT voxels are the correct render voxels.
-    incorrect_mask &= ~correct_mask
-    voxel_masks = {"gt_hit": ground_truth_mask & occupied, "gt_miss": ground_truth_mask & ~occupied,
-                   "render_correct": correct_mask, "render_incorrect": incorrect_mask}
-    # Step 4: voxel centres within the radius of the lidar position.
-    lidar_position_xy = sweep.lidar_to_map[:2, 3]
-    maps: Dict[str, Any] = {"point_set": point_set, "point_count": int(rendered_lidar_points.shape[0])}
-    for map_name, voxel_mask in voxel_masks.items():
-        centres = voxel_centers(np.argwhere(voxel_mask), scene.grid_origin, scene.voxel_size)
-        maps[map_name] = centres[within_radius(centres, lidar_position_xy, radius_meters)]
-    return maps
+    return pooled_voxel_maps([sweep], scene, selected_class_ids, use_gated, radius_meters)
 
 
 def panel_arrays(sweep: RenderedSweep, scored_cuboids: Sequence[Cuboid], use_gated: bool,
@@ -423,7 +480,7 @@ def map_layers(map_name: str, maps: Dict[str, Any]) -> List[Tuple[np.ndarray, Tu
 
     Args:
         map_name: One of ``MAP_NAMES``.
-        maps: ``sweep_voxel_maps`` result.
+        maps: ``pooled_voxel_maps`` result.
 
     Returns:
         Overlay: all GT voxels grey (opaque-ish) under all render voxels light blue (translucent).
@@ -447,13 +504,15 @@ def map_caption(map_name: str, maps: Dict[str, Any]) -> str:
 
     Args:
         map_name: One of ``MAP_NAMES``.
-        maps: ``sweep_voxel_maps`` result.
+        maps: ``pooled_voxel_maps`` result.
 
     Returns:
         Overlay: GT and render voxel counts. Recall: hit / GT voxels. Precision: correct / render voxels.
     """
-    gt_hits, gt_misses = int(maps["gt_hit"].shape[0]), int(maps["gt_miss"].shape[0])
-    correct, incorrect = int(maps["render_correct"].shape[0]), int(maps["render_incorrect"].shape[0])
+    # Whole-region counts (what the report counts), not only the drawn part within the radius.
+    totals = maps["totals"]
+    gt_hits, gt_misses = totals["gt_hit"], totals["gt_miss"]
+    correct, incorrect = totals["render_correct"], totals["render_incorrect"]
     if map_name == "overlay":
         return f"{gt_hits + gt_misses} GT voxels (grey), {correct + incorrect} render voxels (light blue)"
     if map_name == "recall":
@@ -500,9 +559,9 @@ def draw_voxels(plotter, pyvista_module, centres: np.ndarray, voxel_size: float,
 
 
 def draw_panel(plotter, pyvista_module, column: int, map_name: str, scene: RunScene, selected_class_ids: Sequence[int],
-               stem: str, maps: Dict[str, Any], radius_meters: float, lidar_position_xy: np.ndarray,
+               stem: str, maps: Dict[str, Any], radius_meters: float, lidar_positions_xy: np.ndarray,
                point_arrays: Optional[Dict[str, Any]]) -> None:
-    """Draw one run's panel of one map of one pose.
+    """Draw one run's panel of one map, for the pooled sweeps or for one pose.
 
     Args:
         plotter: ``pyvista.Plotter`` with one row of panels.
@@ -511,10 +570,10 @@ def draw_panel(plotter, pyvista_module, column: int, map_name: str, scene: RunSc
         map_name: One of ``MAP_NAMES``.
         scene: The run's scene.
         selected_class_ids: Classes drawn (the wireframes follow the same filter).
-        stem: Sweep stem.
-        maps: ``sweep_voxel_maps`` result.
-        radius_meters: Horizontal radius drawn around the lidar.
-        lidar_position_xy: (2,) map-frame lidar position of this sweep.
+        stem: Sweep stem, or ``pooled``.
+        maps: ``pooled_voxel_maps`` result.
+        radius_meters: Horizontal radius drawn around the lidar positions.
+        lidar_positions_xy: (K, 2) map-frame lidar positions of the drawn sweeps.
         point_arrays: ``panel_arrays`` result for the optional point overlay (overlay map only), or None.
     """
     plotter.subplot(0, column)
@@ -523,7 +582,7 @@ def draw_panel(plotter, pyvista_module, column: int, map_name: str, scene: RunSc
         draw_voxels(plotter, pyvista_module, centres, scene.voxel_size, colour_rgb, opacity)
     # Step 2: the selected classes' scored cuboids within the radius, as thin dark wireframes for orientation.
     selected_cuboids = [cuboid for cuboid in scene.scored_cuboids if cuboid.class_id in selected_class_ids]
-    nearby_cuboids = [cuboid for cuboid, nearby in zip(selected_cuboids, within_radius(cuboid_centers(selected_cuboids), lidar_position_xy, radius_meters))
+    nearby_cuboids = [cuboid for cuboid, nearby in zip(selected_cuboids, within_radius_of_any(cuboid_centers(selected_cuboids), lidar_positions_xy, radius_meters))
                       if nearby] if selected_cuboids else []
     corner_points, line_cells = cuboid_wireframe_arrays(nearby_cuboids)
     if corner_points.shape[0]:
@@ -531,8 +590,8 @@ def draw_panel(plotter, pyvista_module, column: int, map_name: str, scene: RunSc
                          color=np.array(CUBOID_WIREFRAME_RGB) / 255.0, line_width=WIREFRAME_LINE_WIDTH)
     # Step 3: optional returns, kept to the radius so they cannot stretch the camera.
     if point_arrays is not None:
-        real_points = point_arrays["real"][within_radius(point_arrays["real"], lidar_position_xy, radius_meters)]
-        near_rendered = within_radius(point_arrays["rendered"], lidar_position_xy, radius_meters)
+        real_points = point_arrays["real"][within_radius_of_any(point_arrays["real"], lidar_positions_xy, radius_meters)]
+        near_rendered = within_radius_of_any(point_arrays["rendered"], lidar_positions_xy, radius_meters)
         if real_points.shape[0]:
             plotter.add_mesh(pyvista_module.PolyData(real_points), color=np.array(REAL_POINT_RGB) / 255.0,
                              point_size=REAL_POINT_SIZE, opacity=REAL_POINT_OPACITY)
@@ -542,53 +601,58 @@ def draw_panel(plotter, pyvista_module, column: int, map_name: str, scene: RunSc
             plotter.add_mesh(rendered_cloud, scalars="colors", rgb=True, point_size=RENDERED_POINT_SIZE)
     # Step 4: caption on short lines (8 pt, about 6 px a character) so it fits an 800 px panel.
     class_names = ", ".join(scene.class_names[class_id] for class_id in selected_class_ids)
-    plotter.add_text(f"{scene.run_id}\n{stem}: {maps['point_count']} returned points ({maps['point_set']}), "
-                     f"within {radius_meters:g} m\nclasses: {class_names}\n{map_caption(map_name, maps)}", font_size=8)
+    plotter.add_text(f"{scene.run_id}\n{stem}: {maps['sweep_count']} test sweep(s), {maps['point_count']} returned points "
+                     f"({maps['point_set']}), drawn within {radius_meters:g} m of a lidar\nclasses: {class_names}\n{map_caption(map_name, maps)}", font_size=8)
 
 
 def render_pose(scenes: Sequence[RunScene], stem: str, selected_class_ids: Sequence[int], use_gated: bool,
                 output_dir: Optional[Path], radius_meters: float, view: str = VIEW_CHOICES[0],
                 show_points: bool = False, crop_points_to_neighbourhood: bool = True) -> None:
-    """Draw the three maps of one pose of every run side by side, to PNGs or interactive windows.
+    """Draw the three maps of every run side by side, for one pose or for all pooled sweeps, to PNGs or windows.
 
     Args:
         scenes: One scene per run.
-        stem: Sweep stem (present in every scene).
+        stem: Sweep stem (present in every scene), or ``POOLED_STEM`` for all sweeps of each run pooled.
         selected_class_ids: Scored class ids to draw.
         use_gated: Use the gated point set.
-        output_dir: Folder for ``<stem>_<map>.png``, or None for an interactive window per map.
-        radius_meters: Horizontal radius around each sweep's lidar to draw.
+        output_dir: Folder for ``<stem>_<map>.png`` (``pooled_<map>.png``), or None for an interactive window per map.
+        radius_meters: Horizontal radius around any drawn sweep's lidar position to draw.
         view: ``oblique`` or ``top``.
-        show_points: Also draw the real and rendered returns (overlay map only).
+        show_points: Also draw the real and rendered returns (overlay map, single pose only).
         crop_points_to_neighbourhood: With ``show_points``, only points in the scored neighbourhood.
     """
     # PyVista (VTK) is imported here so the module loads in environments without it (tests).
     import pyvista
 
     # Step 1: each run's voxels, once; the three maps are different views of the same arrays.
-    run_maps = [sweep_voxel_maps(scene.sweeps[stem], scene, selected_class_ids, use_gated, radius_meters) for scene in scenes]
+    is_pooled = stem == POOLED_STEM
+    run_sweeps = [list(scene.sweeps.values()) if is_pooled else [scene.sweeps[stem]] for scene in scenes]
+    run_maps = [pooled_voxel_maps(sweeps, scene, selected_class_ids, use_gated, radius_meters)
+                for scene, sweeps in zip(scenes, run_sweeps)]
     for map_name in MAP_NAMES:
         plotter = pyvista.Plotter(shape=(1, len(scenes)), off_screen=output_dir is not None,
                                   window_size=(PANEL_PIXELS * len(scenes), PANEL_PIXELS))
         # The window is closed even when drawing fails, so one bad map cannot leak it.
         try:
-            for column, (scene, maps) in enumerate(zip(scenes, run_maps)):
-                sweep = scene.sweeps[stem]
+            for column, (scene, sweeps, maps) in enumerate(zip(scenes, run_sweeps, run_maps)):
                 point_arrays = None
-                if show_points and map_name == "overlay":
+                if show_points and map_name == "overlay" and not is_pooled:
                     # Cropping to an empty neighbourhood would blank the points, so with no scored box keep them all.
                     # The points follow the class filter too: only the selected classes' boxes crop and colour them.
                     selected_scored = [box for box in scene.scored_cuboids if box.class_id in selected_class_ids]
                     selected_grown = [box for box in scene.neighbourhood_cuboids if box.class_id in selected_class_ids]
                     neighbourhood = selected_grown if (crop_points_to_neighbourhood and selected_grown) else None
-                    point_arrays = panel_arrays(sweep, selected_scored, use_gated, neighbourhood)
+                    point_arrays = panel_arrays(sweeps[0], selected_scored, use_gated, neighbourhood)
                 draw_panel(plotter, pyvista, column, map_name, scene, selected_class_ids, stem, maps, radius_meters,
-                           sweep.lidar_to_map[:2, 3], point_arrays)
+                           np.array([sweep.lidar_to_map[:2, 3] for sweep in sweeps]), point_arrays)
                 if view == "top":
                     plotter.view_xy()
             # Translucent voxels over opaque ones (render over GT, red over green) need depth peeling to composite in the right order.
+            # Peeling is a per-renderer setting, so every run's panel gets it, not only the last active one.
             if map_name in ("overlay", "precision"):
-                plotter.enable_depth_peeling()
+                for column in range(len(scenes)):
+                    plotter.subplot(0, column)
+                    plotter.enable_depth_peeling()
             # One shared camera, so the runs are compared from the same viewpoint.
             plotter.link_views()
             if output_dir is None:
@@ -602,7 +666,7 @@ def render_pose(scenes: Sequence[RunScene], stem: str, selected_class_ids: Seque
 
 
 def main(argument_list: Optional[List[str]] = None) -> int:
-    """Draw the chosen poses of the given runs.
+    """Draw the pooled maps (no ``--pose``) or the chosen poses of the given runs.
 
     Args:
         argument_list: CLI arguments (default: sys.argv).
@@ -635,11 +699,17 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         scenes = [load_run_scene(run_dir, arguments.rerender, eval_settings, accumulation_threshold, project_root)
                   for run_dir in arguments.run_dirs]
         check_scenes_comparable(scenes)
-        stems = select_pose_stems(scenes, arguments.pose)
+        # No --pose: the pooled maps the report is computed on. The raw points exist per sweep only.
+        if arguments.pose is None:
+            if arguments.show_points or arguments.all_points:
+                raise ValueError("--show-points / --all-points draw one sweep's returns: give --pose")
+            stems = [POOLED_STEM]
+        else:
+            stems = select_pose_stems(scenes, arguments.pose)
     except (ValueError, OSError, KeyError, TypeError, yaml.YAMLError) as error:
         print(f"refused: {error!r}" if isinstance(error, KeyError) else f"refused: {error}", file=sys.stderr)
         return 1
-    # Step 4: one picture per pose (PNG in --output-dir, or an interactive window). A failing pose is
+    # Step 4: one picture set per stem (the pooled maps or each --pose; PNG in --output-dir, or an interactive window). A failing pose is
     # reported and the others still drawn; the exit code is 1 if any failed (missing pyvista, no OpenGL, ...).
     failed_stems = []
     try:

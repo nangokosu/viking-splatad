@@ -130,7 +130,7 @@ def viz_command(
         eval_config_path: configs/eval.yaml the evaluation used.
         accumulation_threshold: T67 threshold the evaluation used (so the points match).
         rerender_label: ``rerenders/<label>`` of the (single) run, or None.
-        radius_meters: Horizontal radius around each sweep to draw, or None for the config value.
+        radius_meters: Horizontal radius around the test lidar positions to draw, or None for the config value.
         class_names: Scored class names to draw, or None for the config value (all scored classes).
 
     Returns:

@@ -18,7 +18,7 @@ whose lidar renders exist. Everything else is derived from the run's own records
     6. Writes ``<eval root>/eval/semantic_occupancy.{json,md}``. With several runs, also prints a
        side-by-side table, refused unless all runs share one session (no May <-> June mixing).
     7. Visual aid: after the report is safely written, launches scripts/15 (PyVista, isolated viz/
-       environment) to draw each scored pose with its cuboids into ``<eval root>/eval/viz/``. A
+       environment) to draw the pooled voxel maps (overlay, recall, precision) into ``<eval root>/eval/viz/``. A
        failure there is reported and recorded as ``viz`` in the JSON, never changes the metrics or
        the exit code. ``--no-viz`` skips it.
 
