@@ -1,0 +1,22 @@
+{
+  "deselected_by_marker": {
+    "count": 8,
+    "nodeids": [
+      "tests/integration/test_align_report.py::test_real_may_dataset_alignment_report",
+      "tests/integration/test_fetch_chunk.py::test_real_zenodo_listing_and_header",
+      "tests/integration/test_pipeline_real.py::test_real_may_chunk0_first_seconds",
+      "tests/unit/test_pyvista_scene.py::test_every_real_cuboid_wireframe_has_its_own_edge_lengths",
+      "tests/unit/test_pyvista_scene.py::test_neighbourhood_crop_keeps_exactly_the_points_in_the_grown_boxes",
+      "tests/unit/test_pyvista_scene.py::test_pooled_maps_reproduce_the_reports_voxel_counts_per_class",
+      "tests/unit/test_pyvista_scene.py::test_smoke_sweeps_colour_exactly_the_points_inside_the_cuboids",
+      "tests/unit/test_pyvista_scene.py::test_voxel_maps_of_each_smoke_sweep_match_an_independent_count"
+    ]
+  },
+  "skipped": [
+    {
+      "nodeid": "tests/test_traceability.py::test_all_planned_transforms_implemented",
+      "reason_regex": "^0 transforms pending"
+    }
+  ],
+  "xfailed": []
+}
