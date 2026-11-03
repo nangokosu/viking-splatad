@@ -3,6 +3,7 @@
 These checks are not plan transforms (no ``@transform``); they gate hand-off to the GPU box.
 """
 
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List
@@ -33,6 +34,11 @@ AZIMUTH_INTEGER_RTOL = 1e-9
 # Allowed | ||d|| - 1 | of a stored no-return direction. Rounding each float32 component changes it
 # by a relative factor within eps/2, so the norm moves by at most eps/2; eps leaves a factor-2 margin.
 NO_RETURN_UNIT_NORM_TOLERANCE = float(np.finfo(np.float32).eps)
+# Allowed deviation of a pose rotation block from SO(3) (R R^T = I and det R = +1). SplatAD casts the
+# 3x4 pose block to float32; a rotation built from float32-accurate data has orthonormality residuals
+# of a few eps, so sqrt(eps) (~3.5e-4, i.e. well under 0.1 degree of skew) accepts round-off while
+# rejecting scaled, reflected or sheared blocks, whose residuals are O(0.1) to O(1).
+ROTATION_ORTHONORMAL_TOLERANCE = float(np.sqrt(np.finfo(np.float32).eps))
 # World up axis required by SplatAD (z-up).
 Z_UP = np.array([0.0, 0.0, 1.0])
 
@@ -128,7 +134,8 @@ def check_poses(dataset: IntermediateDataset) -> CheckResult:
     """Poses are [N,4,4] with N>=2, finite, rigid last row, finite after float32 cast.
 
     Enforces SplatAD's pose requirement: it consumes a float32 3x4 world-from-sensor
-    block per frame and needs at least two poses per sensor to interpolate motion.
+    block per frame and needs at least two poses per sensor to interpolate motion. The
+    rotation block must also be a proper rotation (orthonormal, det +1).
 
     Args:
         dataset: Loaded intermediate dataset; ``streams`` maps sensor name to a stream
@@ -155,6 +162,14 @@ def check_poses(dataset: IntermediateDataset) -> CheckResult:
         # Step 4: the last row of a homogeneous rigid transform is [0, 0, 0, 1] by definition.
         elif not np.allclose(poses[:, 3, :], [0.0, 0.0, 0.0, 1.0]):
             problems.append(f"{name}: last pose row is not [0,0,0,1]")
+        # Step 5: rotation block in SO(3), tested only on finite poses (non-finite is already reported).
+        # Orthonormal: R R^T = I per pose (rejects scale and shear); det R = +1 (rejects reflection).
+        if np.isfinite(poses).all():
+            rotations = poses[:, :3, :3].astype(np.float64)
+            gram_residual = np.abs(rotations @ rotations.transpose(0, 2, 1) - np.eye(3)).max(initial=0.0)
+            determinant_residual = np.abs(np.linalg.det(rotations) - 1.0).max(initial=0.0)
+            if max(gram_residual, determinant_residual) > ROTATION_ORTHONORMAL_TOLERANCE:
+                problems.append(f"{name}: rotation block is not a proper rotation (R R^T=I, det=+1)")
     return _result("poses_finite_and_count", problems)
 
 
@@ -286,10 +301,11 @@ def check_index_contiguity(dataset: IntermediateDataset) -> CheckResult:
 
 
 def check_lidar_format(dataset: IntermediateDataset) -> CheckResult:
-    """Each sweep is float32 with shape [n,5] or [n,6].
+    """Each sweep is float32, non-empty, with finite xyz and shape [n,5] or [n,6].
 
     Enforces SplatAD's lidar array layout: x, y, z, intensity, time, plus an optional
-    channel column.
+    channel column. An empty sweep carries no geometry and non-finite coordinates cannot
+    be splatted, so both are reported here (the other lidar checks skip such sweeps).
 
     Args:
         dataset: Loaded intermediate dataset; lidar-kind ``streams`` hold one point
@@ -297,13 +313,18 @@ def check_lidar_format(dataset: IntermediateDataset) -> CheckResult:
 
     Returns:
         CheckResult "lidar_array_format": passed ("ok") when all sweeps match; otherwise
-        failed listing each ``sensor[frame]`` with its dtype and shape.
+        failed listing each ``sensor[frame]`` with its dtype and shape (or the empty / non-finite fault).
     """
     problems = []
     for stream in _lidar_streams(dataset):
         for frame_number, sweep in enumerate(stream.frames):
+            label = f"{stream.sensor_name}[{frame_number}]"
             if sweep.dtype != np.float32 or sweep.ndim != 2 or sweep.shape[1] not in ALLOWED_LIDAR_COLUMNS:
-                problems.append(f"{stream.sensor_name}[{frame_number}]: {sweep.dtype} {sweep.shape}")
+                problems.append(f"{label}: {sweep.dtype} {sweep.shape}")
+            elif sweep.shape[0] == 0:
+                problems.append(f"{label}: empty sweep (0 points)")
+            elif not np.isfinite(sweep[:, :INTENSITY_COLUMN]).all():
+                problems.append(f"{label}: non-finite x/y/z")
     return _result("lidar_array_format", problems)
 
 
@@ -324,8 +345,12 @@ def check_intensity(dataset: IntermediateDataset) -> CheckResult:
     problems = []
     for stream in _lidar_streams(dataset):
         for frame_number, sweep in enumerate(stream.frames):
+            # Sweeps without an intensity/time column are failed by lidar_array_format; skip them here.
+            if sweep.ndim != 2 or sweep.shape[1] <= TIME_COLUMN:
+                continue
             intensity = sweep[:, INTENSITY_COLUMN].astype(np.float64)
-            if not (np.isfinite(intensity).all() and intensity.min() >= 0.0 and intensity.max() <= 1.0):
+            # All-points form: False for NaN/inf and vacuously True for an empty sweep (no min/max needed).
+            if not np.all((intensity >= 0.0) & (intensity <= 1.0)):
                 problems.append(f"{stream.sensor_name}[{frame_number}]: intensity outside [0,1]")
     return _result("lidar_intensity_range", problems)
 
@@ -347,7 +372,12 @@ def check_point_time(dataset: IntermediateDataset) -> CheckResult:
     problems = []
     for stream in _lidar_streams(dataset):
         for frame_number, sweep in enumerate(stream.frames):
-            if np.abs(sweep[:, TIME_COLUMN]).max() > dataset.lidar.sweep_period:
+            # Sweeps without a time column are failed by lidar_array_format; skip them here.
+            if sweep.ndim != 2 or sweep.shape[1] <= TIME_COLUMN:
+                continue
+            # Negated "all within period" so NaN (every comparison False) fails; empty is vacuously fine.
+            # float64 comparison: a float32 compare would round the period to float32 and hide one-ulp excesses.
+            if not np.all(np.abs(sweep[:, TIME_COLUMN].astype(np.float64)) <= dataset.lidar.sweep_period):
                 problems.append(f"{stream.sensor_name}[{frame_number}]: |t| > sweep period")
     return _result("lidar_point_time_range", problems)
 
@@ -562,6 +592,6 @@ def validate_dataset(root: Path) -> ContractReport:
     """
     try:
         dataset = read_dataset(root)
-    except (SchemaVersionError, OSError, KeyError, ValueError) as load_error:
+    except (SchemaVersionError, OSError, KeyError, ValueError, zipfile.BadZipFile) as load_error:
         return ContractReport([CheckResult("dataset_loadable", False, str(load_error))])
     return ContractReport([check(dataset) for check in CONTRACT_CHECKS])
