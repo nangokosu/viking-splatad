@@ -1,0 +1,311 @@
+{
+  "planned_ids": [
+    "T1",
+    "T10",
+    "T11",
+    "T12",
+    "T13",
+    "T14",
+    "T15",
+    "T16",
+    "T17",
+    "T18",
+    "T19",
+    "T2",
+    "T20",
+    "T21",
+    "T22",
+    "T23",
+    "T24",
+    "T25",
+    "T26",
+    "T27",
+    "T28",
+    "T29",
+    "T3",
+    "T30",
+    "T31",
+    "T32",
+    "T33",
+    "T4",
+    "T45",
+    "T46",
+    "T49",
+    "T5",
+    "T50",
+    "T51",
+    "T52",
+    "T53",
+    "T54",
+    "T55",
+    "T56",
+    "T58",
+    "T59",
+    "T6",
+    "T60",
+    "T61",
+    "T62",
+    "T63",
+    "T64",
+    "T65",
+    "T66",
+    "T67",
+    "T68",
+    "T69",
+    "T70",
+    "T71",
+    "T72",
+    "T7a",
+    "T7b",
+    "T7c",
+    "T8",
+    "T9a",
+    "T9b"
+  ],
+  "transforms": [
+    {
+      "id": "T1",
+      "qualified_name": "viking_splatad.io.bag_metadata.select_bag_chunks"
+    },
+    {
+      "id": "T10",
+      "qualified_name": "viking_splatad.extract.camera.rolling_shutter_parameters"
+    },
+    {
+      "id": "T11",
+      "qualified_name": "viking_splatad.extract.lidar.decode_pointcloud2"
+    },
+    {
+      "id": "T12",
+      "qualified_name": "viking_splatad.extract.lidar.transform_points_to_sensor_frame"
+    },
+    {
+      "id": "T13",
+      "qualified_name": "viking_splatad.extract.deskew.deskew_points"
+    },
+    {
+      "id": "T14",
+      "qualified_name": "viking_splatad.extract.lidar.normalise_intensity"
+    },
+    {
+      "id": "T15",
+      "qualified_name": "viking_splatad.contract.lidar_model.derive_min_lidar_dist"
+    },
+    {
+      "id": "T16",
+      "qualified_name": "viking_splatad.contract.lidar_model.derive_elevation_mapping"
+    },
+    {
+      "id": "T17",
+      "qualified_name": "viking_splatad.contract.lidar_model.derive_azimuth_tiling"
+    },
+    {
+      "id": "T18",
+      "qualified_name": "viking_splatad.extract.geometry.lidar_to_world_at_reference_time"
+    },
+    {
+      "id": "T19",
+      "qualified_name": "viking_splatad.extract.lidar.assign_channels"
+    },
+    {
+      "id": "T2",
+      "qualified_name": "viking_splatad.extract.timebase.ros_stamps_to_increasing_seconds"
+    },
+    {
+      "id": "T20",
+      "qualified_name": "viking_splatad.extract.geometry.assign_sensor_indices"
+    },
+    {
+      "id": "T21",
+      "qualified_name": "viking_splatad.dataset.splits.linspace_train_eval_split"
+    },
+    {
+      "id": "T22",
+      "qualified_name": "viking_splatad.align.time_sync.estimate_time_offset"
+    },
+    {
+      "id": "T23",
+      "qualified_name": "viking_splatad.extract.radar.radar_cloud_to_array"
+    },
+    {
+      "id": "T24",
+      "qualified_name": "viking_splatad.align.time_sync.fit_radar_drift_model"
+    },
+    {
+      "id": "T25",
+      "qualified_name": "viking_splatad.align.spatial_check.project_lidar_to_image"
+    },
+    {
+      "id": "T26",
+      "qualified_name": "viking_splatad.dataset.writer.write_dataset"
+    },
+    {
+      "id": "T27",
+      "qualified_name": "viking_splatad.splatad.viking_conversions.build_sensor_arrays"
+    },
+    {
+      "id": "T28",
+      "qualified_name": "viking_splatad.splatad.patches.apply_ouster_patch.patch_lidars_source"
+    },
+    {
+      "id": "T29",
+      "qualified_name": "viking_splatad.labels.cuboids.parse_cuboids"
+    },
+    {
+      "id": "T3",
+      "qualified_name": "viking_splatad.extract.pose.interpolate_pose_se3"
+    },
+    {
+      "id": "T30",
+      "qualified_name": "viking_splatad.labels.cuboids.compute_cuboid_geometry"
+    },
+    {
+      "id": "T31",
+      "qualified_name": "viking_splatad.labels.occupancy.voxelize_cuboids"
+    },
+    {
+      "id": "T32",
+      "qualified_name": "viking_splatad.labels.occupancy.crop_occupancy_to_sensor_fov"
+    },
+    {
+      "id": "T33",
+      "qualified_name": "viking_splatad.labels.eval_occupancy.evaluate_occupancy"
+    },
+    {
+      "id": "T4",
+      "qualified_name": "viking_splatad.extract.pose.compose_tf_chain"
+    },
+    {
+      "id": "T45",
+      "qualified_name": "viking_splatad.eval.detection.cuboid_detection_rate"
+    },
+    {
+      "id": "T46",
+      "qualified_name": "viking_splatad.eval.detection.neighbourhood_point_precision"
+    },
+    {
+      "id": "T49",
+      "qualified_name": "viking_splatad.pipeline.derived.covering_sweep_period"
+    },
+    {
+      "id": "T5",
+      "qualified_name": "viking_splatad.extract.calibration.parse_extrinsics_text"
+    },
+    {
+      "id": "T50",
+      "qualified_name": "viking_splatad.splatad.rendered_lidar.lidar_pose_in_map_frame"
+    },
+    {
+      "id": "T51",
+      "qualified_name": "viking_splatad.extract.no_return.derive_beam_direction_model"
+    },
+    {
+      "id": "T52",
+      "qualified_name": "viking_splatad.extract.no_return.beam_unit_directions"
+    },
+    {
+      "id": "T53",
+      "qualified_name": "viking_splatad.extract.no_return.no_return_cells"
+    },
+    {
+      "id": "T54",
+      "qualified_name": "viking_splatad.extract.no_return.no_return_sweep_rows"
+    },
+    {
+      "id": "T55",
+      "qualified_name": "viking_splatad.splatad.viking_conversions.no_return_placeholder_points"
+    },
+    {
+      "id": "T56",
+      "qualified_name": "viking_splatad.eval.gaussian_occupancy.checkpoint_gaussians_to_map_frame"
+    },
+    {
+      "id": "T58",
+      "qualified_name": "viking_splatad.dataset.run_split.time_window_masks"
+    },
+    {
+      "id": "T59",
+      "qualified_name": "viking_splatad.dataset.run_split.neurad_train_eval_indices"
+    },
+    {
+      "id": "T6",
+      "qualified_name": "viking_splatad.extract.calibration.compare_transforms"
+    },
+    {
+      "id": "T60",
+      "qualified_name": "viking_splatad.dataset.run_split.middle_block_train_eval_indices"
+    },
+    {
+      "id": "T61",
+      "qualified_name": "viking_splatad.extract.no_return.elevation_mapping_from_beam_model"
+    },
+    {
+      "id": "T62",
+      "qualified_name": "viking_splatad.dataset.run_split.restrict_test_to_block_cores"
+    },
+    {
+      "id": "T63",
+      "qualified_name": "viking_splatad.eval.training_curves.eval_interval_for_minimum_points"
+    },
+    {
+      "id": "T64",
+      "qualified_name": "viking_splatad.eval.training_curves.pair_metric_tags"
+    },
+    {
+      "id": "T65",
+      "qualified_name": "viking_splatad.dataset.run_split.core_fraction_for_split"
+    },
+    {
+      "id": "T66",
+      "qualified_name": "viking_splatad.dataset.run_split.select_guard_frames_for_render"
+    },
+    {
+      "id": "T67",
+      "qualified_name": "viking_splatad.eval.rendered_pointcloud.ungated_points_from_raster"
+    },
+    {
+      "id": "T68",
+      "qualified_name": "viking_splatad.eval.rendered_pointcloud.points_to_map_voxels"
+    },
+    {
+      "id": "T69",
+      "qualified_name": "viking_splatad.viz.viewer_export.quaternion_to_fiftyone_rotation"
+    },
+    {
+      "id": "T70",
+      "qualified_name": "viking_splatad.viz.viewer_export.sweep_points_to_map"
+    },
+    {
+      "id": "T71",
+      "qualified_name": "viking_splatad.dataset.run_split.shared_interleaved_train_test_indices"
+    },
+    {
+      "id": "T72",
+      "qualified_name": "viking_splatad.dataset.run_split.restrict_test_to_render_subset"
+    },
+    {
+      "id": "T7a",
+      "qualified_name": "viking_splatad.extract.camera.parse_camera_info"
+    },
+    {
+      "id": "T7b",
+      "qualified_name": "viking_splatad.extract.camera.opencv_to_neurad_distortion"
+    },
+    {
+      "id": "T7c",
+      "qualified_name": "viking_splatad.extract.camera.undistort_image"
+    },
+    {
+      "id": "T8",
+      "qualified_name": "viking_splatad.extract.camera.decode_and_resize_image"
+    },
+    {
+      "id": "T9a",
+      "qualified_name": "viking_splatad.extract.geometry.camera_to_world_opencv"
+    },
+    {
+      "id": "T9b",
+      "qualified_name": "viking_splatad.extract.geometry.apply_opencv_to_nerfstudio"
+    }
+  ]
+}
