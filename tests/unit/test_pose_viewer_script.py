@@ -431,8 +431,9 @@ def test_within_radius_of_any_is_the_union_of_discs():
     np.testing.assert_array_equal(viewer.within_radius_of_any(points, centres, 2.0), [True, True, False])
 
 
-def test_main_draws_the_pooled_maps_by_default_and_refuses_points_without_a_pose(tmp_path, monkeypatch, capsys):
-    """No --pose: one render_pose call with the pooled stem. --show-points needs a single sweep: refused."""
+def test_main_draws_the_pooled_maps_and_every_sweep_by_default_and_refuses_points_without_a_pose(tmp_path, monkeypatch, capsys):
+    """No --pose with --output-dir: render_pose for the pooled stem, then each sweep stem in order (user's choice 2026-11-02:
+    per-sweep pictures in the pooled style). --show-points needs a single sweep: refused."""
     viewer = load_viewer_script()
     scene = make_scene(viewer, ["000005_1000", "000009_2000"])
     monkeypatch.setattr(viewer, "load_run_scene", lambda *arguments: scene)
@@ -441,6 +442,23 @@ def test_main_draws_the_pooled_maps_by_default_and_refuses_points_without_a_pose
     drawn_stems = []
     monkeypatch.setattr(viewer, "render_pose", lambda scenes, stem, *remaining: drawn_stems.append(stem))
     base = ["--run", str(tmp_path / "r"), "--eval-config", str(config_path), "--output-dir", str(tmp_path / "out")]
-    assert viewer.main(base) == 0 and drawn_stems == [viewer.POOLED_STEM]
+    assert viewer.main(base) == 0 and drawn_stems == [viewer.POOLED_STEM, "000005_1000", "000009_2000"]
     for points_flag in ("--show-points", "--all-points"):
         assert viewer.main(base + [points_flag]) == 1 and "give --pose" in capsys.readouterr().err
+
+
+def test_main_without_pose_or_output_dir_draws_only_the_pooled_window(tmp_path, monkeypatch):
+    """Interactive windows (no --output-dir) stay pooled-only: one window per sweep would open dozens. A single --pose
+    still draws just that sweep, with or without an output folder."""
+    viewer = load_viewer_script()
+    scene = make_scene(viewer, ["000005_1000", "000009_2000"])
+    monkeypatch.setattr(viewer, "load_run_scene", lambda *arguments: scene)
+    config_path = tmp_path / "eval.yaml"
+    config_path.write_text("eval: {render_accumulation_threshold: 0.5, viz_radius_meters: 25.0, scored_class_ids: {tree_trunk: 1}}\n")
+    drawn_stems = []
+    monkeypatch.setattr(viewer, "render_pose", lambda scenes, stem, *remaining: drawn_stems.append(stem))
+    window_arguments = ["--run", str(tmp_path / "r"), "--eval-config", str(config_path)]
+    assert viewer.main(window_arguments) == 0 and drawn_stems == [viewer.POOLED_STEM]
+    drawn_stems.clear()
+    assert viewer.main(window_arguments + ["--output-dir", str(tmp_path / "out"), "--pose", "9"]) == 0
+    assert drawn_stems == ["000009_2000"]

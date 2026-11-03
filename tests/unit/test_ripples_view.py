@@ -75,9 +75,9 @@ def test_beam_elevation_is_the_angle_above_the_horizontal_from_the_sensor():
     np.testing.assert_allclose(beam_elevation_degrees(points), [0.0, math.degrees(math.atan(1.0)), -math.degrees(math.atan(1.0))])
 
 
-def test_ripples_with_two_runs_is_refused_and_without_a_pose_it_means_pooled(tmp_path, monkeypatch, capsys):
-    """--ripples draws one run: two --run folders are refused with exit 1. Without --pose it is allowed (the pooled
-    twin of the voxel map): main hands render_ripples the pooled stem."""
+def test_ripples_with_two_runs_is_refused_and_without_a_pose_it_means_pooled_and_every_sweep(tmp_path, monkeypatch, capsys):
+    """--ripples draws one run: two --run folders are refused with exit 1. Without --pose (and with --output-dir) it is
+    allowed: main hands render_ripples the pooled stem, then each sweep stem (same stems as the voxel map)."""
     viewer = load_viewer_script()
     config_path = tmp_path / "eval.yaml"
     config_path.write_text(CONFIG_TEXT)
@@ -89,4 +89,4 @@ def test_ripples_with_two_runs_is_refused_and_without_a_pose_it_means_pooled(tmp
     assert viewer.main(["--run", str(tmp_path / "a"), "--run", str(tmp_path / "b")] + base) == 1
     assert "--ripples draws one run" in capsys.readouterr().err
     assert viewer.main(["--run", str(tmp_path / "a")] + base) == 0
-    assert drawn_stems == [viewer.POOLED_STEM]
+    assert drawn_stems == [viewer.POOLED_STEM, "000005_1000"]
