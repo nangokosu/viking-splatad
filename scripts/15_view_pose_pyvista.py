@@ -3,8 +3,9 @@
 By default the sweeps are POOLED exactly as the report pools them: one occupied-voxel grid over all
 test sweeps, one scoring neighbourhood, so for a single drawn class the recall and precision in the
 captions are the report's voxel recall and precision. With several classes the captions count the union of
-their cells, not the per-class report values. ``--pose`` draws single sweeps instead.
-For each run, one PNG ``pooled_precision.png`` (or ``<stem>_precision.png`` per ``--pose``) shows, in the
+their cells, not the per-class report values. With ``--output-dir`` and no ``--pose`` it also draws every test
+sweep alone, in the same style; ``--pose`` draws only the chosen sweeps instead.
+For each run, one PNG ``pooled_precision.png`` (and ``<stem>_precision.png`` per sweep) shows, in the
 map frame within ``--radius-meters`` (horizontal) of a test lidar position (of any pooled sweep), the
 whole rendered cloud: voxels solid green on a GT voxel of a selected class, faint red off every one;
 no GT voxels. It carries what the overlay and recall maps showed, so only it is drawn (``DRAWN_MAP_NAMES``);
@@ -162,7 +163,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
                         help="fetched run folder (runs/<run_id>); repeat for side-by-side panels")
     parser.add_argument("--rerender", default=None, help="draw rerenders/<label> of the (single) run instead")
     parser.add_argument("--pose", action="append", default=None,
-                        help="draw this single sweep (stem or frame index, repeatable) instead of the pooled maps")
+                        help="draw only this single sweep (stem or frame index, repeatable); default: the pooled maps plus, with "
+                             "--output-dir, every test sweep")
     parser.add_argument("--radius-meters", type=float, default=None,
                         help="horizontal radius around the test lidar positions to draw (default: eval.viz_radius_meters)")
     parser.add_argument("--classes", default=None,
@@ -802,9 +804,11 @@ def render_ripples(scene: RunScene, stem: str, selected_class_ids: Sequence[int]
 
 
 def main(argument_list: Optional[List[str]] = None) -> int:
-    """Draw the pooled maps (no ``--pose``) or the chosen poses of the given runs.
+    """Draw the pooled maps and every test sweep (no ``--pose``) or only the chosen poses of the given runs.
 
-    With ``--ripples`` (one run) it draws the ripple view instead, pooled (no ``--pose``) or per chosen pose.
+    Without ``--pose`` and with ``--output-dir`` it writes ``pooled_<map>.png`` and one ``<stem>_<map>.png`` per test sweep
+    shared by the runs; without ``--output-dir`` (windows) it draws the pooled maps only.
+    With ``--ripples`` (one run) it draws the ripple view instead, with the same stems.
 
     Args:
         argument_list: CLI arguments (default: sys.argv).
@@ -841,11 +845,14 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         scenes = [load_run_scene(run_dir, arguments.rerender, eval_settings, accumulation_threshold, project_root)
                   for run_dir in arguments.run_dirs]
         check_scenes_comparable(scenes)
-        # No --pose: the pooled maps the report is computed on. The raw points exist per sweep only.
+        # No --pose: the pooled maps the report is computed on, plus (when writing PNGs) one picture set per test sweep.
+        # Interactive windows stay pooled-only: one window per sweep would open dozens. The raw points exist per sweep only.
         if arguments.pose is None:
             if arguments.show_points or arguments.all_points:
                 raise ValueError("--show-points / --all-points draw one sweep's returns: give --pose")
             stems = [POOLED_STEM]
+            if arguments.output_dir is not None:
+                stems += select_pose_stems(scenes, None)
         else:
             stems = select_pose_stems(scenes, arguments.pose)
     except (ValueError, OSError, KeyError, TypeError, yaml.YAMLError) as error:
