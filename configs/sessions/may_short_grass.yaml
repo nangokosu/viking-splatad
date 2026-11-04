@@ -117,6 +117,10 @@ split:
 splatad:
   # Passed to the dataparser config; see plan contract table.
   load_cuboids: false
+  # Optional radar-supported term added to the existing LiDAR loss; zero keeps stock SplatAD unchanged.
+  radar_lidar_loss_weight: 0.0
+  radar_lidar_gate_quantile: 0.95
+  radar_lidar_gate_chunk_size: 4096
   # true = append the recorded Ouster no-returns (lidar_no_return/, written by the converter since
   # 2026-10-26) as 2000 m "did not return" rays for the ray-drop loss (T55). Needs a dataset
   # extracted with the sidecar; May, B and R must use the same value. Read by
