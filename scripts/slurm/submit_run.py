@@ -68,6 +68,8 @@ ENV_MARKER_SUFFIX = ".marker"
 # Local datasets (one directory per dataset name) and the session configs they were extracted with.
 INTERMEDIATE_DATA_ROOT = PROJECT_ROOT / "data" / "intermediate"
 SESSION_CONFIG_DIRECTORY = PROJECT_ROOT / "configs" / "sessions"
+# Committed reference train/test/guard split records, one per session that has a reference run.
+REFERENCE_SPLIT_DIRECTORY = PROJECT_ROOT / "configs" / "reference_splits"
 # Directory of the per-sweep no-return files inside a dataset (dataset/writer.py NO_RETURN_DIRECTORY;
 # repeated here because this script runs without importing the package).
 NO_RETURN_DIRECTORY_NAME = "lidar_no_return"
@@ -1256,7 +1258,7 @@ def check_clean_tree() -> List[str]:
 
 
 def run_gates(session: str) -> None:
-    """Run the Mac-side gates: clean tree, full test suite, contract validation.
+    """Run the Mac-side gates: clean tree, full test suite, contract validation, reference split.
 
     Args:
         session: Dataset name under data/intermediate/.
@@ -1279,6 +1281,15 @@ def run_gates(session: str) -> None:
                         "--dataset", str(dataset_dir)]
     if run_command(contract_command, capture_output=False).returncode != 0:
         raise GateFailure(f"contract validation failed for {dataset_dir}")
+    # Step 4: when the session has a committed reference split record, the dataset must reproduce it
+    # exactly, so a run cannot be submitted on a different train/test/guard split. Sessions without a
+    # record (e.g. may) have nothing to check.
+    if (REFERENCE_SPLIT_DIRECTORY / f"{session}.json").is_file():
+        reference_command = ["uv", "run", "python", "scripts/16_check_reference_split.py",
+                             "--session", session, "--dataset-dir", str(dataset_dir)]
+        if run_command(reference_command, capture_output=False).returncode != 0:
+            raise GateFailure(f"the split of {dataset_dir} differs from the reference split record "
+                              f"configs/reference_splits/{session}.json (scripts/16_check_reference_split.py)")
     print("gates: PASS")
 
 
