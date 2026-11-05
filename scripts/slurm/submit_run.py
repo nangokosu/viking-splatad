@@ -720,6 +720,54 @@ def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDI
     return flag
 
 
+def session_radar_lidar_options(
+    session: str,
+    intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+    session_config_directory: Path = SESSION_CONFIG_DIRECTORY,
+) -> Dict[str, Any]:
+    """Read and validate the optional radar-supported LiDAR-loss settings.
+
+    Args:
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
+        session_config_directory: Directory holding session YAML files.
+
+    Returns:
+        Method name, loss weight, gate quantile, chunk size, and optional seed directory.
+
+    Raises:
+        ValueError: If a configured value has the wrong type or range.
+    """
+    session_name, session_config = load_dataset_session_config(
+        session, intermediate_root, session_config_directory
+    )
+    radar_config = session_config.get("splatad", {})
+    method = radar_config.get("method", "splatad")
+    if method not in {"splatad", "splatad-radar-lidar"}:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: unsupported splatad.method {method!r}")
+    loss_weight = radar_config.get("radar_lidar_loss_weight", 0.0)
+    gate_quantile = radar_config.get("radar_lidar_gate_quantile", 0.95)
+    chunk_size = radar_config.get("radar_lidar_gate_chunk_size", 4096)
+    if isinstance(loss_weight, bool) or not isinstance(loss_weight, (int, float)) or loss_weight < 0:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: radar_lidar_loss_weight must be non-negative")
+    if isinstance(gate_quantile, bool) or not isinstance(gate_quantile, (int, float)) or not 0 < gate_quantile < 1:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: radar_lidar_gate_quantile must be in (0, 1)")
+    if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: radar_lidar_gate_chunk_size must be positive")
+    seed_directory = radar_config.get("radar_inputs_dir")
+    if seed_directory is not None and not isinstance(seed_directory, str):
+        raise ValueError(f"configs/sessions/{session_name}.yaml: radar_inputs_dir must be a string or null")
+    if method == "splatad-radar-lidar" and loss_weight > 0 and not seed_directory:
+        raise ValueError("radar LiDAR loss requires splatad.radar_inputs_dir")
+    return {
+        "method": method,
+        "loss_weight": float(loss_weight),
+        "gate_quantile": float(gate_quantile),
+        "chunk_size": chunk_size,
+        "inputs_dir": seed_directory,
+    }
+
+
 def dataset_train_fraction(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT) -> float:
     """``session.train_fraction`` of the local dataset's manifest, the fraction the dataparser uses.
 
@@ -858,7 +906,8 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
                           test_split_method: Optional[str] = None,
                           test_render_fraction: Optional[float] = None,
                           minimum_eval_points: Optional[int] = None,
-                          steps_per_eval_all_images: Optional[int] = None) -> Dict[str, str]:
+                          steps_per_eval_all_images: Optional[int] = None,
+                          radar_lidar_options: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
 
     Args:
@@ -888,6 +937,7 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
             MINIMUM_EVAL_POINTS. Same rule as ``add_missing_points``: None leaves it out.
         steps_per_eval_all_images: The derived eval interval (``profile_eval_cadence``), exported as
             STEPS_PER_EVAL_ALL_IMAGES. Same rule: None leaves it out.
+        radar_lidar_options: Optional validated output of ``session_radar_lidar_options``.
 
     Returns:
         Mapping variable name -> string value.
@@ -939,6 +989,13 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         job_environment["MINIMUM_EVAL_POINTS"] = str(int(minimum_eval_points))
     if steps_per_eval_all_images is not None:
         job_environment["STEPS_PER_EVAL_ALL_IMAGES"] = str(int(steps_per_eval_all_images))
+    if radar_lidar_options is not None:
+        job_environment["TRAIN_METHOD"] = str(radar_lidar_options["method"])
+        job_environment["RADAR_LIDAR_LOSS_WEIGHT"] = repr(float(radar_lidar_options["loss_weight"]))
+        job_environment["RADAR_LIDAR_GATE_QUANTILE"] = repr(float(radar_lidar_options["gate_quantile"]))
+        job_environment["RADAR_LIDAR_GATE_CHUNK_SIZE"] = str(int(radar_lidar_options["chunk_size"]))
+        if radar_lidar_options["inputs_dir"] is not None:
+            job_environment["RADAR_INPUTS_DIR"] = str(radar_lidar_options["inputs_dir"])
     return job_environment
 
 
@@ -1604,6 +1661,7 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     train_fraction, train_fraction_override, core_fraction = profile_split_fractions(profile_settings, session)
     test_split_method = session_test_split_method(session)
     render_fraction = profile_test_render_fraction(profile_settings, session)
+    radar_lidar_options = session_radar_lidar_options(session)
     # And the GPU type (the profile's gres, else the default).
     job_gres = resolve_job_gres(config, profile_settings)
     ssh_target = resolve_ssh_target(config["ssh_host"])
@@ -1630,7 +1688,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
                               test_split_method=test_split_method,
                               test_render_fraction=render_fraction,
                               minimum_eval_points=minimum_eval_points,
-                              steps_per_eval_all_images=steps_per_eval_all_images),
+                              steps_per_eval_all_images=steps_per_eval_all_images,
+                              radar_lidar_options=radar_lidar_options),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=job_gres, cpus=cpus, memory_gb=memory_gb,

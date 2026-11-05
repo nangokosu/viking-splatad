@@ -117,6 +117,8 @@ split:
 splatad:
   # Passed to the dataparser config; see plan contract table.
   load_cuboids: false
+  method: splatad
+  radar_inputs_dir: null
   # Optional radar-supported term added to the existing LiDAR loss; zero keeps stock SplatAD unchanged.
   radar_lidar_loss_weight: 0.0
   radar_lidar_gate_quantile: 0.95

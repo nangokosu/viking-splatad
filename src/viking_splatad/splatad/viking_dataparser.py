@@ -49,6 +49,7 @@ from viking_splatad.splatad.viking_conversions import (
     open_dataset_view,
     resolve_train_fraction,
 )
+from viking_splatad.splatad.radar_seed_metadata import load_radar_seed_metadata
 
 try:
     import torch
@@ -127,6 +128,8 @@ if NERFSTUDIO_AVAILABLE:
         """Radians at 1 m; same public default as the PandaSet/py123d parsers (OS0 value unmeasured)."""
         vertical_beam_divergence: float = 1.5e-3
         """Radians at 1 m; same public default as the PandaSet/py123d parsers (OS0 value unmeasured)."""
+        radar_inputs_dir: Optional[Path] = None
+        """Optional map-frame radar seed artifact; attached only to the train split."""
 
         def __post_init__(self) -> None:
             """Mirror ``session_name`` into ``sequence`` then run the base validation."""
@@ -200,7 +203,20 @@ if NERFSTUDIO_AVAILABLE:
                 # No channel is skipped: every ring is a real beam.
                 self.config.skip_elevation_channels = {
                     **(self.config.skip_elevation_channels or {}), lidar_name: ()}
-            return super()._generate_dataparser_outputs(split)
+            outputs = super()._generate_dataparser_outputs(split)
+            if split == "train" and self.config.radar_inputs_dir is not None:
+                dataparser_transform = outputs.dataparser_transform
+                if hasattr(dataparser_transform, "detach"):
+                    dataparser_transform = dataparser_transform.detach().cpu().numpy()
+                outputs.metadata["radar_seeds"] = {
+                    key: torch.from_numpy(value)
+                    for key, value in load_radar_seed_metadata(
+                        self.config.radar_inputs_dir,
+                        self.config.session_name,
+                        np.asarray(dataparser_transform),
+                    ).items()
+                }
+            return outputs
 
         def _filter_based_on_time(self, cameras, img_filenames, lidars, pc_filenames, trajectories):
             """Base time window, then the T60 block split (T62 cores) or the T71 shared interleaved split

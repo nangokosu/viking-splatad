@@ -32,6 +32,8 @@
 #   MINIMUM_EVAL_POINTS  (the profile's minimum number of whole-stretch evals per run)
 #   STEPS_PER_EVAL_ALL_IMAGES  (the eval interval k = (N-1)//MINIMUM_EVAL_POINTS, T63, derived by
 #                               submit_run.py; ns-train --steps-per-eval-all-images)
+#   TRAIN_METHOD RADAR_LIDAR_LOSS_WEIGHT RADAR_LIDAR_GATE_QUANTILE RADAR_LIDAR_GATE_CHUNK_SIZE
+#   (the selected method and optional radar-supported LiDAR-loss settings)
 # Optional:
 #   TRAIN_SPLIT_FRACTION_OVERRIDE  (set only when the profile has its own train_fraction; equal to
 #                                   TRAIN_SPLIT_FRACTION, passed as --train-split-fraction-override so
@@ -64,10 +66,11 @@
 set -euo pipefail
 
 # ---- check the required variables (set -u alone would give a less clear message) ----------
-for required_variable in RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX \
+for required_variable in RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX TRAIN_METHOD \
     MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
     DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION \
-    TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES; do
+    TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES \
+    RADAR_LIDAR_LOSS_WEIGHT RADAR_LIDAR_GATE_QUANTILE RADAR_LIDAR_GATE_CHUNK_SIZE; do
   if [ -z "${!required_variable:-}" ]; then
     echo "ERROR: $required_variable is not set (submit with scripts/slurm/submit_run.py)" >&2
     exit 1
@@ -108,10 +111,11 @@ if [ "$RESUMING" = False ]; then
   echo "slurm_job_id: ${SLURM_JOB_ID:-none}"
   echo "slurm_cpus_per_task: ${SLURM_CPUS_PER_TASK:-unset}"
   echo "slurm_mem_per_node_mb: ${SLURM_MEM_PER_NODE:-unset}"
-  for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX \
+  for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX TRAIN_METHOD \
       MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
       DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION \
-      TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES; do
+      TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES \
+      RADAR_LIDAR_LOSS_WEIGHT RADAR_LIDAR_GATE_QUANTILE RADAR_LIDAR_GATE_CHUNK_SIZE; do
     echo "$exported_variable: ${!exported_variable:-}"
   done
   # Recorded only when set, so runs without a profile override keep their old job_info.txt keys.
@@ -188,10 +192,29 @@ fi
 if [ -n "${TEST_RENDER_FRACTION:-}" ]; then
   TEST_SPLIT_ARGS+=(--test-render-fraction "$TEST_RENDER_FRACTION")
 fi
+RADAR_MODEL_ARGS=()
+RADAR_DATAPARSER_ARGS=()
+TRAIN_COMMAND=(ns-train splatad)
+if [ "$TRAIN_METHOD" = "splatad-radar-lidar" ]; then
+  TRAIN_COMMAND=(ns-train "$TRAIN_METHOD")
+  export NERFSTUDIO_METHOD_CONFIGS="splatad-radar-lidar=viking_splatad.splatad.radar_lidar_method:RADAR_LIDAR_METHOD_SPEC"
+  RADAR_MODEL_ARGS=(
+    --pipeline.model.radar-lidar-loss-weight "$RADAR_LIDAR_LOSS_WEIGHT"
+    --pipeline.model.radar-lidar-gate-quantile "$RADAR_LIDAR_GATE_QUANTILE"
+    --pipeline.model.radar-lidar-gate-chunk-size "$RADAR_LIDAR_GATE_CHUNK_SIZE"
+  )
+  if [ -z "${RADAR_INPUTS_DIR:-}" ]; then
+    echo "ERROR: radar method requires RADAR_INPUTS_DIR" >&2
+    exit 1
+  fi
+  RADAR_DATAPARSER_ARGS+=(--pipeline.datamanager.dataparser.radar-inputs-dir "$STAGE_ROOT/data/$SESSION/$RADAR_INPUTS_DIR")
+else
+  export NERFSTUDIO_METHOD_CONFIGS=""
+fi
 TRAIN_START_SECONDS=$(date +%s)
 echo "train_start_epoch_s: $TRAIN_START_SECONDS" >> "$JOB_INFO"
 export VIKING_DETERMINISTIC=1 PYTHONHASHSEED="$TRAIN_SEED" CUBLAS_WORKSPACE_CONFIG=:4096:8
-ns-train splatad \
+"${TRAIN_COMMAND[@]}" \
   --vis tensorboard \
   --output-dir "$RUN_DIR/train" \
   --experiment-name "$SESSION" \
@@ -201,6 +224,7 @@ ns-train splatad \
   --pipeline.calc-fid-steps 99999999 \
   --machine.seed "$TRAIN_SEED" \
   --steps-per-eval-all-images "$STEPS_PER_EVAL_ALL_IMAGES" \
+  ${RADAR_MODEL_ARGS[@]+"${RADAR_MODEL_ARGS[@]}"} \
   viking-data --data "$STAGE_ROOT/data" --session-name "$SESSION" \
   --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION" \
   --add-missing-points "$ADD_MISSING_POINTS" \
@@ -209,6 +233,7 @@ ns-train splatad \
   --test-block-count "$TEST_BLOCK_COUNT" \
   --test-block-core-fraction "$TEST_BLOCK_CORE_FRACTION" \
   ${TEST_SPLIT_ARGS[@]+"${TEST_SPLIT_ARGS[@]}"} \
+  ${RADAR_DATAPARSER_ARGS[@]+"${RADAR_DATAPARSER_ARGS[@]}"} \
   --eval-whole-test-blocks True
 TRAIN_END_SECONDS=$(date +%s)
 {
