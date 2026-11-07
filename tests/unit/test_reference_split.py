@@ -334,9 +334,12 @@ def test_gate_runs_the_reference_check_for_a_session_with_a_record(monkeypatch):
 
 
 def test_gate_skips_the_reference_check_for_a_session_without_a_record(monkeypatch):
-    """A session with no record (e.g. may_short_grass) is gated by the old three gates only."""
+    """A session with no record (e.g. the may_chunks0_1_smoke dataset) is gated by the old three gates only."""
     submit_module = load_submit_module()
     issued_commands: List[List[str]] = []
+    # may_short_grass gained a record (2026-11-06), so the example is a dataset that has none.
+    session_without_record = "may_chunks0_1_smoke"
+    assert not (submit_module.REFERENCE_SPLIT_DIRECTORY / f"{session_without_record}.json").exists()
     monkeypatch.setattr(submit_module, "run_command", fake_gate_commands(issued_commands, 1))
-    submit_module.run_gates("may_short_grass")
+    submit_module.run_gates(session_without_record)
     assert not any("16_check_reference_split.py" in part for command in issued_commands for part in command)
