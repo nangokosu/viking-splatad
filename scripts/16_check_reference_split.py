@@ -14,7 +14,7 @@ Usage:
         --write-from-run runs/<run_id>
 
 Exit code 0 when identical; 1 when different (the differences are printed); 2 when the session has no
-reference record (not an error: e.g. may_short_grass has none).
+reference record (not an error: e.g. the smoke datasets have none).
 """
 
 import argparse

@@ -4,7 +4,8 @@ Usage:
     uv run python scripts/slurm/submit_run.py gates  --session S
     uv run python scripts/slurm/submit_run.py build-env
     uv run python scripts/slurm/submit_run.py stage  --session S
-    uv run python scripts/slurm/submit_run.py submit --session S --profile smoke [--skip-gates]
+    uv run python scripts/slurm/submit_run.py submit --session S --profile smoke [--skip-gates] \
+        [--allow-split-change "<reason>"]
     uv run python scripts/slurm/submit_run.py status <job_id>
     uv run python scripts/slurm/submit_run.py runs   [--all]
     uv run python scripts/slurm/submit_run.py fetch  <run_id>
@@ -70,6 +71,10 @@ INTERMEDIATE_DATA_ROOT = PROJECT_ROOT / "data" / "intermediate"
 SESSION_CONFIG_DIRECTORY = PROJECT_ROOT / "configs" / "sessions"
 # Committed reference train/test/guard split records, one per session that has a reference run.
 REFERENCE_SPLIT_DIRECTORY = PROJECT_ROOT / "configs" / "reference_splits"
+# Record settings a submitted run must match (the job-side subset of REFERENCE_SETTINGS_KEYS in
+# viking_splatad.dataset.reference_split; session and chunk_files are checked by scripts/16).
+RUN_REFERENCE_SPLIT_KEYS = ("dataset_start_fraction", "dataset_end_fraction", "train_fraction",
+                            "test_split_method", "test_render_fraction")
 # Directory of the per-sweep no-return files inside a dataset (dataset/writer.py NO_RETURN_DIRECTORY;
 # repeated here because this script runs without importing the package).
 NO_RETURN_DIRECTORY_NAME = "lidar_no_return"
@@ -1283,7 +1288,7 @@ def run_gates(session: str) -> None:
         raise GateFailure(f"contract validation failed for {dataset_dir}")
     # Step 4: when the session has a committed reference split record, the dataset must reproduce it
     # exactly, so a run cannot be submitted on a different train/test/guard split. Sessions without a
-    # record (e.g. may) have nothing to check.
+    # record (e.g. the smoke datasets) have nothing to check.
     if (REFERENCE_SPLIT_DIRECTORY / f"{session}.json").is_file():
         reference_command = ["uv", "run", "python", "scripts/16_check_reference_split.py",
                              "--session", session, "--dataset-dir", str(dataset_dir)]
@@ -1291,6 +1296,66 @@ def run_gates(session: str) -> None:
             raise GateFailure(f"the split of {dataset_dir} differs from the reference split record "
                               f"configs/reference_splits/{session}.json (scripts/16_check_reference_split.py)")
     print("gates: PASS")
+
+
+def reference_split_setting_differences(record_settings: Dict[str, Any],
+                                        run_settings: Dict[str, Any]) -> List[str]:
+    """Split-determining settings of a run that differ from a reference record's.
+
+    The gate's dataset check (scripts/16) rebuilds the split with the SESSION YAML values, but the
+    job uses the PROFILE's values where a profile overrides them (window, train fraction, render
+    fraction). This compares what the job will actually use. Exact equality is intended: the split is
+    a deterministic function of these exact numbers, so any change moves frames.
+
+    Args:
+        record_settings: The record's ``settings`` mapping.
+        run_settings: The run's effective value of every key in ``RUN_REFERENCE_SPLIT_KEYS``.
+
+    Returns:
+        One line per differing key (run value, record value); empty when all agree.
+    """
+    return [f"{settings_key}: run {run_settings[settings_key]!r}, record {record_settings[settings_key]!r}"
+            for settings_key in RUN_REFERENCE_SPLIT_KEYS
+            if run_settings[settings_key] != record_settings[settings_key]]
+
+
+def check_run_split_against_reference(session: str, run_settings: Dict[str, Any],
+                                      allow_split_change_reason: Optional[str],
+                                      reference_directory: Optional[Path] = None) -> None:
+    """Refuse a run whose split settings differ from its session's reference record, unless told why.
+
+    Firm but not locked: a mismatch fails by default, and a stated reason lets that one run through
+    with a warning that it is not comparable with the reference runs. A permanent change goes through
+    regenerating the record instead (CLAUDE.md, Project rules 12).
+
+    Args:
+        session: Dataset name (the record is ``<reference_directory>/<session>.json``).
+        run_settings: The run's effective value of every key in ``RUN_REFERENCE_SPLIT_KEYS``.
+        allow_split_change_reason: Why this run may differ; None or blank refuses a mismatch.
+        reference_directory: Directory of the records (default: ``REFERENCE_SPLIT_DIRECTORY``, read at
+            call time).
+
+    Raises:
+        GateFailure: On a mismatch without a reason.
+    """
+    # Step 1: sessions without a record (e.g. smoke datasets) have nothing to compare.
+    record_path = Path(reference_directory or REFERENCE_SPLIT_DIRECTORY) / f"{session}.json"
+    if not record_path.is_file():
+        return
+    record = json.loads(record_path.read_text())
+    differences = reference_split_setting_differences(record["settings"], run_settings)
+    if not differences:
+        return
+    difference_text = "\n  ".join(differences)
+    # Step 2: an explicit, non-blank reason lets this one run differ; say loudly what that means.
+    if allow_split_change_reason and allow_split_change_reason.strip():
+        print(f"WARNING: split differs from {record_path.name} (reason: {allow_split_change_reason.strip()}):\n  "
+              f"{difference_text}\n  this run is NOT comparable with the reference runs of {session}")
+        return
+    # Step 3: otherwise refuse (the caller has not yet created the run dir or called sbatch).
+    raise GateFailure(f"the run's split settings differ from the reference record {record_path}:\n  {difference_text}\n"
+                      f"use the session's own split (drop the profile overrides), or pass "
+                      f"--allow-split-change \"<reason>\" for a deliberate one-off change")
 
 
 def run_checked(command: Sequence[str], description: str, capture_output: bool = True,
@@ -1572,7 +1637,8 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
 
 
 def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: bool,
-               now_utc: Optional[datetime.datetime] = None) -> Tuple[str, str]:
+               now_utc: Optional[datetime.datetime] = None,
+               allow_split_change_reason: Optional[str] = None) -> Tuple[str, str]:
     """Run gates, check the environment, size the job from sinfo, and submit it over ssh.
 
     Assumes ``stage`` was run for this session and the current HEAD.
@@ -1583,12 +1649,15 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
         profile: Profile name under ``profiles``.
         skip_gates: True to skip the Mac-side gates.
         now_utc: Submission time (default: now); injectable for tests.
+        allow_split_change_reason: Why this run may use a split that differs from the session's
+            reference record; None or blank refuses such a run. Checked only when the gates run
+            (ignored with ``skip_gates``).
 
     Returns:
         (job_id, run_id).
 
     Raises:
-        GateFailure: If a gate fails.
+        GateFailure: If a gate fails, or the run's split differs from the reference record without a reason.
         KeyError: If the profile is unknown.
         RuntimeError/ValueError: On remote failure, a missing environment, or invalid resources.
     """
@@ -1613,6 +1682,20 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     run_id = build_run_id(session, profile, git_sha, now_utc)
     # Step 2: the run needs the environment its committed recipe defines.
     env_marker = require_built_environment(config, ssh_target, absolute_stage_root, git_sha)
+    # Step 2b: with the gates on, the split the JOB will use (profile overrides included) must be the
+    # session's reference split, checked before the run dir is created or sbatch is called. The gates' dataset
+    # check uses the session YAML values only, so a profile override would otherwise pass unseen.
+    if not skip_gates:
+        dataset_start_fraction, dataset_end_fraction = profile_window_fractions(profile_settings, session)
+        check_run_split_against_reference(session, {
+            "dataset_start_fraction": dataset_start_fraction, "dataset_end_fraction": dataset_end_fraction,
+            "train_fraction": train_fraction, "test_split_method": test_split_method,
+            "test_render_fraction": render_fraction}, allow_split_change_reason)
+    elif (REFERENCE_SPLIT_DIRECTORY / f"{session}.json").is_file():
+        # Skipping the gates also skips the guard; say so, so it is never silent for a guarded session.
+        ignored_reason_text = " (--allow-split-change is ignored)" if allow_split_change_reason else ""
+        print(f"WARNING: --skip-gates: the split of this run is NOT checked against "
+              f"{REFERENCE_SPLIT_DIRECTORY / f'{session}.json'}{ignored_reason_text}")
     # Step 3: node sizes from sinfo, for the nodes of the job's GPU type.
     cpus, memory_gb = query_node_resources(config, ssh_target, job_gres)
     # Step 4: run dir first (it holds the job script, and Slurm cannot write the --output log
@@ -2420,6 +2503,9 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     submit_parser.add_argument("--session", required=True)
     submit_parser.add_argument("--profile", required=True)
     submit_parser.add_argument("--skip-gates", action="store_true")
+    submit_parser.add_argument("--allow-split-change", metavar="REASON", default=None,
+                               help="let this run use a split that differs from the session's reference "
+                                    "record (configs/reference_splits/); the run is then not comparable")
     status_parser = subparsers.add_parser("status", help="squeue + sacct for a job")
     status_parser.add_argument("job_id")
     runs_parser = subparsers.add_parser(
@@ -2454,7 +2540,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         elif arguments.command == "stage":
             stage_session(config, arguments.session)
         elif arguments.command == "submit":
-            submit_run(config, arguments.session, arguments.profile, arguments.skip_gates)
+            submit_run(config, arguments.session, arguments.profile, arguments.skip_gates,
+                       allow_split_change_reason=arguments.allow_split_change)
         elif arguments.command == "status":
             return 0 if show_status(config, arguments.job_id) == 0 else 1
         elif arguments.command == "runs":
