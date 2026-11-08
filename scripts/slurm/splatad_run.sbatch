@@ -65,6 +65,15 @@
 # Fail on any error, unset variable, or failure inside a pipeline.
 set -euo pipefail
 
+# Older stock jobs have no radar settings. Default only to the disabled stock
+# method; an enabled radar method must receive all its settings explicitly.
+TRAIN_METHOD=${TRAIN_METHOD:-splatad}
+if [ "$TRAIN_METHOD" = splatad ]; then
+  RADAR_LIDAR_LOSS_WEIGHT=${RADAR_LIDAR_LOSS_WEIGHT:-0}
+  RADAR_LIDAR_GATE_QUANTILE=${RADAR_LIDAR_GATE_QUANTILE:-unused}
+  RADAR_LIDAR_GATE_CHUNK_SIZE=${RADAR_LIDAR_GATE_CHUNK_SIZE:-unused}
+fi
+
 # ---- check the required variables (set -u alone would give a less clear message) ----------
 for required_variable in RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX TRAIN_METHOD \
     MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
@@ -207,7 +216,8 @@ if [ "$TRAIN_METHOD" = "splatad-radar-lidar" ]; then
     echo "ERROR: radar method requires RADAR_INPUTS_DIR" >&2
     exit 1
   fi
-  RADAR_DATAPARSER_ARGS+=(--pipeline.datamanager.dataparser.radar-inputs-dir "$STAGE_ROOT/data/$SESSION/$RADAR_INPUTS_DIR")
+  # These arguments follow the viking-data subcommand, so use parser-local names.
+  RADAR_DATAPARSER_ARGS+=(--radar-inputs-dir "$STAGE_ROOT/data/$SESSION/$RADAR_INPUTS_DIR")
 else
   export NERFSTUDIO_METHOD_CONFIGS=""
 fi
@@ -246,7 +256,8 @@ fi
 # Train-vs-test curves from the TensorBoard log: <run dir>/overfitting/overfitting_curves.{png,csv}.
 # A failure is recorded and the job continues (the renders are worth more than the figure), but
 # end_utc requires the figure (gate before end_utc).
-TRAIN_CONFIG="$RUN_DIR/train/$SESSION/splatad/$RUN_ID/config.yml"
+# Nerfstudio writes under config.method_name, including for registered extensions.
+TRAIN_CONFIG="$RUN_DIR/train/$SESSION/$TRAIN_METHOD/$RUN_ID/config.yml"
 if [ ! -f "$TRAIN_CONFIG" ]; then
   echo "ERROR: training config not found at $TRAIN_CONFIG" >&2
   exit 1

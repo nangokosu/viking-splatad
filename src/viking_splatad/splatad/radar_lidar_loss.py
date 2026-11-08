@@ -98,8 +98,11 @@ def compute_radar_lidar_loss(
         return RadarLidarLossResult(zero_loss, 0, 0.0, True)
 
     flattened_opacity_logits = opacity_logits.reshape(-1)
-    opacity_probability = torch.sigmoid(flattened_opacity_logits[supported_indices])
-    radar_loss = loss_weight * (-torch.log(opacity_probability)).mean()
+    # -log(sigmoid(o)) = softplus(-o); this form avoids sigmoid underflow for
+    # transparent Gaussians and retains the gradient that should increase opacity.
+    radar_loss = loss_weight * torch.nn.functional.softplus(
+        -flattened_opacity_logits[supported_indices]
+    ).mean()
     return RadarLidarLossResult(
         radar_loss,
         int(supported_indices.numel()),

@@ -1237,7 +1237,7 @@ def build_render_job_environment(run_id: str, rerender_label: str, absolute_stag
     Raises:
         KeyError: If the run's job_info.txt lacks SESSION, GIT_SHA or RENDER_DOWNSCALE_FACTOR.
     """
-    return {
+    job_environment = {
         "RUN_ID": run_id,
         "RERENDER_LABEL": rerender_label,
         "STAGE_ROOT": absolute_stage_root,
@@ -1250,6 +1250,10 @@ def build_render_job_environment(run_id: str, rerender_label: str, absolute_stag
         # Same camera resolution as the run's own renders.
         "RENDER_DOWNSCALE_FACTOR": run_job_info["RENDER_DOWNSCALE_FACTOR"],
     }
+    # Preserve the output directory of registered methods while retaining legacy exports.
+    if "TRAIN_METHOD" in run_job_info:
+        job_environment["TRAIN_METHOD"] = run_job_info["TRAIN_METHOD"]
+    return job_environment
 
 
 def build_render_selection_record(camera_frame_indices: Sequence[int], lidar_frame_indices: Sequence[int],
@@ -1942,7 +1946,9 @@ def resume_run(config: Dict[str, Any], run_id: str, skip_gates: bool) -> str:
         raise ValueError(f"run {run_id} has a queued or running job; wait for it or scancel it first")
     # Step 4: the final checkpoint (step max_num_iterations - 1, nerfstudio's step-%09d name) must exist.
     final_step = int(run_exports["MAX_NUM_ITERATIONS"]) - 1
-    checkpoint_path = (f"{remote_run_dir}/train/{run_exports['SESSION']}/splatad/{run_id}/nerfstudio_models/"
+    # Older stock runs predate TRAIN_METHOD; registered extensions use their method name.
+    training_method = run_exports.get("TRAIN_METHOD", "splatad")
+    checkpoint_path = (f"{remote_run_dir}/train/{run_exports['SESSION']}/{training_method}/{run_id}/nerfstudio_models/"
                        f"step-{final_step:09d}.ckpt")
     if run_command(ssh_command(ssh_target, ["test", "-f", checkpoint_path])).returncode != 0:
         raise RuntimeError(f"final checkpoint {checkpoint_path} is missing; resubmit the run instead")

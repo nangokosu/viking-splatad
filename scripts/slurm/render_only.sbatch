@@ -94,7 +94,7 @@ print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 
 # ---- (d) render config: the run's config.yml with the guard selection (T66) --------------------
 # Same path as splatad_run.sbatch's TRAIN_CONFIG (ns-train --experiment-name/--timestamp).
-TRAIN_CONFIG="$RUN_DIR/train/$SESSION/splatad/$RUN_ID/config.yml"
+TRAIN_CONFIG="$RUN_DIR/train/$SESSION/${TRAIN_METHOD:-splatad}/$RUN_ID/config.yml"
 RENDER_CONFIG="$RERENDER_DIR/config.yml"
 if [ ! -f "$TRAIN_CONFIG" ]; then
   echo "ERROR: training config not found at $TRAIN_CONFIG" >&2
