@@ -74,6 +74,14 @@ validation_gpu:
   # GPU initialization and overlay generation without a two-hour queue request.
   time_limit: "0-00:15:00"
 
+validation_cpu:
+  # Tests and dataparser overlays do not optimize SplatAD and need no GPU.
+  # Reuse the CPU/RAM budget already exercised on render_only nodes, bounded
+  # by live CPU-node capacity rather than inventing new resource sizes.
+  partition: cpunodes
+  resource_source: render_only
+  time_limit: "0-00:15:00"
+
 # Render-only jobs (submit_run.py render, scripts/slurm/render_only.sbatch): guard frames of a finished
 # run, rendered from its checkpoint without training.
 render_only:

@@ -1061,7 +1061,7 @@ def write_remote_file(ssh_target: str, remote_path: str, file_text: str) -> None
                 f"write {remote_path}", input_text=file_text)
 
 
-def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, time_limit: str,
+def build_sbatch_command(partition: str, gres: Optional[str], cpus: int, memory_gb: int, time_limit: str,
                          job_name: str, output_path: str, job_script_path: str,
                          excluded_nodes: Sequence[str] = (),
                          nodelist: Sequence[str] = ()) -> List[str]:
@@ -1073,7 +1073,7 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
 
     Args:
         partition: Slurm partition.
-        gres: Generic resource spec, e.g. ``gpu:rtx_a6000:1``.
+        gres: Generic resource spec, e.g. ``gpu:rtx_a6000:1``; None for CPU validation.
         cpus: CPUs per task (-c).
         memory_gb: Memory in GiB (--mem=<n>G).
         time_limit: ``D-HH:MM:SS``; must be at most 5 days.
@@ -1101,7 +1101,7 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
     return [
         "sbatch",
         f"--partition={partition}",
-        f"--gres={gres}",
+        *([f"--gres={gres}"] if gres else []),
         "-c", str(cpus),
         f"--mem={memory_gb}G",
         "-t", time_limit,
@@ -1648,9 +1648,48 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
 def validation_settings(config: Dict[str, Any], resource_key: Optional[str]) -> Dict[str, Any]:
     """Return a configured validation allocation; reject arbitrary resource-key overrides."""
     selected_key = resource_key or "render_only"
-    if selected_key not in {"render_only", "validation_gpu"}:
-        raise ValueError("validation resources must be render_only or validation_gpu")
+    if selected_key not in {"render_only", "validation_gpu", "validation_cpu"}:
+        raise ValueError("validation resources must be render_only, validation_gpu, or validation_cpu")
     return config[selected_key]
+
+
+def query_validation_allocation(config: Dict[str, Any], ssh_target: str,
+                                settings: Dict[str, Any]) -> Tuple[str, Optional[str], int, int]:
+    """Return partition, optional GPU spec, CPUs and GiB for a configured validation allocation.
+
+    CPU validation reuses the measured render allocation, clamped to live CPU
+    node capacity. GPU validation uses its own GPU type's sinfo rows as usual.
+    """
+    if "resource_source" not in settings:
+        gres = resolve_job_gres(config, settings)
+        cpus, memory_gb = query_node_resources(config, ssh_target, gres)
+        return config["partition"], gres, cpus, memory_gb
+    if settings["resource_source"] != "render_only" or settings.get("gres"):
+        raise ValueError("CPU validation must use render_only's CPU/RAM budget without a GPU")
+    source_gres = resolve_job_gres(config, config["render_only"])
+    source_cpus, source_memory = query_node_resources(config, ssh_target, source_gres)
+    partition = settings["partition"]
+    table = run_checked(ssh_command(ssh_target, [
+        "sinfo", "-p", partition, "-O", "NodeHost,Memory,CPUs",
+    ]), "CPU validation node sizes").stdout.splitlines()
+    header = table[0].upper().split() if table else []
+    if "MEMORY" not in header or "CPUS" not in header:
+        raise ValueError("CPU sinfo table lacks MEMORY/CPUS")
+    node_sizes = []
+    for row in table[1:]:
+        fields = row.split()
+        if len(fields) < len(header):
+            continue
+        node_memory = int(fields[header.index("MEMORY")])
+        node_cpus = int(fields[header.index("CPUS")])
+        if node_memory > 0 and node_cpus > 0:
+            node_sizes.append((node_cpus, node_memory))
+    if not node_sizes:
+        raise ValueError("no CPU validation nodes reported")
+    cpu_capacity = min(node_cpus for node_cpus, _ in node_sizes)
+    memory_capacity = math.floor(float(config["mem_fraction"]) * min(memory for _, memory in node_sizes)
+                                 / MEGABYTES_PER_GIGABYTE)
+    return partition, None, min(source_cpus, cpu_capacity), min(source_memory, memory_capacity)
 
 
 def verify_environment(config: Dict[str, Any], resource_key: Optional[str] = None) -> str:
@@ -1678,17 +1717,22 @@ def verify_environment(config: Dict[str, Any], resource_key: Optional[str] = Non
     ]), "compiled environment activation script")
     code_dir = stage_code(ssh_target, stage_root, git_sha)
     settings = validation_settings(config, resource_key)
-    gres = resolve_job_gres(config, settings)
-    cpus, memory_gb = query_node_resources(config, ssh_target, gres)
+    partition, gres, cpus, memory_gb = query_validation_allocation(config, ssh_target, settings)
+    batch_script = "verify_env.sbatch"
+    if gres is None:
+        # CPU tests can verify new source only after this exact recipe environment
+        # has already passed native GPU verification. They never create readiness markers.
+        require_built_environment(config, ssh_target, stage_root, git_sha)
+        batch_script = "test_cpu.sbatch"
     log_dir = f"{stage_root}/envs/logs"
     run_checked(ssh_command(ssh_target, ["mkdir", "-p", log_dir]), "verification log directory")
     script_path = f"{log_dir}/{env_name}-verify-{git_sha[:SHORT_SHA_LENGTH]}.sbatch"
     write_remote_file(ssh_target, script_path, build_job_script({
         "STAGE_ROOT": stage_root, "CODE_DIR": code_dir, "ENV_NAME": env_name,
         "GIT_SHA": git_sha, "MICROMAMBA_VERSION": config["micromamba_version"],
-    }, f"{code_dir}/scripts/slurm/verify_env.sbatch"))
+    }, f"{code_dir}/scripts/slurm/{batch_script}"))
     job_id = submit_sbatch(ssh_target, build_sbatch_command(
-        partition=config["partition"], gres=gres, cpus=cpus, memory_gb=memory_gb,
+        partition=partition, gres=gres, cpus=cpus, memory_gb=memory_gb,
         time_limit=settings["time_limit"], job_name="splatad-verify-env",
         output_path=f"{log_dir}/{env_name}-verify-%j.out", job_script_path=script_path,
         excluded_nodes=config.get("excluded_nodes", ()),
@@ -1753,11 +1797,15 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
     # Validation does not cache training images or run optimization; use the
     # configured render GPU so full-scene checks do not queue behind A6000 training.
     resource_settings = validation_settings(config, resource_key) if preflight_only else profile_settings
-    gres = resolve_job_gres(config, resource_settings)
-    cpus, memory_gb = query_node_resources(config, ssh_target, gres)
+    if preflight_only:
+        partition, gres, cpus, memory_gb = query_validation_allocation(config, ssh_target, resource_settings)
+    else:
+        partition = config["partition"]
+        gres = resolve_job_gres(config, resource_settings)
+        cpus, memory_gb = query_node_resources(config, ssh_target, gres)
     time_limit = resource_settings["time_limit"]
     sbatch_arguments = build_sbatch_command(
-        partition=config["partition"], gres=gres, cpus=cpus, memory_gb=memory_gb,
+        partition=partition, gres=gres, cpus=cpus, memory_gb=memory_gb,
         time_limit=time_limit, job_name="splatad-preflight" if preflight_only else f"splatad-{session}",
         output_path=f"{output_dir}/slurm-%j.out", job_script_path=script_path,
         excluded_nodes=config.get("excluded_nodes", ()),
@@ -2453,10 +2501,15 @@ def job_script_owner(script_path_text: str) -> Optional[Tuple[str, str]]:
         return None
     # Check the nested layouts first: their run folder sits one or two levels higher.
     if script_path.parent.parent.name == RERENDERS_DIRECTORY_NAME:
-        return script_path.parent.parent.parent.name, "render"
-    if script_path.parent.name == RESUME_DIRECTORY_NAME:
-        return script_path.parent.parent.name, "resume"
-    return script_path.parent.name, "train"
+        run_directory, kind = script_path.parent.parent.parent, "render"
+    elif script_path.parent.name == RESUME_DIRECTORY_NAME:
+        run_directory, kind = script_path.parent.parent, "resume"
+    else:
+        run_directory, kind = script_path.parent, "train"
+    # Preflights also use job.sbatch; only children of runs are training records.
+    if run_directory.parent.name != "runs":
+        return None
+    return run_directory.name, kind
 
 
 def parse_tracked_jobs(squeue_text: str) -> List[Dict[str, str]]:
@@ -2625,14 +2678,14 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     gates_parser.add_argument("--session", required=True)
     subparsers.add_parser("build-env", help="build the native environment (once per recipe)")
     verification_parser = subparsers.add_parser("verify-env", help="recover full validation of an already compiled native env")
-    verification_parser.add_argument("--resources", choices=("render_only", "validation_gpu"))
+    verification_parser.add_argument("--resources", choices=("render_only", "validation_gpu", "validation_cpu"))
     for remote_command in ("remote-preflight", "submit-remote"):
         remote_parser = subparsers.add_parser(remote_command, help="use workdisk data and native cluster validation")
         remote_parser.add_argument("--session", required=True)
         remote_parser.add_argument("--profile", required=True)
         remote_parser.add_argument("--reviewed-preflight", action="store_true")
         remote_parser.add_argument("--afterok", help="start only after the specified job succeeds")
-        remote_parser.add_argument("--resources", choices=("render_only", "validation_gpu"))
+        remote_parser.add_argument("--resources", choices=("render_only", "validation_gpu", "validation_cpu"))
     stage_parser = subparsers.add_parser("stage", help="copy data and code to the cluster")
     stage_parser.add_argument("--session", required=True)
     submit_parser = subparsers.add_parser("submit", help="sbatch a run")
