@@ -1695,13 +1695,13 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
         profile: Committed training profile name.
         preflight_only: Run native tests, data gates, and overlays without training.
         reviewed_preflight: Explicit acknowledgement that matching overlays were inspected.
-        afterok: Optional numeric dependency for preflight, allowing data preparation to finish first.
+        afterok: Optional numeric success dependency, e.g. data prep before preflight or smoke before full training.
     """
     check_clean_tree()
     if not preflight_only and not reviewed_preflight:
         raise ValueError("inspect the completed remote-preflight overlays, then pass --reviewed-preflight")
-    if afterok is not None and (not preflight_only or not re.fullmatch(r"[0-9]+", afterok)):
-        raise ValueError("--afterok accepts one numeric job id and only for remote-preflight")
+    if afterok is not None and not re.fullmatch(r"[0-9]+", afterok):
+        raise ValueError("--afterok accepts one numeric job id")
     if RUN_ID_PATTERN.fullmatch(session) is None or profile not in config["profiles"]:
         raise ValueError("invalid remote session/profile")
     profile_settings = config["profiles"][profile]
@@ -1709,7 +1709,7 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
     ssh_target = resolve_ssh_target(config["ssh_host"])
     stage_root = resolve_remote_stage_root(config, ssh_target)
     git_sha = get_head_sha()
-    if afterok is None:
+    if afterok is None or not preflight_only:
         env_marker = require_built_environment(config, ssh_target, stage_root, git_sha)
     else:
         # A dependent preflight may queue before recovery finishes. The batch
@@ -2612,7 +2612,7 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         remote_parser.add_argument("--session", required=True)
         remote_parser.add_argument("--profile", required=True)
         remote_parser.add_argument("--reviewed-preflight", action="store_true")
-        remote_parser.add_argument("--afterok", help="queue preflight after a successful data job")
+        remote_parser.add_argument("--afterok", help="start only after the specified job succeeds")
     stage_parser = subparsers.add_parser("stage", help="copy data and code to the cluster")
     stage_parser.add_argument("--session", required=True)
     submit_parser = subparsers.add_parser("submit", help="sbatch a run")

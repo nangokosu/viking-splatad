@@ -133,3 +133,24 @@ def test_training_requires_explicit_overlay_review(monkeypatch):
     monkeypatch.setattr(helpers, "check_clean_tree", lambda: [])
     with pytest.raises(ValueError, match="inspect the completed"):
         helpers.submit_remote_run(helpers.load_slurm_config(), "june_tall_grass", "june_smoke", False)
+
+
+def test_training_dependency_does_not_bypass_environment_readiness(monkeypatch):
+    """Queued training still requires a verified environment before it can be submitted."""
+    helpers = load_submit_module()
+    monkeypatch.setattr(helpers, "check_clean_tree", lambda: [])
+    monkeypatch.setattr(helpers, "resolve_ssh_target", lambda host: "cluster.invalid")
+    monkeypatch.setattr(helpers, "resolve_remote_stage_root", lambda config, target: "/stage")
+    monkeypatch.setattr(helpers, "get_head_sha", lambda: "a" * 40)
+    checked_environments = []
+
+    def missing_environment(*arguments):
+        """Record the readiness check and reject the absent completion marker."""
+        checked_environments.append(arguments)
+        raise RuntimeError("environment is not verified")
+
+    monkeypatch.setattr(helpers, "require_built_environment", missing_environment)
+    with pytest.raises(RuntimeError, match="not verified"):
+        helpers.submit_remote_run(helpers.load_slurm_config(), "june_tall_grass", "june_scene_a",
+                                  False, reviewed_preflight=True, afterok="123")
+    assert len(checked_environments) == 1
