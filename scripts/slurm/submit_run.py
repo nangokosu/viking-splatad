@@ -46,6 +46,10 @@ import yaml
 
 # Project root = two levels above this file (scripts/slurm/submit_run.py).
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# The submit CLI must use this checkout's helpers even when an editable install
+# is stale or its .pth hook is disabled. Native batch jobs use the same source-first rule.
+if __name__ == "__main__":
+    sys.path.insert(0, str(PROJECT_ROOT / "src"))
 # Default Slurm settings file, relative to the project root.
 DEFAULT_SLURM_CONFIG_PATH = PROJECT_ROOT / "configs" / "slurm.yaml"
 # Batch scripts, as paths inside the staged code snapshot (code/<sha>/...).
