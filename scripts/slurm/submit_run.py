@@ -1685,7 +1685,8 @@ def verify_environment(config: Dict[str, Any]) -> str:
 
 
 def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
-                      preflight_only: bool, reviewed_preflight: bool = False) -> str:
+                      preflight_only: bool, reviewed_preflight: bool = False,
+                      afterok: Optional[str] = None) -> str:
     """Submit validation or training against remote data; return the job id.
 
     Args:
@@ -1694,10 +1695,13 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
         profile: Committed training profile name.
         preflight_only: Run native tests, data gates, and overlays without training.
         reviewed_preflight: Explicit acknowledgement that matching overlays were inspected.
+        afterok: Optional numeric dependency for preflight, allowing data preparation to finish first.
     """
     check_clean_tree()
     if not preflight_only and not reviewed_preflight:
         raise ValueError("inspect the completed remote-preflight overlays, then pass --reviewed-preflight")
+    if afterok is not None and (not preflight_only or not re.fullmatch(r"[0-9]+", afterok)):
+        raise ValueError("--afterok accepts one numeric job id and only for remote-preflight")
     if RUN_ID_PATTERN.fullmatch(session) is None or profile not in config["profiles"]:
         raise ValueError("invalid remote session/profile")
     profile_settings = config["profiles"][profile]
@@ -1705,7 +1709,12 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
     ssh_target = resolve_ssh_target(config["ssh_host"])
     stage_root = resolve_remote_stage_root(config, ssh_target)
     git_sha = get_head_sha()
-    env_marker = require_built_environment(config, ssh_target, stage_root, git_sha)
+    if afterok is None:
+        env_marker = require_built_environment(config, ssh_target, stage_root, git_sha)
+    else:
+        # A dependent preflight may queue before recovery finishes. The batch
+        # script still requires the completion marker when it actually starts.
+        env_marker = {"env_prefix": f"{stage_root}/envs/{environment_name(config, git_sha)}"}
     code_dir = f"{stage_root}/code/{git_sha}"
     # Snapshots are immutable; do not rsync-delete test inputs of a running preflight.
     if run_command(ssh_command(ssh_target, ["test", "-f", f"{code_dir}/scripts/slurm/remote_run.py"])).returncode:
@@ -1726,12 +1735,15 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
     gres = resolve_job_gres(config, profile_settings)
     cpus, memory_gb = query_node_resources(config, ssh_target, gres)
     time_limit = config["render_only"]["time_limit"] if preflight_only else profile_settings["time_limit"]
-    job_id = submit_sbatch(ssh_target, build_sbatch_command(
+    sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=gres, cpus=cpus, memory_gb=memory_gb,
         time_limit=time_limit, job_name="splatad-preflight" if preflight_only else f"splatad-{session}",
         output_path=f"{output_dir}/slurm-%j.out", job_script_path=script_path,
         excluded_nodes=config.get("excluded_nodes", ()),
-    ))
+    )
+    if afterok is not None:
+        sbatch_arguments.insert(-1, f"--dependency=afterok:{afterok}")
+    job_id = submit_sbatch(ssh_target, sbatch_arguments)
     if not preflight_only:
         SUBMITTED_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
         needs_header = not SUBMITTED_LEDGER_PATH.exists()
@@ -2597,6 +2609,7 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         remote_parser.add_argument("--session", required=True)
         remote_parser.add_argument("--profile", required=True)
         remote_parser.add_argument("--reviewed-preflight", action="store_true")
+        remote_parser.add_argument("--afterok", help="queue preflight after a successful data job")
     stage_parser = subparsers.add_parser("stage", help="copy data and code to the cluster")
     stage_parser.add_argument("--session", required=True)
     submit_parser = subparsers.add_parser("submit", help="sbatch a run")
@@ -2638,7 +2651,7 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             verify_environment(config)
         elif arguments.command in {"remote-preflight", "submit-remote"}:
             submit_remote_run(config, arguments.session, arguments.profile,
-                              arguments.command == "remote-preflight", arguments.reviewed_preflight)
+                              arguments.command == "remote-preflight", arguments.reviewed_preflight, arguments.afterok)
         elif arguments.command == "stage":
             stage_session(config, arguments.session)
         elif arguments.command == "submit":

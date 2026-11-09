@@ -37,10 +37,13 @@ def prepare_test_inputs(code_dir: Path, stage_root: Path, env_prefix: Path) -> N
         config["session"][path_key] = str(source_root / relative_path)
     runtime_config = runtime_root / "may.yaml"
     runtime_config.write_text(yaml.safe_dump(config, sort_keys=False))
-    subprocess.run([
-        sys.executable, str(code_dir / "scripts/00_fetch_chunk.py"),
-        "--config", str(runtime_config), "--fetch-calibration",
-    ], check=True)
+    # Reuse real cached fixtures; every validation need not repeat the archive fetch.
+    if not (Path(config["session"]["labels_json"]).is_file()
+            and (Path(config["session"]["bag_dir"]) / "metadata.yaml").is_file()):
+        subprocess.run([
+            sys.executable, str(code_dir / "scripts/00_fetch_chunk.py"),
+            "--config", str(runtime_config), "--fetch-calibration",
+        ], check=True)
     ensure_symlink(code_dir / "data", source_root / "data")
     ensure_symlink(code_dir / "third_party/neurad-studio", env_prefix / "viking-sources/neurad-studio")
 
