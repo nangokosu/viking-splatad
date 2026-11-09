@@ -11,6 +11,7 @@ import yaml
 
 from tests.unit.test_writer import build_synthetic_dataset
 from viking_splatad.dataset.writer import write_dataset
+from tests.unit.test_slurm_submit import load_submit_module
 
 
 def remote_fixture(tmp_path, monkeypatch):
@@ -86,3 +87,49 @@ def test_failed_revalidation_removes_old_preflight_receipt(tmp_path, monkeypatch
     with pytest.raises(subprocess.CalledProcessError):
         module.run_remote(stage_root, code_dir, env_prefix, "synthetic", "tiny", "revision", "run", True)
     assert not (stage_root / "preflights/synthetic/tiny/revision/validation.json").exists()
+
+
+def test_remote_submission_uses_render_gpu_for_preflight_and_profile_gpu_for_training(tmp_path, monkeypatch):
+    """Validation uses the compatible render allocation; optimization retains the full profile GPU."""
+    helpers = load_submit_module()
+    config = helpers.load_slurm_config()
+    monkeypatch.setattr(helpers, "check_clean_tree", lambda: [])
+    monkeypatch.setattr(helpers, "resolve_ssh_target", lambda host: "cluster.invalid")
+    monkeypatch.setattr(helpers, "resolve_remote_stage_root", lambda config, target: "/stage")
+    monkeypatch.setattr(helpers, "get_head_sha", lambda: "a" * 40)
+    monkeypatch.setattr(helpers, "require_built_environment", lambda *args: {"env_prefix": "/stage/env"})
+    monkeypatch.setattr(helpers, "SUBMITTED_LEDGER_PATH", tmp_path / "ledger.tsv")
+    requested_gpu_types = []
+    submitted_commands = []
+
+    def fake_resources(config, target, gres):
+        """Record the selected GPU; synthetic node resources are irrelevant to routing."""
+        requested_gpu_types.append(gres)
+        return 1, 1
+
+    def fake_command(arguments, **kwargs):
+        """Emulate completed remote readiness checks and generated-script writes."""
+        return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+    def fake_submit(target, arguments):
+        """Record the exact sbatch argv rather than contacting Slurm."""
+        submitted_commands.append(arguments)
+        return "123"
+
+    monkeypatch.setattr(helpers, "query_node_resources", fake_resources)
+    monkeypatch.setattr(helpers, "run_command", fake_command)
+    monkeypatch.setattr(helpers, "submit_sbatch", fake_submit)
+    helpers.submit_remote_run(config, "june_tall_grass", "june_scene_a", True, afterok="456")
+    helpers.submit_remote_run(config, "june_tall_grass", "june_scene_a", False, reviewed_preflight=True)
+    assert requested_gpu_types == [config["render_only"]["gres"], config["gres"]]
+    assert "--dependency=afterok:456" in submitted_commands[0]
+    assert not any(argument.startswith("--dependency") for argument in submitted_commands[1])
+    assert (tmp_path / "ledger.tsv").read_text().count("\n") == 2
+
+
+def test_training_requires_explicit_overlay_review(monkeypatch):
+    """Missing review is rejected before contacting the cluster."""
+    helpers = load_submit_module()
+    monkeypatch.setattr(helpers, "check_clean_tree", lambda: [])
+    with pytest.raises(ValueError, match="inspect the completed"):
+        helpers.submit_remote_run(helpers.load_slurm_config(), "june_tall_grass", "june_smoke", False)

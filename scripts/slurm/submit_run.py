@@ -1732,7 +1732,10 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
         "SESSION": session, "PROFILE": profile, "GIT_SHA": git_sha, "RUN_ID": run_id,
         "PREFLIGHT_ONLY": str(preflight_only),
     }, f"{code_dir}/scripts/slurm/remote_run.sbatch"))
-    gres = resolve_job_gres(config, profile_settings)
+    # Validation does not cache training images or run optimization; use the
+    # configured render GPU so full-scene checks do not queue behind A6000 training.
+    resource_settings = config["render_only"] if preflight_only else profile_settings
+    gres = resolve_job_gres(config, resource_settings)
     cpus, memory_gb = query_node_resources(config, ssh_target, gres)
     time_limit = config["render_only"]["time_limit"] if preflight_only else profile_settings["time_limit"]
     sbatch_arguments = build_sbatch_command(

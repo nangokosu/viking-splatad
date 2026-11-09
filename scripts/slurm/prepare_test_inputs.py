@@ -15,7 +15,13 @@ def ensure_symlink(link_path: Path, target_path: Path) -> None:
         return
     if link_path.exists() or link_path.is_symlink():
         raise FileExistsError(f"conflicting test input: {link_path}")
-    link_path.symlink_to(target_path, target_is_directory=True)
+    try:
+        link_path.symlink_to(target_path, target_is_directory=True)
+    except FileExistsError:
+        # Parallel preflights may create the same fixture link between our check
+        # and symlink call. Only accept the exact intended target in that race.
+        if not link_path.is_symlink() or link_path.resolve() != target_path.resolve():
+            raise
 
 
 def prepare_test_inputs(code_dir: Path, stage_root: Path, env_prefix: Path) -> None:
