@@ -64,6 +64,17 @@ differs only by the glossary COPY in the Dockerfile. So the pins reproduce the s
 - `viking-conda-explicit.txt`: exact conda URLs and hashes, including the toolchain versions that
   `cluster_env.yaml` leaves unpinned (cmake, ninja, git, make, ffmpeg).
 
+The `2026-11-09/` subdirectory records the environment used for the new June
+baseline submissions. GPU verification job 240770 passed imports and 1,136 tests;
+source-only CPU validation job 241031 subsequently passed 1,143 tests. Each had
+one allowed traceability skip and eight configured marker deselections. Local
+reference-image tests were omitted at the user's explicit request.
+The pip freeze is byte-identical to the historical record, but conda's unpinned
+packages resolved differently (including cmake and codec dependencies). Thus the
+recipe hash alone does not prove byte-identical conda resolution across builds;
+retain the dated explicit records when reproducing these runs. The historical
+records above are preserved.
+
 These files are records, not inputs: they are not in `environment_recipe_files`, so updating them does not change
 the env hash. Known gap: the viser web client fails to build on the nodes (yarn download timeout). It is only
 needed by the interactive viewer; runs use `--vis tensorboard`.

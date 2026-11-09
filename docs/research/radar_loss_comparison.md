@@ -1,6 +1,6 @@
 # Radar loss comparison and deployment readiness
 
-Date: 2026-11-08
+Date: 2026-11-09
 
 The objective is to compare the radar approaches in the supplied proposal. The
 document contains several drafts: vegetation-weighted semantic classification,
@@ -12,7 +12,7 @@ the current repository implements only part of the last approach.
 
 | Experiment | Added initialization | Added objective | Readiness |
 | --- | --- | --- | --- |
-| B | None | Stock lidar training | Existing stock method; June launch still needs the no-photometric setting |
+| B | None | Stock lidar training | Lidar-only launch wired; native tests and remote data/preflight gates passed; smoke/full jobs submitted |
 | I | Radar Gaussians | None | Seed generation and Gaussian append hook are missing |
 | O | Same radar Gaussians | Opacity near radar seeds | Loss and model hook exist; initialization and artifact gates remain |
 | D | Same radar Gaussians | One-sided radar depth | Not implemented; implement and verify independently of opacity |
@@ -58,7 +58,7 @@ split. This is not yet the full provenance contract described in PLAN section 2.
   for every arm. Do not change extraction or split settings to enable radar.
 - Apply the same lidar-only training setting, camera colour initialization,
   no-return rays, iteration budget, and upstream model settings across B/I/O/D/OD.
-  The current launch does not yet set `train-lidar-only True`.
+  The June baseline and smoke profiles now set `train-lidar-only True`.
 - Use one shared, label-free seed artifact for I/O/D/OD, built using only training
   observations, with calibrated timing, uncertainty, and provenance. The seed
   builder and Gaussian initialization hook are not present in this checkout.
@@ -78,22 +78,23 @@ split. This is not yet the full provenance contract described in PLAN section 2.
 
 ## Deployment order
 
-1. Restore local `uv` and Docker, configure trusted cluster SSH, and recreate or
-   locate the June dataset. No dataset or seed artifact was found in this checkout.
-2. Run `scripts/test_in_image.sh python scripts/affected_tests.py --run` for the
-   wiring fixes. It currently cannot start because Docker is unavailable.
-3. Complete seed generation/initialization, input-contract gates, matched
-   lidar-only configuration, and measured loss-weight calibration. Add synthetic
-   known-answer coverage for each implementation before using real data.
-4. Pass the full image tests, dataset contract, reference-split check, and image
-   CPU preflight; inspect its lidar-on-camera overlays.
-5. Commit the validated changes, build the reference image/native environment if
-   recipe files changed, and stage the committed code plus dataset. Submit a
-   smoke job for each implemented method before full comparison runs.
-6. After successful training/render/split milestones, fetch automatically and
-   compare repeated runs. Implement D/OD next; treat semantic VB/VC as a separate
-   pipeline with explicit supervision rather than silently using evaluation GT.
+1. Let submitted baseline smoke 241036 complete; full baseline 241037 is gated
+   on its success. Both use source `0097a66`. Native source validation passed
+   1,143 tests with one allowed traceability skip and eight policy deselections.
+2. Fetch successful training/render/split outputs automatically. Repeat B before
+   interpreting reconstruction differences against a future radar arm.
+3. Complete calibrated seed generation, Gaussian initialization, input-contract
+   provenance gates, and measured opacity-weight calibration. Add synthetic
+   known-answer tests without using evaluation cuboids as supervision.
+4. Pass the same data/reference/overlay gates and smoke R before full R runs.
+   Compare repeated B/R runs on the same June evaluation targets and views.
+5. D/OD remain optional extensions requiring approval. Semantic VB/VC require a
+   separately authorized supervision pipeline; radar rendering remains excluded.
 
-No job was submitted during this audit. SSH outside the sandbox reached the
-connection stage but failed host-key verification; the queue and remote artifacts
-were not inspected. Do not bypass host-key checking to proceed.
+June data is validated and published on the cluster workdisk. Contract validation
+now streams frames, fixing memory exhaustion after otherwise complete
+extraction. Both profiles passed native preflight, and all ten alignment overlays
+were reviewed without an obvious gross registration error. The user explicitly
+requested skipping local Docker tests; these results are native-cluster results,
+not reference-image validation. See [remote_training.md](remote_training.md) for
+the Mac submit-host workflow. No radar training run has been submitted.
