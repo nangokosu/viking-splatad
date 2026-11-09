@@ -187,10 +187,10 @@ profiles:
     # Full resolution, as the smoke: pixel-level misalignment and trunk detail are what we look at.
     render_downscale_factor: 1
   june_scene_a:
-    # Goal: June Scene A (chunks 20-22 of june_tall_grass, high grass) trained exactly like
-    # may_scene_a: stock SplatAD with lidar + camera (photometric) loss = PLAN §4.3's B+cam, run first
-    # by the user's choice (2026-10-26). Lidar-only core B needs a train-lidar-only switch, not yet here.
-    # Every value below equals may_scene_a's so the two runs differ only in their data.
+    train_lidar_only: true
+    # June Scene A core B: lidar-only training with camera-painted initialization.
+    # Older runs of this profile used photometric loss and are B+cam, not this core B.
+    # The iteration budget below still matches May; the reference split is unchanged.
     # Whole extracted recording (~216 s): the session config already cuts it to Scene A.
     # As May: 20001 iterations (the May curves converge by step 20000; schedules unchanged);
     # ~1940 training camera frames x ~10 visits each.
@@ -209,3 +209,11 @@ profiles:
     render_pose_source: test
     # As May: full resolution.
     render_downscale_factor: 1
+  june_smoke:
+    # Same short window as the existing smoke, with the June core's lidar-only
+    # objective and session split. A4500 is already approved for smoke runs.
+    <<: *smoke_profile
+    gres: gpu:rtx_a4500:1
+    train_lidar_only: true
+    train_fraction: 0.9
+    test_render_fraction: 0.1

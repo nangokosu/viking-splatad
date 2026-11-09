@@ -997,6 +997,10 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         job_environment["RADAR_LIDAR_GATE_CHUNK_SIZE"] = str(int(radar_lidar_options["chunk_size"]))
         if radar_lidar_options["inputs_dir"] is not None:
             job_environment["RADAR_INPUTS_DIR"] = str(radar_lidar_options["inputs_dir"])
+    if "train_lidar_only" in profile_settings:
+        if not isinstance(profile_settings["train_lidar_only"], bool):
+            raise ValueError("profile train_lidar_only must be a boolean")
+        job_environment["TRAIN_LIDAR_ONLY"] = str(profile_settings["train_lidar_only"])
     return job_environment
 
 
@@ -1677,6 +1681,66 @@ def verify_environment(config: Dict[str, Any]) -> str:
         excluded_nodes=config.get("excluded_nodes", ()),
     ))
     print(f"submitted verification job {job_id}; log {log_dir}/{env_name}-verify-{job_id}.out")
+    return job_id
+
+
+def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
+                      preflight_only: bool, reviewed_preflight: bool = False) -> str:
+    """Submit validation or training against remote data; return the job id.
+
+    Args:
+        config: Slurm settings; resources are sized from the selected profile's GPU.
+        session: Workdisk dataset name, restricted to a safe path component.
+        profile: Committed training profile name.
+        preflight_only: Run native tests, data gates, and overlays without training.
+        reviewed_preflight: Explicit acknowledgement that matching overlays were inspected.
+    """
+    check_clean_tree()
+    if not preflight_only and not reviewed_preflight:
+        raise ValueError("inspect the completed remote-preflight overlays, then pass --reviewed-preflight")
+    if RUN_ID_PATTERN.fullmatch(session) is None or profile not in config["profiles"]:
+        raise ValueError("invalid remote session/profile")
+    profile_settings = config["profiles"][profile]
+    profile_eval_cadence(profile_settings)
+    ssh_target = resolve_ssh_target(config["ssh_host"])
+    stage_root = resolve_remote_stage_root(config, ssh_target)
+    git_sha = get_head_sha()
+    env_marker = require_built_environment(config, ssh_target, stage_root, git_sha)
+    code_dir = f"{stage_root}/code/{git_sha}"
+    # Snapshots are immutable; do not rsync-delete test inputs of a running preflight.
+    if run_command(ssh_command(ssh_target, ["test", "-f", f"{code_dir}/scripts/slurm/remote_run.py"])).returncode:
+        stage_code(ssh_target, stage_root, git_sha)
+    preflight_dir = f"{stage_root}/preflights/{session}/{profile}/{git_sha}"
+    if not preflight_only:
+        run_checked(ssh_command(ssh_target, ["test", "-f", f"{preflight_dir}/validation.json"]),
+                    "completed preflight receipt (run remote-preflight first)")
+    run_id = build_run_id(session, profile, git_sha, datetime.datetime.now(datetime.timezone.utc))
+    output_dir = preflight_dir if preflight_only else f"{stage_root}/runs/{run_id}"
+    run_checked(ssh_command(ssh_target, ["mkdir", "-p", output_dir]), "remote job directory")
+    script_path = f"{output_dir}/job.sbatch"
+    write_remote_file(ssh_target, script_path, build_job_script({
+        "STAGE_ROOT": stage_root, "CODE_DIR": code_dir, "ENV_PREFIX": env_marker["env_prefix"],
+        "SESSION": session, "PROFILE": profile, "GIT_SHA": git_sha, "RUN_ID": run_id,
+        "PREFLIGHT_ONLY": str(preflight_only),
+    }, f"{code_dir}/scripts/slurm/remote_run.sbatch"))
+    gres = resolve_job_gres(config, profile_settings)
+    cpus, memory_gb = query_node_resources(config, ssh_target, gres)
+    time_limit = config["render_only"]["time_limit"] if preflight_only else profile_settings["time_limit"]
+    job_id = submit_sbatch(ssh_target, build_sbatch_command(
+        partition=config["partition"], gres=gres, cpus=cpus, memory_gb=memory_gb,
+        time_limit=time_limit, job_name="splatad-preflight" if preflight_only else f"splatad-{session}",
+        output_path=f"{output_dir}/slurm-%j.out", job_script_path=script_path,
+        excluded_nodes=config.get("excluded_nodes", ()),
+    ))
+    if not preflight_only:
+        SUBMITTED_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        needs_header = not SUBMITTED_LEDGER_PATH.exists()
+        with SUBMITTED_LEDGER_PATH.open("a") as ledger:
+            if needs_header:
+                ledger.write("\t".join(LEDGER_COLUMNS) + "\n")
+            ledger.write("\t".join([run_id, job_id, git_sha, session, profile,
+                                    datetime.datetime.now(datetime.timezone.utc).strftime(RUN_TIMESTAMP_FORMAT)]) + "\n")
+    print(f"submitted remote job {job_id}; outputs {output_dir}")
     return job_id
 
 
@@ -2528,6 +2592,11 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     gates_parser.add_argument("--session", required=True)
     subparsers.add_parser("build-env", help="build the native environment (once per recipe)")
     subparsers.add_parser("verify-env", help="recover full validation of an already compiled native env")
+    for remote_command in ("remote-preflight", "submit-remote"):
+        remote_parser = subparsers.add_parser(remote_command, help="use workdisk data and native cluster validation")
+        remote_parser.add_argument("--session", required=True)
+        remote_parser.add_argument("--profile", required=True)
+        remote_parser.add_argument("--reviewed-preflight", action="store_true")
     stage_parser = subparsers.add_parser("stage", help="copy data and code to the cluster")
     stage_parser.add_argument("--session", required=True)
     submit_parser = subparsers.add_parser("submit", help="sbatch a run")
@@ -2567,6 +2636,9 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             build_environment(config)
         elif arguments.command == "verify-env":
             verify_environment(config)
+        elif arguments.command in {"remote-preflight", "submit-remote"}:
+            submit_remote_run(config, arguments.session, arguments.profile,
+                              arguments.command == "remote-preflight", arguments.reviewed_preflight)
         elif arguments.command == "stage":
             stage_session(config, arguments.session)
         elif arguments.command == "submit":

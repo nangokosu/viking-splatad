@@ -121,6 +121,7 @@ if [ "$RESUMING" = False ]; then
   echo "slurm_job_id: ${SLURM_JOB_ID:-none}"
   echo "slurm_cpus_per_task: ${SLURM_CPUS_PER_TASK:-unset}"
   echo "slurm_mem_per_node_mb: ${SLURM_MEM_PER_NODE:-unset}"
+  echo "TRAIN_LIDAR_ONLY: ${TRAIN_LIDAR_ONLY:-False}"
   for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX TRAIN_METHOD \
       MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
       DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION \
@@ -205,6 +206,10 @@ if [ -n "${TEST_RENDER_FRACTION:-}" ]; then
 fi
 RADAR_MODEL_ARGS=()
 RADAR_DATAPARSER_ARGS=()
+LIDAR_ONLY_ARGS=()
+if [ "${TRAIN_LIDAR_ONLY:-False}" = True ]; then
+  LIDAR_ONLY_ARGS=(--pipeline.datamanager.train-lidar-only True)
+fi
 # Both registered methods belong to the splatad family; only the method suffix
 # changes, while trainer flags and their position before viking-data stay shared.
 TRAIN_METHOD_SUFFIX="${TRAIN_METHOD#splatad}"
@@ -240,6 +245,7 @@ ns-train splatad"$TRAIN_METHOD_SUFFIX" \
   --pipeline.calc-fid-steps 99999999 \
   --machine.seed "$TRAIN_SEED" \
   --steps-per-eval-all-images "$STEPS_PER_EVAL_ALL_IMAGES" \
+  ${LIDAR_ONLY_ARGS[@]+"${LIDAR_ONLY_ARGS[@]}"} \
   ${RADAR_MODEL_ARGS[@]+"${RADAR_MODEL_ARGS[@]}"} \
   viking-data --data "$STAGE_ROOT/data" --session-name "$SESSION" \
   --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION" \
