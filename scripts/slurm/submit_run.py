@@ -1709,9 +1709,11 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
     ssh_target = resolve_ssh_target(config["ssh_host"])
     stage_root = resolve_remote_stage_root(config, ssh_target)
     git_sha = get_head_sha()
-    if afterok is None or not preflight_only:
+    try:
         env_marker = require_built_environment(config, ssh_target, stage_root, git_sha)
-    else:
+    except RuntimeError:
+        if afterok is None or not preflight_only:
+            raise
         # A dependent preflight may queue before recovery finishes. The batch
         # script still requires the completion marker when it actually starts.
         env_marker = {"env_prefix": f"{stage_root}/envs/{environment_name(config, git_sha)}"}
