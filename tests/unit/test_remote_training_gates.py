@@ -154,3 +154,20 @@ def test_training_dependency_does_not_bypass_environment_readiness(monkeypatch):
         helpers.submit_remote_run(helpers.load_slurm_config(), "june_tall_grass", "june_scene_a",
                                   False, reviewed_preflight=True, afterok="123")
     assert len(checked_environments) == 1
+
+
+def test_remote_training_records_resolved_parameters_for_recovery(tmp_path, monkeypatch):
+    """Post-training recovery can read actual iteration/split settings from the standard job script."""
+    module, code_dir, stage_root, env_prefix, calls = remote_fixture(tmp_path, monkeypatch)
+    module.run_remote(stage_root, code_dir, env_prefix, "synthetic", "tiny", "revision", "run", True)
+    run_dir = stage_root / "runs/run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "job.sbatch").write_text("synthetic submission wrapper\n")
+    monkeypatch.setattr(module.os, "execve", lambda *arguments: None)
+    module.run_remote(stage_root, code_dir, env_prefix, "synthetic", "tiny", "revision", "run", False)
+    parameters = load_submit_module().parse_job_script_exports((run_dir / "job.sbatch").read_text())
+    profile = yaml.safe_load((code_dir / "configs/slurm.yaml").read_text())["profiles"]["tiny"]
+    assert int(parameters["MAX_NUM_ITERATIONS"]) == profile["max_num_iterations"]
+    assert float(parameters["TRAIN_SPLIT_FRACTION"]) == 0.8
+    assert (run_dir / "submission.sbatch").read_text() == "synthetic submission wrapper\n"
+    assert json.loads((run_dir / "validation.json").read_text())["git_sha"] == "revision"

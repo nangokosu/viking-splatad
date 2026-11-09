@@ -108,6 +108,18 @@ def run_remote(stage_root: Path, code_dir: Path, env_prefix: Path, session: str,
         radar_lidar_options=helpers.session_radar_lidar_options(session, stage_root / "data", settings_dir),
     )
     environment.update(DATASET_START_FRACTION=repr(start_fraction), DATASET_END_FRACTION=repr(end_fraction))
+    # Preserve the fully resolved variables in the standard job.sbatch location.
+    # Run tracking/recovery must not have to reconstruct them from a profile that
+    # may later change. Slurm has already copied the submitted wrapper at this point.
+    run_dir = stage_root / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    job_path = run_dir / "job.sbatch"
+    if job_path.is_file():
+        (run_dir / "submission.sbatch").write_text(job_path.read_text())
+    resolved_job = run_dir / "job.sbatch.resolved"
+    resolved_job.write_text(helpers.build_job_script(environment, str(code_dir / "scripts/slurm/splatad_run.sbatch")))
+    resolved_job.replace(job_path)
+    (run_dir / "validation.json").write_text(json.dumps(receipt, indent=2) + "\n")
     process_environment = dict(os.environ, **environment)
     os.execve("/bin/bash", ["bash", str(code_dir / "scripts/slurm/splatad_run.sbatch")], process_environment)
 
