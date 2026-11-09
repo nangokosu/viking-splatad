@@ -1,35 +1,37 @@
 # Session summary
 
-Date: 2026-11-08
+Date: 2026-11-09
 
 ## Done
 
-- Added uncommitted `scripts/slurm/prepare_data.sbatch` for scheduled download,
-  fresh extraction, contract/reference-split validation, and publication on the
-  persistent cluster workdisk. Raw data stays on the cluster; no dataset is fetched
-  onto the Mac. Added synthetic orchestration and validation-failure tests.
-- Base HEAD is `076d0e4` (earlier radar deployment fixes and package committed).
-  No new commit or data job was created in this session.
+- Diagnosed failed native build 240130 from its Slurm log. GPU imports succeeded,
+  but pytest reported 5 failed, 1109 passed, 8 skipped, and 8 deselected.
+- Patched `scripts/slurm/splatad_run.sbatch` locally: restored the recognizable
+  ns-train splatad invocation while dispatching the registered radar suffix;
+  kept evaluation variables on the final lines of both validation/logging loops.
+  Existing tests were not edited. Changes remain uncommitted; base `6099cd9`.
+- Shell syntax and whitespace checks pass. Required reference-image affected
+  tests could not start because the Mac Docker engine is stopped.
 
 ## Current state
 
-- Mac is the intended submit machine. uv and Docker CLI are now installed; Docker
-  engine is stopped. Required image tests could not start. Bash syntax and diff
-  whitespace checks pass; regression tests have not run.
-- Run tracking succeeded outside the sandbox: 0 runs listed. No data/environment
-  job submitted; remote dataset and native environment presence remain unchecked.
-- The new script takes stage root, committed code directory, built native env,
-  and session as arguments. Resources must be supplied to sbatch from sinfo.
-- Remote-only training submission is not implemented: existing local gates and
-  metadata reads still assume local data. Do not bypass them with --skip-gates.
-- Radar seeds/initialization, matched lidar-only settings, and full radar
-  experiment validation remain incomplete. The transfer package is now stale
-  relative to the uncommitted data-preparation script.
+- Environment completion markers are absent. Data job 240132 has an empty log;
+  no June dataset or preparation receipt exists. Its exact exit state is unknown
+  because sacct fails to connect and scontrol no longer has that job.
+- Run tracking outside the sandbox listed 0 runs. No new jobs submitted.
+- Seven extra unlisted skips were identified in the build log: missing real May
+  labels/metadata, full-checkout agent files, Git metadata, upstream source fixture,
+  and staging-consistency inputs. The eighth skip is the allowed traceability one.
+  These still need resolution before declaring the build successful.
+- Remote-only training submission and complete radar initialization remain
+  unfinished. Data preparation script exists at the committed base revision.
 
 ## Next steps
 
-1. Run image tests for the new data job, review and commit it.
-2. Build/reuse the pinned native env; size a scheduled CPU job from sinfo and
-   run prepare_data.sbatch for June. Check logs and successful publication.
-3. Adapt remote-only training metadata and validation while preserving required
-   reference-image checks; finish radar integration before radar comparisons.
+1. Run reference-image affected tests and fix any remaining module failures.
+2. Fix native-build test inputs/staging so unlisted skips do not remain; do not
+   weaken tests or allowlist the missing prerequisites merely to pass.
+3. Commit validated fixes and rebuild the native environment. Confirm GPU imports,
+   acceptable test results, and both completion markers before retrying data prep.
+4. Inspect data-job logs and validated publication, then complete remote-only
+   training gates and radar integration before the scientific comparison.

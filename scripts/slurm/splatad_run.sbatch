@@ -78,8 +78,9 @@ fi
 for required_variable in RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX TRAIN_METHOD \
     MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
     DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION \
-    TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES \
-    RADAR_LIDAR_LOSS_WEIGHT RADAR_LIDAR_GATE_QUANTILE RADAR_LIDAR_GATE_CHUNK_SIZE; do
+    TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION \
+    RADAR_LIDAR_LOSS_WEIGHT RADAR_LIDAR_GATE_QUANTILE RADAR_LIDAR_GATE_CHUNK_SIZE \
+    MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES; do
   if [ -z "${!required_variable:-}" ]; then
     echo "ERROR: $required_variable is not set (submit with scripts/slurm/submit_run.py)" >&2
     exit 1
@@ -123,8 +124,9 @@ if [ "$RESUMING" = False ]; then
   for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX TRAIN_METHOD \
       MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
       DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION \
-      TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES \
-      RADAR_LIDAR_LOSS_WEIGHT RADAR_LIDAR_GATE_QUANTILE RADAR_LIDAR_GATE_CHUNK_SIZE; do
+      TEST_BLOCK_COUNT TEST_BLOCK_CORE_FRACTION \
+      RADAR_LIDAR_LOSS_WEIGHT RADAR_LIDAR_GATE_QUANTILE RADAR_LIDAR_GATE_CHUNK_SIZE \
+      MINIMUM_EVAL_POINTS STEPS_PER_EVAL_ALL_IMAGES; do
     echo "$exported_variable: ${!exported_variable:-}"
   done
   # Recorded only when set, so runs without a profile override keep their old job_info.txt keys.
@@ -203,9 +205,10 @@ if [ -n "${TEST_RENDER_FRACTION:-}" ]; then
 fi
 RADAR_MODEL_ARGS=()
 RADAR_DATAPARSER_ARGS=()
-TRAIN_COMMAND=(ns-train splatad)
+# Both registered methods belong to the splatad family; only the method suffix
+# changes, while trainer flags and their position before viking-data stay shared.
+TRAIN_METHOD_SUFFIX="${TRAIN_METHOD#splatad}"
 if [ "$TRAIN_METHOD" = "splatad-radar-lidar" ]; then
-  TRAIN_COMMAND=(ns-train "$TRAIN_METHOD")
   export NERFSTUDIO_METHOD_CONFIGS="splatad-radar-lidar=viking_splatad.splatad.radar_lidar_method:RADAR_LIDAR_METHOD_SPEC"
   RADAR_MODEL_ARGS=(
     --pipeline.model.radar-lidar-loss-weight "$RADAR_LIDAR_LOSS_WEIGHT"
@@ -218,13 +221,16 @@ if [ "$TRAIN_METHOD" = "splatad-radar-lidar" ]; then
   fi
   # These arguments follow the viking-data subcommand, so use parser-local names.
   RADAR_DATAPARSER_ARGS+=(--radar-inputs-dir "$STAGE_ROOT/data/$SESSION/$RADAR_INPUTS_DIR")
-else
+elif [ "$TRAIN_METHOD" = splatad ]; then
   export NERFSTUDIO_METHOD_CONFIGS=""
+else
+  echo "ERROR: unsupported training method: $TRAIN_METHOD" >&2
+  exit 1
 fi
 TRAIN_START_SECONDS=$(date +%s)
 echo "train_start_epoch_s: $TRAIN_START_SECONDS" >> "$JOB_INFO"
 export VIKING_DETERMINISTIC=1 PYTHONHASHSEED="$TRAIN_SEED" CUBLAS_WORKSPACE_CONFIG=:4096:8
-"${TRAIN_COMMAND[@]}" \
+ns-train splatad"$TRAIN_METHOD_SUFFIX" \
   --vis tensorboard \
   --output-dir "$RUN_DIR/train" \
   --experiment-name "$SESSION" \
