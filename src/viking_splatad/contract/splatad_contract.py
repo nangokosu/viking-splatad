@@ -591,7 +591,10 @@ def validate_dataset(root: Path) -> ContractReport:
         ``dataset_loadable`` check rather than an exception.
     """
     try:
-        dataset = read_dataset(root)
+        # Checks iterate frames; eager image loading costs ~20 GB on June before
+        # lidar and temporary buffers. Keep only the currently checked frame resident.
+        dataset = read_dataset(root, lazy_frames=True)
+        results = [check(dataset) for check in CONTRACT_CHECKS]
     except (SchemaVersionError, OSError, KeyError, ValueError, zipfile.BadZipFile) as load_error:
         return ContractReport([CheckResult("dataset_loadable", False, str(load_error))])
-    return ContractReport([check(dataset) for check in CONTRACT_CHECKS])
+    return ContractReport(results)
