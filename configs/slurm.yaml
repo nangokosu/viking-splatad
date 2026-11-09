@@ -209,7 +209,7 @@ profiles:
     render_pose_source: test
     # As May: full resolution.
     render_downscale_factor: 1
-  june_smoke:
+  smoke_a4500_june:
     # Same short window as the existing smoke, with the June core's lidar-only
     # objective and session split. A4500 is already approved for smoke runs.
     <<: *smoke_profile
