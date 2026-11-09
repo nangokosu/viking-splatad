@@ -58,7 +58,8 @@ STAGED_REPO_PATHS = ("pyproject.toml", "src", "tests", "configs", "scripts",
                      "docker/constraints.txt", "docker/Dockerfile.splatad",
                      ".claude/hooks/readonly_bash_guard.py",
                      # Read by tests/unit/test_render_lidar_script.py (the build's pytest step).
-                     "runs/RUN_FOLDER_GLOSSARY.md")
+                     "runs/RUN_FOLDER_GLOSSARY.md", "CLAUDE.md", "AGENTS.md",
+                     ".claude/skills", ".agents/skills", ".dockerignore", ".gitignore")
 # Hex digits of the recipe hash used in environment names: 12 hex = 48 bits, so two different
 # recipes collide with probability ~2**-48, negligible for the handful of envs ever built.
 RECIPE_HASH_LENGTH = 12
@@ -1403,6 +1404,10 @@ def stage_code(ssh_target: str, absolute_stage_root: str, git_sha: str) -> str:
         snapshot_dir = Path(export_dir) / "snapshot"
         snapshot_dir.mkdir()
         run_checked(["tar", "-xf", str(archive_path), "-C", str(snapshot_dir)], "tar extract")
+        # A fresh, identity-free index lets privacy tests scan precisely the staged
+        # committed sources. Never copy the user's .git/config or credentials.
+        run_checked(["git", "init", "-q", str(snapshot_dir)], "snapshot git init")
+        run_checked(["git", "-C", str(snapshot_dir), "add", "."], "snapshot git index")
         # Step 2: mirror it (--delete keeps the directory identical to the commit).
         run_checked(["rsync", "-a", "--delete", f"{snapshot_dir}/", f"{ssh_target}:{remote_code_dir}/"],
                     "code rsync", capture_output=False)
@@ -1629,6 +1634,49 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
     print(f"submitted environment build job {job_id} -> {env_name} ({cpus} CPUs, {memory_gb}G)\n"
           f"log: {log_dir}/{env_name}-{job_id}.out")
+    return job_id
+
+
+def verify_environment(config: Dict[str, Any]) -> str:
+    """Submit full native validation of an existing compiled env; return the verification job id.
+
+    Args:
+        config: Slurm settings. Verification uses render_only's compatible GPU/resources.
+    Returns:
+        The submitted job id. No environment marker is written by the submit host.
+    """
+    check_clean_tree()
+    ssh_target = resolve_ssh_target(config["ssh_host"])
+    stage_root = resolve_remote_stage_root(config, ssh_target)
+    git_sha = get_head_sha()
+    env_name = environment_name(config, git_sha)
+    # Never race a rebuild that could remove the prefix being verified.
+    queue = run_checked(ssh_command(ssh_target, [
+        "sh", "-c", 'squeue -h -u "$USER" -o "%j"',
+    ]), "environment verification queue check").stdout.splitlines()
+    if any(name.strip() in {"splatad-build-env", "splatad-verify-env"} for name in queue):
+        raise RuntimeError("an environment build/verification is already queued or running")
+    run_checked(ssh_command(ssh_target, [
+        "test", "-f", f"{stage_root}/envs/{env_name}/viking-activate.sh",
+    ]), "compiled environment activation script")
+    code_dir = stage_code(ssh_target, stage_root, git_sha)
+    settings = config["render_only"]
+    gres = resolve_job_gres(config, settings)
+    cpus, memory_gb = query_node_resources(config, ssh_target, gres)
+    log_dir = f"{stage_root}/envs/logs"
+    run_checked(ssh_command(ssh_target, ["mkdir", "-p", log_dir]), "verification log directory")
+    script_path = f"{log_dir}/{env_name}-verify-{git_sha[:SHORT_SHA_LENGTH]}.sbatch"
+    write_remote_file(ssh_target, script_path, build_job_script({
+        "STAGE_ROOT": stage_root, "CODE_DIR": code_dir, "ENV_NAME": env_name,
+        "GIT_SHA": git_sha, "MICROMAMBA_VERSION": config["micromamba_version"],
+    }, f"{code_dir}/scripts/slurm/verify_env.sbatch"))
+    job_id = submit_sbatch(ssh_target, build_sbatch_command(
+        partition=config["partition"], gres=gres, cpus=cpus, memory_gb=memory_gb,
+        time_limit=settings["time_limit"], job_name="splatad-verify-env",
+        output_path=f"{log_dir}/{env_name}-verify-%j.out", job_script_path=script_path,
+        excluded_nodes=config.get("excluded_nodes", ()),
+    ))
+    print(f"submitted verification job {job_id}; log {log_dir}/{env_name}-verify-{job_id}.out")
     return job_id
 
 
@@ -2479,6 +2527,7 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     gates_parser = subparsers.add_parser("gates", help="tests + contract + clean tree")
     gates_parser.add_argument("--session", required=True)
     subparsers.add_parser("build-env", help="build the native environment (once per recipe)")
+    subparsers.add_parser("verify-env", help="recover full validation of an already compiled native env")
     stage_parser = subparsers.add_parser("stage", help="copy data and code to the cluster")
     stage_parser.add_argument("--session", required=True)
     submit_parser = subparsers.add_parser("submit", help="sbatch a run")
@@ -2516,6 +2565,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         config = load_slurm_config(arguments.config)
         if arguments.command == "build-env":
             build_environment(config)
+        elif arguments.command == "verify-env":
+            verify_environment(config)
         elif arguments.command == "stage":
             stage_session(config, arguments.session)
         elif arguments.command == "submit":
