@@ -1645,11 +1645,20 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
     return job_id
 
 
-def verify_environment(config: Dict[str, Any]) -> str:
+def validation_settings(config: Dict[str, Any], resource_key: Optional[str]) -> Dict[str, Any]:
+    """Return a configured validation allocation; reject arbitrary resource-key overrides."""
+    selected_key = resource_key or "render_only"
+    if selected_key not in {"render_only", "validation_gpu"}:
+        raise ValueError("validation resources must be render_only or validation_gpu")
+    return config[selected_key]
+
+
+def verify_environment(config: Dict[str, Any], resource_key: Optional[str] = None) -> str:
     """Submit full native validation of an existing compiled env; return the verification job id.
 
     Args:
-        config: Slurm settings. Verification uses render_only's compatible GPU/resources.
+        config: Slurm settings. Verification defaults to render_only's allocation.
+        resource_key: Optional configured validation-only allocation, e.g. validation_gpu.
     Returns:
         The submitted job id. No environment marker is written by the submit host.
     """
@@ -1668,7 +1677,7 @@ def verify_environment(config: Dict[str, Any]) -> str:
         "test", "-f", f"{stage_root}/envs/{env_name}/viking-activate.sh",
     ]), "compiled environment activation script")
     code_dir = stage_code(ssh_target, stage_root, git_sha)
-    settings = config["render_only"]
+    settings = validation_settings(config, resource_key)
     gres = resolve_job_gres(config, settings)
     cpus, memory_gb = query_node_resources(config, ssh_target, gres)
     log_dir = f"{stage_root}/envs/logs"
@@ -1690,7 +1699,7 @@ def verify_environment(config: Dict[str, Any]) -> str:
 
 def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
                       preflight_only: bool, reviewed_preflight: bool = False,
-                      afterok: Optional[str] = None) -> str:
+                      afterok: Optional[str] = None, resource_key: Optional[str] = None) -> str:
     """Submit validation or training against remote data; return the job id.
 
     Args:
@@ -1700,10 +1709,13 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
         preflight_only: Run native tests, data gates, and overlays without training.
         reviewed_preflight: Explicit acknowledgement that matching overlays were inspected.
         afterok: Optional numeric success dependency, e.g. data prep before preflight or smoke before full training.
+        resource_key: Optional configured validation allocation; forbidden for optimization.
     """
     check_clean_tree()
     if not preflight_only and not reviewed_preflight:
         raise ValueError("inspect the completed remote-preflight overlays, then pass --reviewed-preflight")
+    if not preflight_only and resource_key is not None:
+        raise ValueError("validation resource overrides cannot be used for training")
     if afterok is not None and not re.fullmatch(r"[0-9]+", afterok):
         raise ValueError("--afterok accepts one numeric job id")
     if RUN_ID_PATTERN.fullmatch(session) is None or profile not in config["profiles"]:
@@ -1740,10 +1752,10 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
     }, f"{code_dir}/scripts/slurm/remote_run.sbatch"))
     # Validation does not cache training images or run optimization; use the
     # configured render GPU so full-scene checks do not queue behind A6000 training.
-    resource_settings = config["render_only"] if preflight_only else profile_settings
+    resource_settings = validation_settings(config, resource_key) if preflight_only else profile_settings
     gres = resolve_job_gres(config, resource_settings)
     cpus, memory_gb = query_node_resources(config, ssh_target, gres)
-    time_limit = config["render_only"]["time_limit"] if preflight_only else profile_settings["time_limit"]
+    time_limit = resource_settings["time_limit"]
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=gres, cpus=cpus, memory_gb=memory_gb,
         time_limit=time_limit, job_name="splatad-preflight" if preflight_only else f"splatad-{session}",
@@ -2612,13 +2624,15 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     gates_parser = subparsers.add_parser("gates", help="tests + contract + clean tree")
     gates_parser.add_argument("--session", required=True)
     subparsers.add_parser("build-env", help="build the native environment (once per recipe)")
-    subparsers.add_parser("verify-env", help="recover full validation of an already compiled native env")
+    verification_parser = subparsers.add_parser("verify-env", help="recover full validation of an already compiled native env")
+    verification_parser.add_argument("--resources", choices=("render_only", "validation_gpu"))
     for remote_command in ("remote-preflight", "submit-remote"):
         remote_parser = subparsers.add_parser(remote_command, help="use workdisk data and native cluster validation")
         remote_parser.add_argument("--session", required=True)
         remote_parser.add_argument("--profile", required=True)
         remote_parser.add_argument("--reviewed-preflight", action="store_true")
         remote_parser.add_argument("--afterok", help="start only after the specified job succeeds")
+        remote_parser.add_argument("--resources", choices=("render_only", "validation_gpu"))
     stage_parser = subparsers.add_parser("stage", help="copy data and code to the cluster")
     stage_parser.add_argument("--session", required=True)
     submit_parser = subparsers.add_parser("submit", help="sbatch a run")
@@ -2657,10 +2671,11 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         if arguments.command == "build-env":
             build_environment(config)
         elif arguments.command == "verify-env":
-            verify_environment(config)
+            verify_environment(config, arguments.resources)
         elif arguments.command in {"remote-preflight", "submit-remote"}:
             submit_remote_run(config, arguments.session, arguments.profile,
-                              arguments.command == "remote-preflight", arguments.reviewed_preflight, arguments.afterok)
+                              arguments.command == "remote-preflight", arguments.reviewed_preflight,
+                              arguments.afterok, arguments.resources)
         elif arguments.command == "stage":
             stage_session(config, arguments.session)
         elif arguments.command == "submit":

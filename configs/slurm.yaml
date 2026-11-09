@@ -65,6 +65,15 @@ env_build:
   # well under that. Refine from sacct Elapsed of the first build.
   time_limit: "0-06:00:00"
 
+validation_gpu:
+  # Validation-only alternative when A4500s are booked. NVIDIA lists RTX A2000
+  # as compute capability 8.6, matching the compiled environment. Never used for
+  # optimization; training profiles and their GPU policy remain unchanged.
+  gres: gpu:rtx_a2000:1
+  # Cached-input full suites measured ~2 min; 15 min leaves room for data checks,
+  # GPU initialization and overlay generation without a two-hour queue request.
+  time_limit: "0-00:15:00"
+
 # Render-only jobs (submit_run.py render, scripts/slurm/render_only.sbatch): guard frames of a finished
 # run, rendered from its checkpoint without training.
 render_only:
