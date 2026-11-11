@@ -1,42 +1,39 @@
 # Session summary
 
-Date: 2026-11-09
+Date: 2026-11-11
 
 ## Done
 
-- Native environment recovered with complete fixtures and strict skip audit.
-  GPU verification 240770: 1,136 passed; final source CPU job 241031: 1,143
-  passed, one allowed traceability skip, eight configured deselections.
-  Local Docker tests omitted at the user's request; no existing tests weakened.
-- `ab9c275`–`f31cc47`: workdisk-only validation/training, reviewed provenance
-  receipts, core B lidar-only launch, smoke dependency, recoverable job settings.
-- `fe31e22`: streamed contract validation and recovery of complete extraction.
-  Data job 240771 passed contract/reference split and published June data.
-- `c36540d`, `0097a66`: validation resource routing, CPU source checks after GPU
-  verification, exclusion of preflight jobs from training-run tracking.
-- Preflights 241032/241033 passed on `0097a66`; all ten overlays reviewed with
-  no obvious gross registration error. Submitted smoke 241036 and full B 241037
-  (afterok smoke). Dated native locks and remote workflow documented.
+- Reread the uploaded DOCX, distinguished its classification, rendered-radar and
+  final label-free opacity drafts. User explicitly selected loss-only ablation
+  with no radar Gaussian initialization. Saved the implementation/acceptance plan
+  in `docs/research/proposal_implementation_plan.md`; no training code changed.
+- Prior implementation: `0097a66` passed 1,143 native tests with one allowed skip
+  and eight configured deselections. `06e1653` recorded baseline submissions,
+  workdisk-only workflow and dated native dependency locks.
 
 ## Current state
 
-- Cluster workdisk holds raw June chunks 20–22, validated `data/june_tall_grass`,
-  compiled `splatad-3f478d42f203`, immutable code, and training run directories.
-  Canonical June reference split matches; no raw data downloaded to the Mac.
-- Both training runs use `0097a66`: smoke A4500 pending resources; full B A6000
-  pending smoke success. Mac watcher tool session 76296 waits for both and
-  fetches only after successful plot, split and completion milestones.
-  Runtime run IDs and evidence are in gitignored `data/cluster-validation/`.
-- Radar arm is not ready: calibrated seed builder, Gaussian append hook,
-  provenance/contract gates and measured loss-weight calibration remain missing.
-  Radar is never rendered; evaluation cuboids remain evaluation-only.
-- Native pip locks match the historical record; conda's unpinned dependencies
-  differ. New dated locks preserve the actual environment. No recipe changed.
+- June chunks 20–22 were validated and published on the cluster; reference split
+  matched. Native env is `splatad-3f478d42f203`. No raw data downloaded to the Mac.
+- Baseline smoke 241036 and full B 241037 were submitted on `0097a66` November 9.
+  Current status and automatic fetching are unverified: SSH authentication fails
+  on November 11. Never infer queue state or run success from that failure.
+- Opacity loss and basic train-metadata loader exist. Calibrated train-only radar
+  anchors, provenance/cropping contract, exact stock-config preservation, measured
+  loss weight, loss-only profiles and complete hidden-trunk evaluation are missing.
+- Confirmed new scope is B versus L with identical stock Gaussian initialization.
+  Radar anchors supervise opacity only. No Gaussian append, radar rendering,
+  semantic training labels, depth loss or photometric extension in this work.
+- No existing tests changed or new tests run for this documentation-only plan.
 
 ## Next steps
 
-1. Run `submit_run.py runs`; re-establish one watcher if the previous tool session
-   ended. Read logs/milestones after queue exit; fetch success, diagnose failures.
-2. Confirm smoke completes and full B starts when its A6000 allocation is granted.
-3. Finish calibrated, label-free radar initialization/gates/weight calibration,
-   validate and smoke R, then run repeated matched B/R experiments.
+1. Implement calibrated, train-only radar anchor construction and input gates
+   following the saved plan, without modifying the canonical split/published B data.
+2. Complete and verify loss-only registration/config, exact B/L initialization
+   equality, support diagnostics and initial loss-weight calibration.
+3. Restore authenticated cluster access, reconcile existing jobs and fetch verified
+   success; validate synthetic cases and L smoke before repeated B/L full runs.
+4. Compare matched held-out renders and Gaussian occupancy, including hidden-target
+   recall, precision/false positives, pictures and repeat spread.
