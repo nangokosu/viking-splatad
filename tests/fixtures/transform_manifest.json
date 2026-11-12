@@ -65,6 +65,7 @@
     "T73",
     "T74",
     "T75",
+    "T76",
     "T7a",
     "T7b",
     "T7c",
@@ -332,6 +333,10 @@
     {
       "id": "T75",
       "qualified_name": "viking_splatad.radar_init.clock.safe_clock_fit_mask"
+    },
+    {
+      "id": "T76",
+      "qualified_name": "viking_splatad.radar_init.clock.regularize_velocity_noise"
     },
     {
       "id": "T7a",

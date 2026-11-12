@@ -22,7 +22,7 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # Loss-only radar anchors, frame/crop gates and opacity supervision. No T41 append.
         "T34", "T35", "T36", "T39", "T40", "T42", "T43",
         # Loss-only train-safe clock calibration primitives, independent of labels.
-        "T73", "T74", "T75",
+        "T73", "T74", "T75", "T76",
         # Sweep period covering every extracted sweep (fix for the June 20-22 contract failure).
         "T49",
         # Rendered lidar scans: dataparser-frame pose -> map-frame pose (scripts/08_*).

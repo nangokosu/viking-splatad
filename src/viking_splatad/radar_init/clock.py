@@ -7,6 +7,33 @@ from scipy.stats import norm
 from viking_splatad.registry import transform
 
 
+@transform("T76", "Measured Doppler-cell noise floor prevents zero-residual scans from claiming infinite timing precision")
+def regularize_velocity_noise(radial_noise: np.ndarray, velocity_noise: np.ndarray,
+                               observed_cell_widths: np.ndarray):
+    """Return common radial noise and propagated velocity uncertainty from training scans.
+
+    Args:
+        radial_noise, velocity_noise: Per-scan positive MAD/noise and its geometric propagation.
+        observed_cell_widths: Positive median adjacent distinct-Doppler spacings measured
+            in training scans; missing bins can conservatively overestimate this width.
+
+    Returns:
+        Radial std and per-scan velocity std, bounded below by the measured full-cell
+        uniform quantization variance width**2/12. Machine epsilon is not sensor noise.
+    """
+    radial_noise, velocity_noise, observed_cell_widths = (
+        np.asarray(value, dtype=np.float64) for value in (radial_noise, velocity_noise, observed_cell_widths))
+    if (radial_noise.ndim != 1 or velocity_noise.shape != radial_noise.shape or not len(radial_noise)
+            or observed_cell_widths.ndim != 1 or not len(observed_cell_widths)
+            or not all(np.isfinite(value).all() and np.all(value > 0)
+                       for value in (radial_noise, velocity_noise, observed_cell_widths))):
+        raise ValueError("measured positive Doppler spread/noise is required for clock uncertainty")
+    common_noise = max(float(np.median(radial_noise)), float(np.median(observed_cell_widths) / np.sqrt(12)))
+    # velocity_sigma / radial_sigma is the measured ray-design geometry factor.
+    corrected = np.maximum(velocity_noise, velocity_noise / radial_noise * common_noise)
+    return common_noise, corrected
+
+
 @transform("T73", "Robust radar ego velocity and residual uncertainty from static-majority Doppler")
 def doppler_ego_velocity(points: np.ndarray, doppler: np.ndarray):
     """Fit radar-frame ego velocity robustly from stationary majority radial returns.

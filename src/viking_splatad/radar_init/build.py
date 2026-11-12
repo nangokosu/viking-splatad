@@ -15,7 +15,9 @@ from viking_splatad.radar_init.artifact import (
     ARTIFACT_SCHEMA, CLOCK_SCHEMA, anchor_split, corrected_radar_times,
     load_verified_anchors, object_digest, train_radar_mask, validate_clock_report,
 )
-from viking_splatad.radar_init.clock import doppler_ego_velocity, fit_affine_clock, safe_clock_fit_mask
+from viking_splatad.radar_init.clock import (
+    doppler_ego_velocity, fit_affine_clock, regularize_velocity_noise, safe_clock_fit_mask,
+)
 from viking_splatad.splatad.viking_conversions import open_dataset_view
 
 
@@ -102,6 +104,7 @@ def measure_clock(records, fields, view, lidar_frames, motion, options):
     drift_limit = offset_limit / half_duration
     safe = safe_clock_fit_mask(raw_times, lidar_frames, offset_limit, drift_limit, centre)
     fit_records, velocities, radial_noise, velocity_noise = [], [], [], []
+    observed_cell_widths = []
     for record, kept in zip(records, safe):
         if not kept:
             continue
@@ -115,8 +118,12 @@ def measure_clock(records, fields, view, lidar_frames, motion, options):
         velocities.append(velocity)
         radial_noise.append(sigma_radial)
         velocity_noise.append(sigma_velocity)
+        gaps = np.diff(np.unique(doppler))
+        if len(gaps):
+            observed_cell_widths.append(float(np.median(gaps)))
     if len(fit_records) <= 2:
         raise ValueError("insufficient conservatively training-only Doppler observations for clock fitting")
+    common_noise, velocity_noise = regularize_velocity_noise(radial_noise, velocity_noise, observed_cell_widths)
     fit_stamps = np.array([stamp for stamp, _ in fit_records], dtype=np.int64)
     fit_times = (fit_stamps - reference_ns).astype(np.float64) / 1_000_000_000
     _, _, reference_times, reference_velocity = motion
@@ -137,7 +144,9 @@ def measure_clock(records, fields, view, lidar_frames, motion, options):
     report = dict(candidates[0], schema=CLOCK_SCHEMA, session=view.manifest["session"]["name"],
                   reference_ns=reference_ns, method="train-safe Doppler/odometry bounded affine fit",
                   fit_stamps_ns=fit_stamps.tolist(), fit_source_sha256=source_digest(fit_records),
-                  doppler_noise_std_mps=float(np.median(radial_noise)))
+                  doppler_noise_std_mps=common_noise,
+                  observed_doppler_cell_width_mps=float(np.median(observed_cell_widths)),
+                  doppler_noise_model="max_training_median_MAD_and_observed_uniform_cell_std")
     return report
 
 
