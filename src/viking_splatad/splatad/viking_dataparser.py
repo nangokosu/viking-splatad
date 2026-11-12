@@ -49,7 +49,9 @@ from viking_splatad.splatad.viking_conversions import (
     open_dataset_view,
     resolve_train_fraction,
 )
-from viking_splatad.splatad.radar_seed_metadata import load_radar_seed_metadata
+from viking_splatad.radar_init.artifact import (
+    anchor_split, crop_anchor_arrays, load_verified_anchors, parser_split_settings, transform_anchor_arrays,
+)
 
 try:
     import torch
@@ -208,14 +210,19 @@ if NERFSTUDIO_AVAILABLE:
                 dataparser_transform = outputs.dataparser_transform
                 if hasattr(dataparser_transform, "detach"):
                     dataparser_transform = dataparser_transform.detach().cpu().numpy()
-                outputs.metadata["radar_seeds"] = {
-                    key: torch.from_numpy(value)
-                    for key, value in load_radar_seed_metadata(
-                        self.config.radar_inputs_dir,
-                        self.config.session_name,
-                        np.asarray(dataparser_transform),
-                    ).items()
-                }
+                settings = parser_split_settings(self.config)
+                anchors, _ = load_verified_anchors(self.config.radar_inputs_dir, session_root,
+                                                    self.config.session_name, settings)
+                _, _, time_bounds = anchor_split(self._view, settings)
+                anchors = transform_anchor_arrays(anchors, np.asarray(dataparser_transform), outputs.dataparser_scale)
+                anchors = crop_anchor_arrays(anchors, time_bounds, outputs.scene_box.aabb.cpu().numpy(),
+                                              float(outputs.time_offset))
+                if not len(anchors["means"]):
+                    raise ValueError("no verified radar anchors remain inside this profile's scene/window")
+                print(f"radar loss anchors retained: {len(anchors['means'])}; dropped: {int(anchors['dropped_count'])}")
+                outputs.metadata["radar_seeds"] = {key: torch.from_numpy(np.asarray(value, dtype=np.float32)
+                    if key in {"means", "covariances", "sensor_origins"} else np.asarray(value))
+                    for key, value in anchors.items()}
             return outputs
 
         def _filter_based_on_time(self, cameras, img_filenames, lidars, pc_filenames, trajectories):

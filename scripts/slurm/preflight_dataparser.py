@@ -205,6 +205,12 @@ def main(argument_list: Optional[List[str]] = None) -> int:
                         help="Same as viking-data --dataset-start-fraction (time window start).")
     parser.add_argument("--dataset-end-fraction", type=float, default=1.0,
                         help="Same as viking-data --dataset-end-fraction (time window end).")
+    parser.add_argument("--radar-inputs-dir", type=Path)
+    parser.add_argument("--train-fraction-override", type=float)
+    parser.add_argument("--test-split-method")
+    parser.add_argument("--test-block-count", type=int)
+    parser.add_argument("--test-block-core-fraction", type=float, default=1.0)
+    parser.add_argument("--test-render-fraction", type=float, default=1.0)
     arguments = parser.parse_args(argument_list)
 
     # Same config path as `ns-train splatad viking-data --data ... --session-name ...
@@ -213,6 +219,11 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         data=arguments.data, session_name=arguments.session_name,
         dataset_start_fraction=arguments.dataset_start_fraction,
         dataset_end_fraction=arguments.dataset_end_fraction,
+        radar_inputs_dir=arguments.radar_inputs_dir,
+        train_split_fraction_override=arguments.train_fraction_override,
+        test_split_method=arguments.test_split_method, test_block_count=arguments.test_block_count,
+        test_block_core_fraction=arguments.test_block_core_fraction,
+        test_render_fraction=arguments.test_render_fraction,
     ).setup()
     train_outputs = dataparser.get_dataparser_outputs(split="train")
     summarise_split("train", train_outputs)

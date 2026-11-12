@@ -122,6 +122,8 @@ if [ "$RESUMING" = False ]; then
   echo "slurm_cpus_per_task: ${SLURM_CPUS_PER_TASK:-unset}"
   echo "slurm_mem_per_node_mb: ${SLURM_MEM_PER_NODE:-unset}"
   echo "TRAIN_LIDAR_ONLY: ${TRAIN_LIDAR_ONLY:-False}"
+  echo "RADAR_LIDAR_AUTO_WEIGHT: ${RADAR_LIDAR_AUTO_WEIGHT:-False}"
+  echo "RADAR_DIAGNOSTICS_PATH: ${RADAR_DIAGNOSTICS_PATH:-}"
   for exported_variable in RUN_ID SESSION STAGE_ROOT GIT_SHA CODE_DIR ENV_PREFIX TRAIN_METHOD \
       MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
       DATASET_START_FRACTION DATASET_END_FRACTION ADD_MISSING_POINTS TRAIN_SPLIT_FRACTION \
@@ -219,13 +221,19 @@ if [ "$TRAIN_METHOD" = "splatad-radar-lidar" ]; then
     --pipeline.model.radar-lidar-loss-weight "$RADAR_LIDAR_LOSS_WEIGHT"
     --pipeline.model.radar-lidar-gate-quantile "$RADAR_LIDAR_GATE_QUANTILE"
     --pipeline.model.radar-lidar-gate-chunk-size "$RADAR_LIDAR_GATE_CHUNK_SIZE"
+    --pipeline.model.radar-lidar-auto-weight "${RADAR_LIDAR_AUTO_WEIGHT:-False}"
+    --pipeline.model.radar-lidar-diagnostics-path "${RADAR_DIAGNOSTICS_PATH:-$RUN_DIR/radar_diagnostics.jsonl}"
   )
   if [ -z "${RADAR_INPUTS_DIR:-}" ]; then
     echo "ERROR: radar method requires RADAR_INPUTS_DIR" >&2
     exit 1
   fi
   # These arguments follow the viking-data subcommand, so use parser-local names.
-  RADAR_DATAPARSER_ARGS+=(--radar-inputs-dir "$STAGE_ROOT/data/$SESSION/$RADAR_INPUTS_DIR")
+  if [[ "$RADAR_INPUTS_DIR" = /* ]]; then
+    RADAR_DATAPARSER_ARGS+=(--radar-inputs-dir "$RADAR_INPUTS_DIR")
+  else
+    RADAR_DATAPARSER_ARGS+=(--radar-inputs-dir "$STAGE_ROOT/data/$SESSION/$RADAR_INPUTS_DIR")
+  fi
 elif [ "$TRAIN_METHOD" = splatad ]; then
   export NERFSTUDIO_METHOD_CONFIGS=""
 else

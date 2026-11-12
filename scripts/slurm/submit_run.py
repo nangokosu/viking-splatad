@@ -773,6 +773,29 @@ def session_radar_lidar_options(
     }
 
 
+def profile_radar_lidar_options(profile_settings: Dict[str, Any], baseline_options: Dict[str, Any],
+                                 stage_root: str, session: str, profile: str, git_sha: str) -> Dict[str, Any]:
+    """Resolve a loss-only profile without editing the published session or baseline config.
+
+    Args:
+        profile_settings, baseline_options: Existing validated profile/session settings.
+        stage_root, session, profile, git_sha: Immutable remote artifact identity.
+
+    Returns:
+        Independent options; enabled L requires LiDAR-only optimization and auto weighting.
+    """
+    enabled = profile_settings.get("radar_loss_only", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("profile radar_loss_only must be boolean")
+    options = dict(baseline_options)
+    if enabled:
+        if profile_settings.get("train_lidar_only") is not True:
+            raise ValueError("loss-only core profiles require train_lidar_only")
+        options.update(method="splatad-radar-lidar", loss_weight=0.0, auto_weight=True,
+                       inputs_dir=f"{stage_root}/radar-inputs/{session}/{profile}/{git_sha}")
+    return options
+
+
 def dataset_train_fraction(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT) -> float:
     """``session.train_fraction`` of the local dataset's manifest, the fraction the dataparser uses.
 
@@ -999,6 +1022,9 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         job_environment["RADAR_LIDAR_LOSS_WEIGHT"] = repr(float(radar_lidar_options["loss_weight"]))
         job_environment["RADAR_LIDAR_GATE_QUANTILE"] = repr(float(radar_lidar_options["gate_quantile"]))
         job_environment["RADAR_LIDAR_GATE_CHUNK_SIZE"] = str(int(radar_lidar_options["chunk_size"]))
+        job_environment["RADAR_LIDAR_AUTO_WEIGHT"] = str(radar_lidar_options.get("auto_weight", False))
+        if radar_lidar_options["method"] == "splatad-radar-lidar":
+            job_environment["RADAR_DIAGNOSTICS_PATH"] = f"{stage_root}/runs/{run_id}/radar_diagnostics.jsonl"
         if radar_lidar_options["inputs_dir"] is not None:
             job_environment["RADAR_INPUTS_DIR"] = str(radar_lidar_options["inputs_dir"])
     if "train_lidar_only" in profile_settings:
@@ -1741,6 +1767,48 @@ def verify_environment(config: Dict[str, Any], resource_key: Optional[str] = Non
     return job_id
 
 
+def submit_radar_preparation(config: Dict[str, Any], session: str, profile: str,
+                              afterok: Optional[str] = None) -> str:
+    """Submit immutable train-only radar anchor construction on CPU; return its job ID.
+
+    Args:
+        config: Slurm config; session/profile: existing canonical identifiers.
+        afterok: Optional numeric dependency on successful source validation.
+
+    Returns:
+        Slurm job ID. No downloads, calibration or numerical work run on the login node.
+    """
+    check_clean_tree()
+    if RUN_ID_PATTERN.fullmatch(session) is None or profile not in config["profiles"]:
+        raise ValueError("invalid radar preparation session/profile")
+    if config["profiles"][profile].get("radar_loss_only") is not True:
+        raise ValueError("prepare-radar requires an explicit loss-only profile")
+    if afterok is not None and not re.fullmatch(r"[0-9]+", afterok):
+        raise ValueError("--afterok accepts one numeric job id")
+    target = resolve_ssh_target(config["ssh_host"])
+    stage_root = resolve_remote_stage_root(config, target)
+    git_sha = get_head_sha()
+    marker = require_built_environment(config, target, stage_root, git_sha)
+    code_dir = f"{stage_root}/code/{git_sha}"
+    if run_command(ssh_command(target, ["test", "-f", f"{code_dir}/scripts/07_build_radar_seeds.py"])).returncode:
+        stage_code(target, stage_root, git_sha)
+    partition, gres, cpus, memory_gb = query_validation_allocation(config, target, config["validation_cpu"])
+    log_dir = f"{stage_root}/radar-inputs/logs"
+    run_checked(ssh_command(target, ["mkdir", "-p", log_dir]), "radar artifact log directory")
+    script_path = f"{log_dir}/{session}-{profile}-{git_sha}-job.sbatch"
+    write_remote_file(target, script_path, build_job_script({"STAGE_ROOT": stage_root, "CODE_DIR": code_dir,
+        "ENV_PREFIX": marker["env_prefix"], "SESSION": session, "PROFILE": profile},
+        f"{code_dir}/scripts/slurm/prepare_radar.sbatch"))
+    arguments = build_sbatch_command(partition, gres, cpus, memory_gb, config["render_only"]["time_limit"],
+        "splatad-radar-anchors", f"{log_dir}/{session}-{profile}-%j.out", script_path,
+        excluded_nodes=config.get("excluded_nodes", ()))
+    if afterok is not None:
+        arguments.insert(-1, f"--dependency=afterok:{afterok}")
+    job_id = submit_sbatch(target, arguments)
+    print(f"submitted radar anchor job {job_id}; artifact {stage_root}/radar-inputs/{session}/{profile}/{git_sha}")
+    return job_id
+
+
 def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
                       preflight_only: bool, reviewed_preflight: bool = False,
                       afterok: Optional[str] = None, resource_key: Optional[str] = None) -> str:
@@ -1765,6 +1833,9 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
     if RUN_ID_PATTERN.fullmatch(session) is None or profile not in config["profiles"]:
         raise ValueError("invalid remote session/profile")
     profile_settings = config["profiles"][profile]
+    if profile_settings.get("radar_loss_only"):
+        # Resolve its structural invariants before allocating any GPU/preflight job.
+        profile_radar_lidar_options(profile_settings, {}, "stage", session, profile, "revision")
     profile_eval_cadence(profile_settings)
     ssh_target = resolve_ssh_target(config["ssh_host"])
     stage_root = resolve_remote_stage_root(config, ssh_target)
@@ -1852,6 +1923,8 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     if profile not in config["profiles"]:
         raise KeyError(f"unknown profile {profile!r}; known: {sorted(config['profiles'])}")
     profile_settings = config["profiles"][profile]
+    if profile_settings.get("radar_loss_only"):
+        raise ValueError("loss-only workdisk profiles require submit-remote with a verified radar artifact")
     # The eval cadence is checked before any ssh/sbatch, so a profile too short for its minimum fails early.
     minimum_eval_points, steps_per_eval_all_images = profile_eval_cadence(profile_settings)
     # The split fractions too (profile overrides, else the dataset's), so a bad value fails early.
@@ -2679,6 +2752,10 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     subparsers.add_parser("build-env", help="build the native environment (once per recipe)")
     verification_parser = subparsers.add_parser("verify-env", help="recover full validation of an already compiled native env")
     verification_parser.add_argument("--resources", choices=("render_only", "validation_gpu", "validation_cpu"))
+    radar_parser = subparsers.add_parser("prepare-radar", help="build calibrated train-only loss anchors on CPU")
+    radar_parser.add_argument("--session", required=True)
+    radar_parser.add_argument("--profile", required=True)
+    radar_parser.add_argument("--afterok")
     for remote_command in ("remote-preflight", "submit-remote"):
         remote_parser = subparsers.add_parser(remote_command, help="use workdisk data and native cluster validation")
         remote_parser.add_argument("--session", required=True)
@@ -2725,6 +2802,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             build_environment(config)
         elif arguments.command == "verify-env":
             verify_environment(config, arguments.resources)
+        elif arguments.command == "prepare-radar":
+            submit_radar_preparation(config, arguments.session, arguments.profile, arguments.afterok)
         elif arguments.command in {"remote-preflight", "submit-remote"}:
             submit_remote_run(config, arguments.session, arguments.profile,
                               arguments.command == "remote-preflight", arguments.reviewed_preflight,

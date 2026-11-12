@@ -27,7 +27,14 @@
     "T31",
     "T32",
     "T33",
+    "T34",
+    "T35",
+    "T36",
+    "T39",
     "T4",
+    "T40",
+    "T42",
+    "T43",
     "T45",
     "T46",
     "T49",
@@ -55,6 +62,9 @@
     "T70",
     "T71",
     "T72",
+    "T73",
+    "T74",
+    "T75",
     "T7a",
     "T7b",
     "T7c",
@@ -172,8 +182,36 @@
       "qualified_name": "viking_splatad.labels.eval_occupancy.evaluate_occupancy"
     },
     {
+      "id": "T34",
+      "qualified_name": "viking_splatad.radar_init.anchors.accumulate_radar"
+    },
+    {
+      "id": "T35",
+      "qualified_name": "viking_splatad.radar_init.anchors.persistent_anchors"
+    },
+    {
+      "id": "T36",
+      "qualified_name": "viking_splatad.radar_init.anchors.resolution_covariances"
+    },
+    {
+      "id": "T39",
+      "qualified_name": "viking_splatad.radar_init.artifact.transform_anchor_arrays"
+    },
+    {
       "id": "T4",
       "qualified_name": "viking_splatad.extract.pose.compose_tf_chain"
+    },
+    {
+      "id": "T40",
+      "qualified_name": "viking_splatad.radar_init.artifact.crop_anchor_arrays"
+    },
+    {
+      "id": "T42",
+      "qualified_name": "viking_splatad.splatad.radar_lidar_loss.radar_support_gate"
+    },
+    {
+      "id": "T43",
+      "qualified_name": "viking_splatad.splatad.radar_lidar_loss.compute_radar_lidar_loss"
     },
     {
       "id": "T45",
@@ -282,6 +320,18 @@
     {
       "id": "T72",
       "qualified_name": "viking_splatad.dataset.run_split.restrict_test_to_render_subset"
+    },
+    {
+      "id": "T73",
+      "qualified_name": "viking_splatad.radar_init.clock.doppler_ego_velocity"
+    },
+    {
+      "id": "T74",
+      "qualified_name": "viking_splatad.radar_init.clock.fit_affine_clock"
+    },
+    {
+      "id": "T75",
+      "qualified_name": "viking_splatad.radar_init.clock.safe_clock_fit_mask"
     },
     {
       "id": "T7a",

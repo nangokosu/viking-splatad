@@ -38,6 +38,8 @@ def run_remote(stage_root: Path, code_dir: Path, env_prefix: Path, session: str,
     helpers.require_no_return_sidecar(dataset_dir, helpers.session_add_missing_points(session, stage_root / "data", settings_dir))
     preflight_dir = stage_root / "preflights" / session / profile_name / git_sha
     receipt_path = preflight_dir / "validation.json"
+    if preflight_only:
+        receipt_path.unlink(missing_ok=True)
     provenance = {
         "git_sha": git_sha, "environment": env_prefix.name, "session": session,
         "profile": profile_name, "manifest_sha256": file_digest(dataset_dir / "manifest.json"),
@@ -52,6 +54,31 @@ def run_remote(stage_root: Path, code_dir: Path, env_prefix: Path, session: str,
         start_fraction, end_fraction = helpers.window_fractions(
             *helpers.dataset_time_span(dataset_dir), profile["window_start_seconds"], profile["window_seconds"],
         )
+    train_fraction, override, core_fraction = helpers.profile_split_fractions(profile, session, stage_root / "data", settings_dir)
+    radar_options = helpers.profile_radar_lidar_options(profile,
+        helpers.session_radar_lidar_options(session, stage_root / "data", settings_dir),
+        str(stage_root), session, profile_name, git_sha)
+    overlay_arguments = []
+    if profile.get("radar_loss_only"):
+        from viking_splatad.radar_init.artifact import load_verified_anchors
+
+        artifact = Path(radar_options["inputs_dir"])
+        split_settings = {"start_fraction": start_fraction, "end_fraction": end_fraction,
+            "train_fraction": train_fraction,
+            "test_block_count": helpers.session_test_block_count(session, stage_root / "data", settings_dir),
+            "test_block_core_fraction": core_fraction,
+            "test_split_method": helpers.session_test_split_method(session, stage_root / "data", settings_dir),
+            "test_render_fraction": helpers.profile_test_render_fraction(profile, session, stage_root / "data", settings_dir)}
+        load_verified_anchors(artifact, dataset_dir, session, split_settings)
+        provenance["radar_artifact_sha256"] = file_digest(artifact / "radar_seeds.npz")
+        provenance["radar_metadata_sha256"] = file_digest(artifact / "radar_inputs.json")
+        overlay_arguments = ["--radar-inputs-dir", str(artifact), "--train-fraction-override", str(train_fraction),
+                             "--test-block-core-fraction", str(core_fraction),
+                             "--test-render-fraction", str(split_settings["test_render_fraction"])]
+        if split_settings["test_block_count"] is not None:
+            overlay_arguments += ["--test-block-count", str(split_settings["test_block_count"])]
+        if split_settings["test_split_method"] is not None:
+            overlay_arguments += ["--test-split-method", split_settings["test_split_method"]]
     if preflight_only:
         preflight_dir.mkdir(parents=True, exist_ok=True)
         # Remove any old approval before starting checks; failed reruns cannot reuse it.
@@ -75,6 +102,7 @@ def run_remote(stage_root: Path, code_dir: Path, env_prefix: Path, session: str,
             "--data", str(stage_root / "data"), "--session-name", session,
             "--out", str(preflight_dir / "overlays"),
             "--dataset-start-fraction", str(start_fraction), "--dataset-end-fraction", str(end_fraction),
+            *overlay_arguments,
         ], check=True)
         overlay_files = sorted(path for path in (preflight_dir / "overlays").rglob("*") if path.is_file())
         if not overlay_files:
@@ -92,7 +120,6 @@ def run_remote(stage_root: Path, code_dir: Path, env_prefix: Path, session: str,
         overlay_path = (preflight_dir / relative_path).resolve()
         if not overlay_path.is_relative_to(preflight_dir.resolve()) or file_digest(overlay_path) != digest:
             raise ValueError("preflight overlays changed since validation")
-    train_fraction, override, core_fraction = helpers.profile_split_fractions(profile, session, stage_root / "data", settings_dir)
     minimum_eval_points, eval_interval = helpers.profile_eval_cadence(profile)
     # build_job_environment otherwise tries to open local data for smoke windows.
     whole_recording_profile = {key: value for key, value in profile.items() if key not in {"window_start_seconds", "window_seconds"}}
@@ -105,7 +132,7 @@ def run_remote(stage_root: Path, code_dir: Path, env_prefix: Path, session: str,
         test_split_method=helpers.session_test_split_method(session, stage_root / "data", settings_dir),
         test_render_fraction=helpers.profile_test_render_fraction(profile, session, stage_root / "data", settings_dir),
         minimum_eval_points=minimum_eval_points, steps_per_eval_all_images=eval_interval,
-        radar_lidar_options=helpers.session_radar_lidar_options(session, stage_root / "data", settings_dir),
+        radar_lidar_options=radar_options,
     )
     environment.update(DATASET_START_FRACTION=repr(start_fraction), DATASET_END_FRACTION=repr(end_fraction))
     # Preserve the fully resolved variables in the standard job.sbatch location.

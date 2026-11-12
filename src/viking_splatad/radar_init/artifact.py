@@ -9,6 +9,7 @@ import numpy as np
 from viking_splatad.dataset.run_split import (
     build_run_split_with_cores, file_sha256, nearest_reference_positions, split_digest,
 )
+from viking_splatad.dataset.writer import FRAME_FILE_PATTERN
 from viking_splatad.radar_init.anchors import require_rigid_transform
 from viking_splatad.registry import transform
 from viking_splatad.splatad.viking_conversions import open_dataset_view
@@ -39,6 +40,14 @@ def anchor_split(view, settings: dict):
         sensor_times = np.concatenate(list(view.sensor_times.values()))
         bounds = (float(sensor_times.min()), float(sensor_times.max()))
     return frames, lidar_frames, bounds
+
+
+def parser_split_settings(config) -> dict:
+    """Return the actual parser's profile settings for strict artifact/split equality."""
+    return {"start_fraction": config.dataset_start_fraction, "end_fraction": config.dataset_end_fraction,
+            "train_fraction": config.train_split_fraction, "test_block_count": config.test_block_count,
+            "test_block_core_fraction": config.test_block_core_fraction,
+            "test_split_method": config.test_split_method, "test_render_fraction": config.test_render_fraction}
 
 
 def corrected_radar_times(stamps_ns: np.ndarray, calibration: dict, reference_ns: int) -> np.ndarray:
@@ -171,9 +180,30 @@ def load_verified_anchors(directory: Path, dataset_directory: Path, session: str
     reference_ns = int(view.manifest["pipeline"]["reference_ns"])
     calibration = metadata["clock_calibration"]
     validate_clock_report(calibration, session, reference_ns, lidar_frames, bounds)
+    source_paths = {}
+    for path in (dataset_directory / "sidecar/radar").glob("*.npy"):
+        match = FRAME_FILE_PATTERN.match(path.name)
+        if match:
+            stamp = int(match.group(2))
+            if stamp in source_paths:
+                raise ValueError("duplicate radar source timestamps")
+            source_paths[stamp] = path
+    training_sources = np.asarray(metadata["training_source_stamps_ns"])
+    if (len(np.unique(training_sources)) != len(training_sources)
+            or not train_radar_mask(training_sources, calibration, reference_ns, lidar_frames, bounds).all()):
+        raise ValueError("pinned radar source observations must be unique training sweeps")
+    for source_ids, expected_hash in ((calibration["fit_stamps_ns"], calibration["fit_source_sha256"]),
+                                      (metadata["training_source_stamps_ns"], metadata["source_files_sha256"])):
+        if any(int(stamp) not in source_paths for stamp in source_ids):
+            raise ValueError("radar artifact source observation is missing")
+        actual_hash = object_digest({str(stamp): file_sha256(source_paths[int(stamp)]) for stamp in source_ids})
+        if actual_hash != expected_hash:
+            raise ValueError("radar source file provenance checksum mismatch")
     with np.load(directory / "radar_seeds.npz", allow_pickle=False) as archive:
         arrays = {key: archive[key] for key in archive.files}
     validate_anchor_arrays(arrays)
+    if not set(arrays["source_stamps_ns"].tolist()) <= set(metadata["training_source_stamps_ns"]):
+        raise ValueError("anchor support IDs are absent from the pinned source observations")
     if not train_radar_mask(arrays["source_stamps_ns"], calibration, reference_ns, lidar_frames, bounds).all():
         raise ValueError("anchor artifact contains held-out radar observations")
     times = corrected_radar_times(arrays["source_stamps_ns"], calibration, reference_ns)

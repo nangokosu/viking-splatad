@@ -203,7 +203,7 @@ profiles:
     render_pose_source: test
     # Full resolution, as the smoke: pixel-level misalignment and trunk detail are what we look at.
     render_downscale_factor: 1
-  june_scene_a:
+  june_scene_a: &june_core_profile
     train_lidar_only: true
     # June Scene A core B: lidar-only training with camera-painted initialization.
     # Older runs of this profile used photometric loss and are B+cam, not this core B.
@@ -226,7 +226,7 @@ profiles:
     render_pose_source: test
     # As May: full resolution.
     render_downscale_factor: 1
-  smoke_a4500_june:
+  smoke_a4500_june: &june_smoke_profile
     # Same short window as the existing smoke, with the June core's lidar-only
     # objective and session split. A4500 is already approved for smoke runs.
     <<: *smoke_profile
@@ -234,3 +234,9 @@ profiles:
     train_lidar_only: true
     train_fraction: 0.9
     test_render_fraction: 0.1
+  june_loss_only:
+    <<: *june_core_profile
+    radar_loss_only: true
+  smoke_a4500_june_loss_only:
+    <<: *june_smoke_profile
+    radar_loss_only: true
