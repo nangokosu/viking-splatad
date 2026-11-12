@@ -1,59 +1,48 @@
 # Session summary
 
-Date: 2026-11-11
+Date: 2026-11-12
 
 ## Done
 
-- Implemented the confirmed June B-versus-L loss-only ablation. Stock Gaussian
-  creation is inherited unchanged; radar is fixed train metadata, never rendered.
-  Main commits: `34f9a5c` / `dff9cb2` calibrated artifacts, parser/model/profile
-  integration; `512efd6` / `bd58994` measured noise and train-safe clock domain;
-  `d00fce2` exact device-side support index; `405fd1c` encoded-precision rotation
-  validation; `da76f8d` measured GPU budgets and automatic held-job release.
-- Restored cluster access, verified baseline smoke 241036 and full B 241037
-  successful, and fetched both outputs/checkpoints. Full B walltime: 11,072 s.
-- On `da76f8d`, native validation 243982 and preflights 243984/243985 each passed
-  1,177 tests, one allowed traceability skip and eight configured deselections.
-  Contract and canonical split passed. Inspected all five camera overlays and
-  radar BEV; profile views were byte-identical. This is native-cluster evidence
-  under the user's local-Docker exception, not reference-image testing.
-- Radar preparation 243983 published 201,471 anchors from 3,328 training sweeps,
-  with measured clock/uncertainty, source hashes and exact training membership.
-  Scope/limits recorded in `docs/research/loss_only_implementation.md`.
+- Checked current Slurm jobs and diagnostics. Source `da76f8d` remains frozen for
+  the loss-only pilot; no training/config changes this session.
+- GPU probe 243986 succeeded: full-scene support passes 1.399/0.725 s,
+  index construction 3.952 s. Controller 243991 applied measured caps of 8 h 30 m
+  smoke / 21 h 43 m full and released training successfully.
+- Smoke 243989 completed successfully: train 8,113 s, plot written, camera/LiDAR
+  renders, Gaussian export and matching split; end 2026-11-12T08:17:06Z.
+  Confirmed zero added radar Gaussians, initial weight 0.0036067375 and nonempty
+  support. Background fetch had started; a resumable fetch was restarted to
+  ensure all result files arrive.
+- Restarted one background monitor/fetch for the remaining full job. Previous
+  implementation/handoff commits: `da76f8d`, `bba9fa1`.
 
 ## Current state
 
-- Published June data/raw sidecars and immutable source/artifacts stay on the
-  cluster workdisk. Baseline outputs are fetched locally; no raw bags downloaded
-  to the Mac. Recipe env unchanged: `splatad-3f478d42f203`.
-- Pilot source is frozen at `da76f8db848d54788c27729891a881f2c0c92595`.
-  Probe 243986 waits for A6000 resources. CPU controller 243991 depends on probe
-  success; it applies measured time budgets to both pending runs and releases
-  held smoke 243989. Full pilot 243990 depends on smoke success. Both training
-  allocations use live-measured 24 CPUs/109 GiB. Neither has trained yet.
-- Run IDs:
-  `june_tall_grass-june_loss_only_smoke-20261112-012541-da76f8d` and
-  `june_tall_grass-june_loss_only-20261112-012542-da76f8d`.
-  Runtime launch/probe specifications and preflight images are in ignored
-  `data/cluster-validation/`. A Mac background wait/fetch was started for both;
-  restart it next session. The Slurm release chain runs independently of the Mac.
-- Selector is static persistent occupancy, not a semantic trunk detector.
-  Ground/canopy/sparsity refinements and complete hidden-trunk evaluation remain
-  unfinished. Clock posterior uncertainty/coarse alignment are not independent
-  timing GT. There is no demonstrated radar improvement or repeated comparison.
-- Existing test assertions/tolerances were not weakened. Only the frozen
-  transform-manifest fixture was extended to register the new transforms.
-  Commits are local; no push was performed.
+- Full loss-only job 243990 runs on gpunode3, RTX A6000, 24 CPUs/109 GiB.
+  Latest observed coverage step 18,400/20,001 (~92%), 97% GPU utilization,
+  11,220 MiB GPU memory. Nonempty support: 4,457,820 Gaussians / 89.01% anchors.
+  Training log ETA ~45 min at this check, then plotting/render/export/split gates.
+  No full L result or radar benefit established yet.
+- Full run: `june_tall_grass-june_loss_only-20261112-012542-da76f8d`.
+  Smoke: `june_tall_grass-june_loss_only_smoke-20261112-012541-da76f8d`.
+  Baseline smoke/full successful and fetched. Raw data and immutable 201,471-anchor
+  artifact remain on cluster workdisk; no raw bags on Mac. Recipe unchanged:
+  `splatad-3f478d42f203`. Final native source validation/preflights passed 1,177
+  tests, one allowed skip/eight configured deselections under local-Docker exception.
+- Scope remains B versus loss-only L, stock initialization, no radar rendering.
+  Static persistent occupancy selector is not a semantic trunk detector.
+  Hidden-trunk attribution, Gaussian occupancy/false-positive evaluation and
+  repeat-aware scientific comparison remain unfinished. Commits remain local.
 
 ## Next steps
 
-1. Run `submit_run.py runs`; restart one wait/fetch for active jobs. Inspect GPU
-   probe/controller reports, time amendments and job logs. Failure leaves smoke
-   held; diagnose rather than releasing it manually or guessing a loss weight.
-2. Verify smoke initialization/weight/coverage diagnostics, progress, checkpoints
-   and completion milestones. Full is already success-dependent; fetch success.
-3. Complete and validate Gaussian occupancy, seen/blocked/no-return attribution,
-   false-positive trunk analysis and metric-matched pictures. Keep GT eval-only.
-4. Fix a matched B/L repeat budget/seeds, then run the scientific comparison on
-   the unchanged June split. Compare between-arm gaps with within-arm spread;
-   report unsupported anchors and negative outcomes. No initialization extension.
+1. Reconcile `submit_run.py runs`; ensure one background wait for active full job
+   and finish smoke fetch. Runtime watch/spec/log files are ignored under
+   `data/cluster-validation/`.
+2. On full completion verify plot/render/export/split/end milestones, fetch
+   automatically, and inspect loss/coverage curves and held-out renders/metrics.
+3. Complete and validate hidden-trunk occupancy/visibility/false-positive metrics
+   with matching views and GT used only for evaluation.
+4. Fix matched B/L repeat budget/seeds before comparing between-arm improvements
+   against within-arm variability. The current pair is a pilot, not repeat evidence.
