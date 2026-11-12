@@ -45,6 +45,20 @@ def digest(path):
     return checksum.hexdigest()
 
 
+def final_train_directory(run_dir):
+    """Return the unique trainer directory across stock and radar method names.
+
+    Args:
+        run_dir: Successful run root; layout is train/session/method/run-id.
+    Returns:
+        Parent of the recorded dataparser transform; ambiguity is refused.
+    """
+    transforms = list((Path(run_dir) / "train").glob("*/*/*/dataparser_transforms.json"))
+    if len(transforms) != 1:
+        raise ValueError("one final trained dataparser transform required")
+    return transforms[0].parent
+
+
 def completed_run(run_dir):
     """Return verified completion/split records; fail rather than score partial outputs."""
     information = dict(line.split(": ", 1) for line in (run_dir / "job_info.txt").read_text().splitlines() if ": " in line)
@@ -224,10 +238,7 @@ def main(argument_list=None):
         # run outputs. Thin Gaussians lose SPD when a full covariance is rounded
         # to float32; axes/scales evaluate the same model stably without repair.
         factor_path = arguments.out / f"{arm_name}-gaussian-factors.npz"
-        train_directories = list((run / "train").glob("*/splatad/*/dataparser_transforms.json"))
-        if len(train_directories) != 1:
-            raise ValueError("one final trained dataparser transform required")
-        subprocess.run([sys.executable, str(root / "scripts/10_export_gaussians.py"), "--train-dir", str(train_directories[0].parent),
+        subprocess.run([sys.executable, str(root / "scripts/10_export_gaussians.py"), "--train-dir", str(final_train_directory(run)),
                         "--output-path", str(factor_path), "--factorized"], check=True)
         with np.load(factor_path, allow_pickle=False) as archive:
             if int(archive["checkpoint_step"]) != int(baseline_info["MAX_NUM_ITERATIONS"]) - 1:
