@@ -11,7 +11,11 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from viking_splatad.contract.splatad_contract import validate_dataset
+from viking_splatad.contract.splatad_contract import (
+    ContractReport,
+    validate_dataset,
+    validate_radar_inputs,
+)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -26,10 +30,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True, help="intermediate dataset directory")
     parser.add_argument("--report", type=Path, default=None, help="optional Markdown output path")
+    parser.add_argument("--radar-inputs-dir", type=Path, default=None,
+                        help="optional versioned radar seed artifact directory")
+    parser.add_argument("--session", default=None,
+                        help="session tag required when --radar-inputs-dir is set")
     arguments = parser.parse_args(argv)
+
+    if (arguments.radar_inputs_dir is None) != (arguments.session is None):
+        parser.error("--radar-inputs-dir and --session must be provided together")
 
     # Step 1: run all checks and print the Markdown report.
     report = validate_dataset(arguments.dataset)
+    if arguments.radar_inputs_dir is not None:
+        radar_report = validate_radar_inputs(
+            arguments.radar_inputs_dir, arguments.session, arguments.dataset
+        )
+        report = ContractReport(report.results + radar_report.results)
     markdown = report.to_markdown()
     print(markdown)
     # Step 2: save it only when --report is given.

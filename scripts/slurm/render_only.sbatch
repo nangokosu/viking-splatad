@@ -36,7 +36,7 @@ set -euo pipefail
 
 # ---- check the required variables (set -u alone would give a less clear message) ----------
 for required_variable in RUN_ID RERENDER_LABEL STAGE_ROOT SESSION GIT_SHA TRAIN_GIT_SHA CODE_DIR \
-    ENV_PREFIX RENDER_DOWNSCALE_FACTOR; do
+    ENV_PREFIX RENDER_DOWNSCALE_FACTOR TRAIN_METHOD; do
   if [ -z "${!required_variable:-}" ]; then
     echo "ERROR: $required_variable is not set (submit with scripts/slurm/submit_run.py render)" >&2
     exit 1
@@ -62,7 +62,7 @@ mkdir -p "$RERENDER_DIR"
   echo "slurm_cpus_per_task: ${SLURM_CPUS_PER_TASK:-unset}"
   echo "slurm_mem_per_node_mb: ${SLURM_MEM_PER_NODE:-unset}"
   for exported_variable in RUN_ID RERENDER_LABEL STAGE_ROOT SESSION GIT_SHA TRAIN_GIT_SHA CODE_DIR \
-      ENV_PREFIX RENDER_DOWNSCALE_FACTOR; do
+      ENV_PREFIX RENDER_DOWNSCALE_FACTOR TRAIN_METHOD; do
     echo "$exported_variable: ${!exported_variable:-}"
   done
   echo "environment build:"; sed 's/^/  /' "$ENV_PREFIX/.build-complete"
@@ -82,6 +82,9 @@ source "$ENV_PREFIX/viking-activate.sh"
 # The render code's src/ goes first on sys.path, ahead of the env's editable install
 # (PYTHONPATH entries precede site-packages .pth paths), so the code is exactly GIT_SHA's.
 export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+if [ "$TRAIN_METHOD" = splatad-radar-init ]; then
+  export NERFSTUDIO_METHOD_CONFIGS="splatad-radar-init=viking_splatad.splatad.radar_init_method:RADAR_INIT_METHOD_SPEC"
+fi
 # Caches inside the rerender dir, so nothing depends on (or writes to) $HOME.
 mkdir -p "$RERENDER_DIR/.cache/torch"
 export TORCH_HOME="$RERENDER_DIR/.cache/torch" XDG_CACHE_HOME="$RERENDER_DIR/.cache"
@@ -94,7 +97,8 @@ print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 
 # ---- (d) render config: the run's config.yml with the guard selection (T66) --------------------
 # Same path as splatad_run.sbatch's TRAIN_CONFIG (ns-train --experiment-name/--timestamp).
-TRAIN_CONFIG="$RUN_DIR/train/$SESSION/splatad/$RUN_ID/config.yml"
+TRAIN_METHOD="${TRAIN_METHOD:-splatad}"
+TRAIN_CONFIG="$RUN_DIR/train/$SESSION/$TRAIN_METHOD/$RUN_ID/config.yml"
 RENDER_CONFIG="$RERENDER_DIR/config.yml"
 if [ ! -f "$TRAIN_CONFIG" ]; then
   echo "ERROR: training config not found at $TRAIN_CONFIG" >&2

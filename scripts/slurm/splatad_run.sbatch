@@ -63,6 +63,9 @@
 # Fail on any error, unset variable, or failure inside a pipeline.
 set -euo pipefail
 
+# Runs created before radar initialization did not export a method; their stock path remains valid.
+TRAIN_METHOD="${TRAIN_METHOD:-splatad}"
+
 # ---- check the required variables (set -u alone would give a less clear message) ----------
 for required_variable in RUN_ID STAGE_ROOT SESSION GIT_SHA CODE_DIR ENV_PREFIX \
     MAX_NUM_ITERATIONS STEPS_PER_SAVE TRAIN_SEED RENDER_POSE_SOURCE RENDER_DOWNSCALE_FACTOR \
@@ -125,6 +128,11 @@ if [ "$RESUMING" = False ]; then
   if [ -n "${TEST_RENDER_FRACTION:-}" ]; then
     echo "TEST_RENDER_FRACTION: $TEST_RENDER_FRACTION"
   fi
+  echo "TRAIN_METHOD: $TRAIN_METHOD"
+  if [ "$TRAIN_METHOD" = splatad-radar-init ]; then
+    echo "RADAR_INPUTS_DIR: ${RADAR_INPUTS_DIR:-}"
+    echo "RADAR_SEED_OPACITY: ${RADAR_SEED_OPACITY:-}"
+  fi
   echo "environment build:"; sed 's/^/  /' "$ENV_PREFIX/.build-complete"
   echo "gpu (name, compute_cap, memory.total, driver_version):"
   nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv,noheader
@@ -139,6 +147,13 @@ source "$ENV_PREFIX/viking-activate.sh"
 # This run's committed src/ goes first on sys.path, ahead of the env's editable install
 # (PYTHONPATH entries precede site-packages .pth paths), so the code is exactly GIT_SHA's.
 export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+if [ "$TRAIN_METHOD" = splatad-radar-init ]; then
+  if [ -z "${RADAR_INPUTS_DIR:-}" ] || [ -z "${RADAR_SEED_OPACITY:-}" ]; then
+    echo "ERROR: splatad-radar-init needs RADAR_INPUTS_DIR and RADAR_SEED_OPACITY" >&2
+    exit 1
+  fi
+  export NERFSTUDIO_METHOD_CONFIGS="splatad-radar-init=viking_splatad.splatad.radar_init_method:RADAR_INIT_METHOD_SPEC"
+fi
 # Caches inside the run dir, so nothing depends on (or writes to) $HOME.
 mkdir -p "$RUN_DIR/.cache/torch"
 export TORCH_HOME="$RUN_DIR/.cache/torch" XDG_CACHE_HOME="$RUN_DIR/.cache"
@@ -191,6 +206,7 @@ fi
 TRAIN_START_SECONDS=$(date +%s)
 echo "train_start_epoch_s: $TRAIN_START_SECONDS" >> "$JOB_INFO"
 export VIKING_DETERMINISTIC=1 PYTHONHASHSEED="$TRAIN_SEED" CUBLAS_WORKSPACE_CONFIG=:4096:8
+if [ "$TRAIN_METHOD" = splatad ]; then
 ns-train splatad \
   --vis tensorboard \
   --output-dir "$RUN_DIR/train" \
@@ -210,6 +226,29 @@ ns-train splatad \
   --test-block-core-fraction "$TEST_BLOCK_CORE_FRACTION" \
   ${TEST_SPLIT_ARGS[@]+"${TEST_SPLIT_ARGS[@]}"} \
   --eval-whole-test-blocks True
+else
+ns-train splatad-radar-init \
+  --vis tensorboard \
+  --output-dir "$RUN_DIR/train" \
+  --experiment-name "$SESSION" \
+  --timestamp "$RUN_ID" \
+  --max-num-iterations "$MAX_NUM_ITERATIONS" \
+  --steps-per-save "$STEPS_PER_SAVE" \
+  --pipeline.calc-fid-steps 99999999 \
+  --pipeline.model.radar-seed-opacity "$RADAR_SEED_OPACITY" \
+  --machine.seed "$TRAIN_SEED" \
+  --steps-per-eval-all-images "$STEPS_PER_EVAL_ALL_IMAGES" \
+  viking-data --data "$STAGE_ROOT/data" --session-name "$SESSION" \
+  --dataset-start-fraction "$DATASET_START_FRACTION" --dataset-end-fraction "$DATASET_END_FRACTION" \
+  --add-missing-points "$ADD_MISSING_POINTS" \
+  --radar-inputs-dir "$RADAR_INPUTS_DIR" \
+  --train-split-fraction "$TRAIN_SPLIT_FRACTION" \
+  ${TRAIN_FRACTION_OVERRIDE_ARGS[@]+"${TRAIN_FRACTION_OVERRIDE_ARGS[@]}"} \
+  --test-block-count "$TEST_BLOCK_COUNT" \
+  --test-block-core-fraction "$TEST_BLOCK_CORE_FRACTION" \
+  ${TEST_SPLIT_ARGS[@]+"${TEST_SPLIT_ARGS[@]}"} \
+  --eval-whole-test-blocks True
+fi
 TRAIN_END_SECONDS=$(date +%s)
 {
   echo "train_end_epoch_s: $TRAIN_END_SECONDS"
@@ -221,7 +260,7 @@ fi
 # Train-vs-test curves from the TensorBoard log: <run dir>/overfitting/overfitting_curves.{png,csv}.
 # A failure is recorded and the job continues (the renders are worth more than the figure), but
 # end_utc requires the figure (gate before end_utc).
-TRAIN_CONFIG="$RUN_DIR/train/$SESSION/splatad/$RUN_ID/config.yml"
+TRAIN_CONFIG="$RUN_DIR/train/$SESSION/$TRAIN_METHOD/$RUN_ID/config.yml"
 if [ ! -f "$TRAIN_CONFIG" ]; then
   echo "ERROR: training config not found at $TRAIN_CONFIG" >&2
   exit 1

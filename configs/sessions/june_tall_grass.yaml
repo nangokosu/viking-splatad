@@ -86,6 +86,15 @@ lidar:
 radar:
   name: hugin
   fields: [x, y, z, power, doppler]
+  # Hugin data-sheet measurement cell resolutions used to derive accumulation bins and
+  # anisotropic seed covariance; these are measured sensor properties, not tuned radii.
+  range_resolution_m: 0.1
+  azimuth_resolution_degrees: 1.25
+  elevation_resolution_degrees: 1.7
+  # Robust/static and persistence/height thresholds are data percentiles or sigma units.
+  doppler_sigma_multiplier: 3.0
+  support_percentile: 75.0
+  canopy_height_percentile: 75.0
 
 split:
   # Fraction of the windowed frames used for training; the rest are held out.
@@ -123,3 +132,8 @@ splatad:
   # scripts/slurm/submit_run.py (stage refuses a dataset without the sidecar; submit passes it to
   # ns-train as --add-missing-points).
   add_missing_points: true
+  # B uses stock ``splatad`` with no artifact. R selects ``splatad-radar-init`` and the
+  # immutable train-only artifact; no radar loss or renderer is enabled by this method.
+  method: splatad
+  radar_inputs_dir: null
+  radar_seed_opacity: 0.5

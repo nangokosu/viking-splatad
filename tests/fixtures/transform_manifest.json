@@ -27,7 +27,13 @@
     "T31",
     "T32",
     "T33",
+    "T34",
+    "T35",
+    "T36",
+    "T39",
     "T4",
+    "T40",
+    "T41",
     "T45",
     "T46",
     "T49",
@@ -172,8 +178,32 @@
       "qualified_name": "viking_splatad.labels.eval_occupancy.evaluate_occupancy"
     },
     {
+      "id": "T34",
+      "qualified_name": "viking_splatad.radar_init.accumulate.accumulate_radar_points"
+    },
+    {
+      "id": "T35",
+      "qualified_name": "viking_splatad.radar_init.select.select_radar_candidates"
+    },
+    {
+      "id": "T36",
+      "qualified_name": "viking_splatad.radar_init.seeds.build_seed_gaussians"
+    },
+    {
+      "id": "T39",
+      "qualified_name": "viking_splatad.splatad.viking_conversions.transform_radar_seeds_to_dataparser"
+    },
+    {
       "id": "T4",
       "qualified_name": "viking_splatad.extract.pose.compose_tf_chain"
+    },
+    {
+      "id": "T40",
+      "qualified_name": "viking_splatad.splatad.viking_conversions.crop_radar_seeds_to_scene_and_time"
+    },
+    {
+      "id": "T41",
+      "qualified_name": "viking_splatad.splatad.radar_init_model.covariance_to_log_scales_and_quaternions"
     },
     {
       "id": "T45",
