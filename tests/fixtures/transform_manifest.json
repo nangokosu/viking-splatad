@@ -37,6 +37,7 @@
     "T43",
     "T45",
     "T46",
+    "T47",
     "T49",
     "T5",
     "T50",
@@ -222,6 +223,10 @@
     {
       "id": "T46",
       "qualified_name": "viking_splatad.eval.detection.neighbourhood_point_precision"
+    },
+    {
+      "id": "T47",
+      "qualified_name": "viking_splatad.viz.radar_bev.bev_pixels"
     },
     {
       "id": "T49",

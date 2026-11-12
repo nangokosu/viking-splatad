@@ -56,7 +56,7 @@ PLANNED_TRANSFORM_IDS = frozenset(
         "T66",
         # P1 semantic occupancy of rendered test lidar vs GT cuboids (eval/detection.py):
         # per-class cuboid detection rate and neighbourhood point precision (PLAN §5, T46 part a).
-        "T45", "T46",
+        "T45", "T46", "T47",
         # Rendered lidar npz -> points (eval/rendered_pointcloud.py): ungated (accumulation) points
         # rebuilt from the ray raster, and lidar-frame points -> map frame -> GT voxel grid.
         "T67", "T68",

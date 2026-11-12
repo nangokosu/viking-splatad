@@ -26,6 +26,7 @@ import numpy as np
 from viking_splatad.align.spatial_check import project_lidar_to_image
 from viking_splatad.extract.geometry import apply_opencv_to_nerfstudio
 from viking_splatad.splatad.viking_dataparser import VikingHillDataParserConfig
+from viking_splatad.viz.radar_bev import write_radar_lidar_bev
 
 
 def to_homogeneous_4x4(pose_3x4: np.ndarray) -> np.ndarray:
@@ -229,6 +230,18 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     summarise_split("train", train_outputs)
     summarise_split("test", dataparser.get_dataparser_outputs(split="test"))
     write_overlays(train_outputs, arguments.frames, arguments.out)
+    if "radar_seeds" in train_outputs.metadata:
+        # Use existing train outputs and the same spread of LiDAR sweeps. The
+        # picture is label-free and never filters the anchors supplied to training.
+        lidars = train_outputs.metadata["lidars"]
+        indices = np.unique(np.linspace(0, len(lidars) - 1, arguments.frames).round().astype(int))
+        points = []
+        for sweep_index in indices:
+            local = train_outputs.metadata["point_clouds"][sweep_index][:, :3].cpu().numpy()
+            pose = lidars.lidar_to_worlds[sweep_index].cpu().numpy()
+            points.append(local @ pose[:3, :3].T + pose[:3, 3])
+        write_radar_lidar_bev(np.concatenate(points), train_outputs.metadata["radar_seeds"]["means"].cpu().numpy(),
+                              arguments.out / "radar_lidar_bev.png")
     return 0
 
 
