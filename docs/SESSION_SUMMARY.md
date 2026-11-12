@@ -4,17 +4,18 @@ Date: 2026-11-12
 
 ## Done
 
-- Prepared the requested genuine side-by-side tall-grass loss-only preview from
-  completed full B/L artifacts (CPU composition job 244858). Verified matching
-  held-out frames/split and zero added radar Gaussians. Camera colours initialize
-  both models; camera loss is off. No new training or model rendering performed.
-- Fetched `data/evaluation-results/tall-grass-loss-only-preview/`: RGB and trunk-400
-  geometry paired PNGs, standalone `index.html` with first/middle/last observations
-  and both reconstructions, and SHA provenance. Original scenes unenhanced.
+- Updated the requested visual layout (CPU composition job 244860): original
+  tall-grass observation leftmost, full B/L reconstructions in the middle,
+  original with June dataset trunk annotations rightmost. The model has no
+  semantic trunk classifier; annotations are explicitly GT, not predictions.
+- Updated `data/evaluation-results/tall-grass-loss-only-preview/index.html`
+  and added `four-panel-comparison.png`, keeping the paired RGB/geometry PNGs
+  and exact-source provenance. Checked the final image visually. No training,
+  classification model, scientific metric or existing test changed.
 - Core evaluator `f43e055` passed 1,189 native tests; final repeat summary/review
   source `394db6a` passed 1,194 (one allowed traceability skip/eight configured
   deselections, standing native-cluster exception to local Docker). No code or
-  test changes for this preview. Prior final handoff commit: `fc77b30`.
+  test changes for this preview. Prior visual-preview handoff commit: `36c9843`.
 
 ## Current state
 
