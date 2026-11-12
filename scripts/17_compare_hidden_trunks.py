@@ -9,6 +9,8 @@ import hashlib
 import importlib.util
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import cv2
@@ -218,16 +220,25 @@ def main(argument_list=None):
             raise ValueError("binding ungated P1 cannot be reconstructed from these outputs")
         p1 = p1_cells(sweeps, "ungated_points", indices, grid["origin"], voxel_size, grid["class_ids"].shape)
         p1_masks[arm_name] = p1
-        with np.load(run / "renders/gaussians.npz", allow_pickle=False) as archive:
+        # Re-export to this evaluation's directory, never overwrite successful
+        # run outputs. Thin Gaussians lose SPD when a full covariance is rounded
+        # to float32; axes/scales evaluate the same model stably without repair.
+        factor_path = arguments.out / f"{arm_name}-gaussian-factors.npz"
+        train_directories = list((run / "train").glob("*/splatad/*/dataparser_transforms.json"))
+        if len(train_directories) != 1:
+            raise ValueError("one final trained dataparser transform required")
+        subprocess.run([sys.executable, str(root / "scripts/10_export_gaussians.py"), "--train-dir", str(train_directories[0].parent),
+                        "--output-path", str(factor_path), "--factorized"], check=True)
+        with np.load(factor_path, allow_pickle=False) as archive:
             if int(archive["checkpoint_step"]) != int(baseline_info["MAX_NUM_ITERATIONS"]) - 1:
                 raise ValueError("comparison requires final equal-budget Gaussian checkpoints")
-            probability = gaussian_occupancy_at_centres(centres, archive["means"], archive["covariances"], archive["opacities"],
-                                                        session["splatad"]["radar_lidar_gate_chunk_size"])
+            probability = gaussian_occupancy_at_centres(centres, archive["means"], None, archive["opacities"],
+                session["splatad"]["radar_lidar_gate_chunk_size"], principal_axes=archive["principal_axes"], axis_std=archive["axis_std"])
         masks[arm_name], probabilities[arm_name] = probability >= threshold, probability
         reports[arm_name] = {"P1": occupied_cell_metrics(p1, truth, evidence),
                             "P2": occupied_cell_metrics(masks[arm_name], truth, evidence),
                             "present_but_hidden_gt_cells": int(np.count_nonzero(truth & masks[arm_name] & ~p1)),
-                            "run_id": run.name, "gaussians_sha256": digest(run / "renders/gaussians.npz")}
+                            "run_id": run.name, "gaussian_factors_sha256": digest(factor_path)}
         print(f"scored {arm_name}: {json.dumps(reports[arm_name])}", flush=True)
     box_reports = []
     for box_index, box in enumerate(trunks):

@@ -15,25 +15,37 @@ EVIDENCE_NAMES = ("seen", "blocked", "no_return", "passed_through", "unobserved"
 
 
 @transform("T57", "Three-sigma Gaussian product occupancy at shared map-frame voxel centres")
-def gaussian_occupancy_at_centres(centres, means, covariances, opacities, chunk_size):
+def gaussian_occupancy_at_centres(centres, means, covariances, opacities, chunk_size,
+                                 principal_axes=None, axis_std=None):
     """Evaluate 1-prod(1-alpha) exactly on supplied voxel centres, within 3 sigma.
 
     Args:
         centres: [V,3] map-frame voxel centres, identical across compared arms.
         means, covariances, opacities: [G,3], [G,3,3], [G] exported static model.
         chunk_size: Positive CPU working-batch size, a memory policy only.
+        principal_axes, axis_std: Optional stable checkpoint factors [G,3,3]/[G,3];
+        pass covariances=None in this mode. No eigenvalue repair or clipping occurs.
     Returns:
         [V] probabilities. A conservative sphere finds candidate cells; the final
         predicate is Mahalanobis squared <= 9. Overlap accumulates log survival,
         not summed alpha. Cost is O((G+V)log V + candidate pairs), not G*V.
     """
     centres, means = np.asarray(centres, dtype=np.float64), np.asarray(means, dtype=np.float64)
-    covariances, opacities = np.asarray(covariances, dtype=np.float64), np.asarray(opacities, dtype=np.float64)
+    opacities = np.asarray(opacities, dtype=np.float64)
+    factorized = principal_axes is not None or axis_std is not None
+    if factorized:
+        principal_axes, axis_std = np.asarray(principal_axes, dtype=np.float64), np.asarray(axis_std, dtype=np.float64)
+        if (covariances is not None or principal_axes.shape != (len(means), 3, 3) or axis_std.shape != (len(means), 3)
+                or not np.isfinite(principal_axes).all() or not np.isfinite(axis_std).all() or np.any(axis_std <= 0)):
+            raise ValueError("finite principal factors and strictly positive scales required; no covariance in factor mode")
+    else:
+        covariances = np.asarray(covariances, dtype=np.float64)
     if (centres.ndim != 2 or centres.shape[1:] != (3,) or means.ndim != 2 or means.shape[1:] != (3,)
-            or covariances.shape != (len(means), 3, 3) or opacities.shape != (len(means),)
+            or (not factorized and covariances.shape != (len(means), 3, 3)) or opacities.shape != (len(means),)
             or isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0):
         raise ValueError("valid voxel/model shapes and positive integer chunk size required")
-    if (not all(np.isfinite(array).all() for array in (centres, means, covariances, opacities))
+    if (not all(np.isfinite(array).all() for array in (centres, means, opacities))
+            or (not factorized and not np.isfinite(covariances).all())
             or np.any((opacities < 0) | (opacities > 1))):
         raise ValueError("finite geometry and opacities in [0,1] required")
     survival_log = np.zeros(len(centres), dtype=np.float64)
@@ -42,17 +54,23 @@ def gaussian_occupancy_at_centres(centres, means, covariances, opacities, chunk_
     tree = cKDTree(centres)
     for start_index in range(0, len(means), chunk_size):
         stop_index = min(len(means), start_index + chunk_size)
-        covariance_batch = covariances[start_index:stop_index]
-        if not np.allclose(covariance_batch, covariance_batch.transpose(0, 2, 1), rtol=0,
+        if factorized:
+            axes = principal_axes[start_index:stop_index]
+            scales = axis_std[start_index:stop_index]
+            inverse_axes = np.linalg.inv(axes)
+            # ||A diag(std)||_F bounds its spectral radius, so the tree sphere
+            # remains conservative for the actual map transform's stored precision.
+            radii = SIGMA_EXTENT * np.linalg.norm(axes * scales[:, None, :], axis=(1, 2))
+        else:
+            covariance_batch = covariances[start_index:stop_index]
+            if not np.allclose(covariance_batch, covariance_batch.transpose(0, 2, 1), rtol=0,
                            atol=np.finfo(np.float32).eps * np.max(np.abs(covariance_batch))):
-            raise ValueError("symmetric positive-definite covariance required")
-        try:
-            np.linalg.cholesky(covariance_batch)
-        except np.linalg.LinAlgError as error:
-            raise ValueError("symmetric positive-definite covariance required") from error
-        # trace >= largest eigenvalue for SPD Sigma: this sphere cannot miss an
-        # ellipsoid point. Inflate only the index bound by float64 rounding.
-        radii = SIGMA_EXTENT * np.sqrt(np.trace(covariance_batch, axis1=1, axis2=2))
+                raise ValueError("symmetric positive-definite covariance required")
+            try:
+                np.linalg.cholesky(covariance_batch)
+            except np.linalg.LinAlgError as error:
+                raise ValueError("symmetric positive-definite covariance required") from error
+            radii = SIGMA_EXTENT * np.sqrt(np.trace(covariance_batch, axis1=1, axis2=2))
         radii = np.nextafter(radii, np.inf)
         # One Gaussian query at a time bounds index-list storage by V; tested
         # candidate arithmetic is further batched, with no neighbor truncation.
@@ -63,11 +81,16 @@ def gaussian_occupancy_at_centres(centres, means, covariances, opacities, chunk_
             candidates = tree.query_ball_point(means[gaussian_index], radius)
             if not candidates:
                 continue
-            inverse = np.linalg.inv(covariance_batch[local_index])
+            if not factorized:
+                inverse = np.linalg.inv(covariance_batch[local_index])
             for candidate_start in range(0, len(candidates), chunk_size):
                 indices = np.asarray(candidates[candidate_start:candidate_start + chunk_size], dtype=np.int64)
                 differences = centres[indices] - means[gaussian_index]
-                distance_squared = np.einsum("ni,ij,nj->n", differences, inverse, differences)
+                if factorized:
+                    normalized = (differences @ inverse_axes[local_index].T) / scales[local_index]
+                    distance_squared = np.einsum("ni,ni->n", normalized, normalized)
+                else:
+                    distance_squared = np.einsum("ni,ij,nj->n", differences, inverse, differences)
                 inside = distance_squared <= SIGMA_EXTENT ** 2
                 indices, distance_squared = indices[inside], distance_squared[inside]
                 alpha = opacities[gaussian_index] * np.exp(-0.5 * distance_squared)
