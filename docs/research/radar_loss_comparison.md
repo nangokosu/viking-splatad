@@ -10,7 +10,7 @@ radar Gaussians; that initialization is deliberately omitted here.
 | Arm or proposal draft | Radar initialization | Added objective | Current state |
 | --- | --- | --- | --- |
 | B | No | None; stock LiDAR training | Smoke and full runs successful and fetched |
-| L, selected | No | Label-free opacity near fixed radar anchors | Implemented, validated and queued behind GPU runtime probe and smoke gates |
+| L, selected | No | Label-free opacity near fixed radar anchors | Full pilot and first evaluation complete; matched repeat check running |
 | I / R | Yes | None / opacity | Outside selected scope; no Gaussian append implemented |
 | Depth / opacity plus depth | Optional | One-sided radar depth | Outside selected scope |
 | Vegetation classification drafts | Separate semantic model | Weighted cross-entropy | Outside selected scope; requires independently authorized labels/head |
@@ -43,11 +43,13 @@ Final source `da76f8d` passed 1,177 native tests and both exact-profile prefligh
 reference-image testing was skipped under the user's local-Docker exception.
 
 The selector finds static persistent radar occupancy; it is not yet a
-trunk-specific ground/canopy/sparsity selector. Hidden-trunk attribution,
-visibility-independent Gaussian occupancy, false-positive analysis and matching
-metric views still need completion. Matched repeat seeds and a repeat budget
-must be fixed before the scientific comparison. The queued smoke/full pair is
-one pilot and cannot establish a radar benefit.
+trunk-specific ground/canopy/sparsity selector. Recorded-ray attribution, visibility-independent Gaussian occupancy, neighbourhood
+precision and matching metric views are implemented. The first full pair is
+complete; a second matched B/L pair is running under a predeclared two-per-arm
+initial repeat budget. The tested summary measures gaps against within-arm
+spread. Global unmatched-trunk false positives and finer-grid sensitivity remain
+additional work. No benefit is inferred from the first pair alone. See
+[hidden_trunk_evaluation.md](hidden_trunk_evaluation.md).
 
 Implementation and live launch records: [loss_only_implementation.md](loss_only_implementation.md).
 Proposal interpretation and acceptance gates: [proposal_implementation_plan.md](proposal_implementation_plan.md).

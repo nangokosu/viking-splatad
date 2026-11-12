@@ -119,10 +119,21 @@ Both training jobs use A6000 allocations sized from live node reports (24 CPUs,
 held and full waited on smoke. No L training result exists yet. Baseline jobs
 241036/241037 were successful and fetched; full B took 11,072 seconds walltime.
 
-## Scientific result requirements still outstanding
+## Scientific evaluation and remaining scope
 
-A running loss is not a detection result. Complete and validate P2 Gaussian
-occupancy, seen/blocked/no-return attribution, false-positive trunk analysis and
-matching views. Compare repeated B/L runs on the same June GT/frame record.
-No radar-vs-B hidden-trunk improvement has been established by implementation,
-input alignment, support coverage or benchmark timing alone.
+The full L pilot and factor-based P1/P2 evaluation are now complete and fetched.
+The evaluation implements recorded-ray seen/blocked/no-return/passed-through/
+unobserved evidence, common-cell occupancy, neighbourhood precision and matched
+views of all 175 scored June trunks. Float32 covariance export is unsuitable for
+thin full-B Gaussians; evaluation therefore re-exports stable checkpoint factors
+without changing the trained model or its legacy archive.
+
+Two runs per arm are the initial repeat budget. Additional B/L jobs 244827/244828
+are running; comparison 244830 and repeat-aware summary 244855 are success-dependent.
+The tested summary compares between-arm gaps against within-arm spread and refuses
+a single pair. Details and limits: [hidden_trunk_evaluation.md](hidden_trunk_evaluation.md).
+
+No radar improvement has been established from the first pair alone. Global
+unmatched-trunk false positives, camera occlusion labels, finer-grid sensitivity
+and a larger statistical repeat study remain beyond this initial check. A nearer
+LiDAR return is geometric blockage, not independently labeled grass.

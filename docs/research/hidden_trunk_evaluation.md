@@ -88,17 +88,55 @@ view and hashes; a matching reviewed receipt can be supplied. A coarse view
 alone does not prove exact alignment. No ICP, May-to-June mapping or GT-guided
 training adjustment is performed.
 
-The first evaluation implementation (`8c8aa77`) passed 1,185 native tests, with
-one allowed traceability skip and eight configured GPU/real-data deselections.
-Its queued comparison 244546 was held after the real covariance check. Stable
-factor export (`c48e60d`) and both trainer-directory layouts (`f43e055`) require
-fresh native validation before the corrected comparison is submitted. SSH access
-expired during that submission attempt; training continues independently.
+The corrected factor-based evaluator (`f43e055`) passed 1,189 native tests.
+Comparison 244829 completed successfully and its reports, common cell archive and
+all 175 per-trunk pictures were fetched. Both full pilot runs are complete and
+fetched. The obsolete covariance-based job 244546 remains held; do not release it.
 
-A local background continuation is prepared in ignored
-`data/cluster-validation/finish_hidden_evaluation.py`, pinned to `f43e055`.
-After authenticated SSH returns it runs native validation, refuses submission on
-failure, submits the corrected comparison after full training success, and fetches
-reports/cell arrays/pictures (not the large factor archives). Its log is
-`data/cluster-validation/hidden-evaluation-watch.log`. The superseded 244546
-remains held; do not release it against the rounded covariance artifacts.
+Coordinate correspondence was reviewed in the real-LiDAR XY overview, observed
+trunk XZ panels, and five original held-out camera observations (frame indices
+10, 520, 1030, 1634, 2151) with the June cuboids projected by existing T25. Boxes
+coincide with the corresponding trunks, including vegetation-obscured bases.
+No alignment transform was estimated or applied. This is a visual frame check,
+not independent certification of calibration or annotation accuracy. A separate
+receipt binds the review to the exact dataset, cuboid and label hashes; original
+numerical products remain unchanged.
+
+## Initial repeat check
+
+The predeclared initial budget is two runs per arm, using the same configured
+seed and each arm's exact pilot training source. This measures accepted stock
+CUDA variation; it is not a power-calculated statistical study.
+
+- B repeat 244827 runs `0097a66`, profile `june_scene_a`.
+- L repeat 244828 runs `da76f8d`, profile `june_loss_only`. Its step-zero Gaussian
+  fingerprint matches the first L run and records zero added radar Gaussians.
+- Both request live-measured A6000 resources: 24 CPUs/109 GiB. L reuses the
+  successful measured 21 h 43 m allocation; B retains its six-hour allocation.
+- Comparison 244830 depends on both repeat runs and uses the same fixed
+  `f43e055` evaluator as the first pair.
+- Summary 244855 depends on comparison 244830, uses tested source `394db6a`,
+  and consumes both matched products plus the separate correspondence review.
+
+`scripts/18_summarize_hidden_trunk_repeats.py` refuses a single pair, reused run
+IDs, differing cells/observations/thresholds, or metric JSON that does not match
+its cell archive. It reports arm means, sample spread, min/max ranges and paired
+gaps; undefined values cannot be dropped. It also draws metric-matched P1/P2
+maps of consistent recovery/loss, intermittently present B cells consistently
+preserved in L, and consistently added off-trunk cells. These are descriptive
+checks, never a significance claim. Final validation 244835 passed **1,194 tests**,
+with the one allowed traceability skip and eight configured deselections, under
+the user's native-cluster exception to local Docker tests. No existing test
+assertion/tolerance was weakened.
+
+One training monitor and one evaluation/summary monitor were started on the Mac.
+They automatically fetch completed products, retry SSH failures, and never treat
+connection failure as an empty queue. The Slurm dependency chain runs without
+the Mac; fetching needs the Mac connected. Runtime records/scripts/logs live in
+ignored `data/cluster-validation/`. Restart those monitors next session; do not
+restart the old submission continuation and duplicate already queued work.
+
+The repeat jobs were still active at this handoff. No B/L performance conclusion
+was read from the first pair alone. Global unmatched-trunk counting and finer-grid
+sensitivity remain additional work; the present false-positive measure is the
+committed local occupancy protocol.
