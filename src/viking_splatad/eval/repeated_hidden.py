@@ -95,7 +95,7 @@ def summarize_comparisons(reports, cell_arrays):
                 occupied = values >= reference["threshold"] if representation == "P2" else values.astype(bool)
                 actual = occupied_cell_metrics(occupied, truth, evidence)
                 if actual != report["arms"][arm][representation]:
-                    raise ValueError("reported metrics do not match the archived cells")
+                    raise ValueError("reported metrics must be identical to metrics recomputed from the archived cells")
                 masks.append(occupied)
             stacks[representation][arm] = np.stack(masks)
         paths = [(name, None) for name in ("precision", "recall", "iou")]
