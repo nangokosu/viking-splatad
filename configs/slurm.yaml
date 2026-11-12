@@ -221,7 +221,7 @@ profiles:
     seed: 42
     # As May: same iteration count on a slightly smaller recording (2153 vs 2401 camera frames),
     # so May's ~2.7 h (measured, scaled to 20001) is an upper bound; 6 h leaves ~2x headroom.
-    time_limit: "0-06:00:00"
+    time_limit: &june_core_time_limit "0-06:00:00"
     # As May: render only the T72 render subset (~22 of June's ~216 held-out sweeps, and the camera frames nearest them).
     render_pose_source: test
     # As May: full resolution.
@@ -246,6 +246,8 @@ profiles:
     <<: *june_core_profile
     max_num_iterations: *smoke_iterations
     steps_per_save: *smoke_save_interval
-    time_limit: *smoke_time_limit
+    # The measured full B run took 3 h 4 min including its 50 full-scene evals.
+    # This smoke keeps those evals, so reuse the full allocation's time budget.
+    time_limit: *june_core_time_limit
     radar_loss_only: true
     radar_anchor_profile: june_loss_only
