@@ -1,100 +1,53 @@
 # Radar loss comparison and deployment readiness
 
-Date: 2026-11-09
+Date: 2026-11-11
 
-The objective is to compare the radar approaches in the supplied proposal. The
-document contains several drafts: vegetation-weighted semantic classification,
-rendered radar range with beam blur, and a later label-free seed opacity method
-with optional depth supervision. They require different predictions and targets;
-the current repository implements only part of the last approach.
+The selected experiment is **B versus loss-only L**, on June tall grass, with
+stock Gaussian initialization in both arms. This is the user's approved ablation
+of the proposal's final action plan. The complete final action plan also adds
+radar Gaussians; that initialization is deliberately omitted here.
 
-## Comparison matrix
-
-| Experiment | Added initialization | Added objective | Readiness |
+| Arm or proposal draft | Radar initialization | Added objective | Current state |
 | --- | --- | --- | --- |
-| B | None | Stock lidar training | Lidar-only launch wired; native tests and remote data/preflight gates passed; smoke/full jobs submitted |
-| I | Radar Gaussians | None | Seed generation and Gaussian append hook are missing |
-| O | Same radar Gaussians | Opacity near radar seeds | Loss and model hook exist; initialization and artifact gates remain |
-| D | Same radar Gaussians | One-sided radar depth | Not implemented; implement and verify independently of opacity |
-| OD | Same radar Gaussians | Opacity plus one-sided depth | Requires O and D; tests whether their effects combine |
-| VB | Semantic prediction pipeline | Vegetation-weighted cross-entropy, binary obstruction | No classifier or training-label source exists in this pipeline |
-| VC | Same semantic pipeline | Vegetation-weighted cross-entropy, continuous obstruction | Also requires vegetation/free/unknown grid and a policy for rays with no known cells |
-| RB | Radar rendering pipeline | Radar range with beam blur | Conflicts with the standing rule that radar is never rendered; excluded from the current deployment |
+| B | No | None; stock LiDAR training | Smoke and full runs successful and fetched |
+| L, selected | No | Label-free opacity near fixed radar anchors | Implemented, validated and queued behind GPU runtime probe and smoke gates |
+| I / R | Yes | None / opacity | Outside selected scope; no Gaussian append implemented |
+| Depth / opacity plus depth | Optional | One-sided radar depth | Outside selected scope |
+| Vegetation classification drafts | Separate semantic model | Weighted cross-entropy | Outside selected scope; requires independently authorized labels/head |
+| Rendered radar with beam blur | Separate radar renderer | Radar range reconstruction | Outside selected scope; radar remains unrendered |
 
-VB and VC belong to a semantic segmentation experiment unless a semantic head
-and independently authorized training supervision are introduced into SplatAD.
-They cannot be substituted for the opacity objective: opacity is an occupancy
-probability, not a trunk-class probability. Ground-truth evaluation cuboids must
-never supply training labels, seed filters, or loss targets. The rendered-radar
-draft is recorded for completeness, not enabled by the attached document.
+For existing static Gaussians whose means lie inside at least one radar anchor's
+uncertainty ellipsoid, the selected objective is
 
-## Existing opacity objective
+$$
+\mathcal L_L=\mathcal L_B+
+\lambda\frac{1}{|S|}\sum_{k\in S}\operatorname{softplus}(-o_k).
+$$
 
-For static Gaussian k and radar seed j, define
+Here $o_k$ is an opacity logit. Membership uses the inclusive Mahalanobis gate
+with the configured chi-square quantile; overlapping anchors count a Gaussian
+once. At step zero, $\lambda$ matches the initial radar term to the stock weighted
+opacity regularizer. Missing initial support or an invalid regularizer stops the
+run. Later empty support yields zero and is logged.
 
-`distance_squared(k,j) = (mean_k - seed_j)^T covariance_j^-1 (mean_k - seed_j)`.
+This directly encourages opacity at supported existing Gaussians. It does not
+create Gaussians, attract their means into unsupported regions, or predict a
+trunk class. Camera painting still colors stock initialization; camera loss,
+radar rendering and GT training supervision are disabled.
 
-Include Gaussian k if it lies inside at least one seed's uncertainty ellipsoid:
-`distance_squared(k,j) <= chi2.ppf(gate_quantile, df=3)`.
+Train-only calibration, uncertainty-aware persistent anchors, strict artifact
+provenance/split checks, parser transformation/cropping, stock-config preservation,
+exact device-side support lookup and diagnostics are implemented. The artifact is
+separate from the baseline dataset, which retains its canonical timestamp split.
+Final source `da76f8d` passed 1,177 native tests and both exact-profile preflights;
+reference-image testing was skipped under the user's local-Docker exception.
 
-The implemented objective is
-`loss = weight * mean(softplus(-opacity_logit_k))` over included Gaussians.
-`softplus(-o)` equals `-log(sigmoid(o))` without sigmoid underflow. Overlapping
-seed ellipsoids do not count a Gaussian multiple times. Empty support produces a
-differentiable zero, which cannot attract new Gaussians to an unsupported seed.
-This is why initialization and support diagnostics matter.
+The selector finds static persistent radar occupancy; it is not yet a
+trunk-specific ground/canopy/sparsity selector. Hidden-trunk attribution,
+visibility-independent Gaussian occupancy, false-positive analysis and matching
+metric views still need completion. Matched repeat seeds and a repeat budget
+must be fixed before the scientific comparison. The queued smoke/full pair is
+one pilot and cannot establish a radar benefit.
 
-Code: `src/viking_splatad/splatad/radar_lidar_loss.py` and
-`src/viking_splatad/splatad/radar_lidar_model.py`.
-
-The loader currently requires map-frame `means[N,3]` and positive-definite
-`covariances[N,3,3]` in `radar_seeds.npz`. It optionally checks session/frame tags
-in `radar_inputs.json`, then the dataparser transforms the metadata for the train
-split. This is not yet the full provenance contract described in PLAN section 2.
-
-## Conditions for a valid comparison
-
-- Use June Scene A chunks 20–22 and the committed timestamp-based reference split
-  for every arm. Do not change extraction or split settings to enable radar.
-- Apply the same lidar-only training setting, camera colour initialization,
-  no-return rays, iteration budget, and upstream model settings across B/I/O/D/OD.
-  The June baseline and smoke profiles now set `train-lidar-only True`.
-- Use one shared, label-free seed artifact for I/O/D/OD, built using only training
-  observations, with calibrated timing, uncertainty, and provenance. The seed
-  builder and Gaussian initialization hook are not present in this checkout.
-- Preserve the stock trainer/model configuration when registering extensions;
-  audit the current replacement model config before claiming matched arms.
-- For opacity, PLAN section 4.2 specifies measuring the initial unweighted term
-  and stock opacity regularizer, then matching their weighted magnitudes at step
-  zero. That calibration is not implemented. Do not invent a deployment weight.
-- Measure runtime and memory: the current gate compares every static Gaussian
-  against every seed, chunked only over Gaussians, and repeats covariance checks
-  and inversion each call. It needs a real seed-count smoke test before scaling.
-- Run repeats within every arm. Assess between-arm differences against within-arm
-  variation; the same random seed does not eliminate CUDA kernel variability.
-- Evaluate all reconstruction arms against the same June occupancy/trunk targets
-  and matching views. VB/VC need semantic metrics as well; their classification
-  scores alone cannot rank reconstruction quality against B/O/D.
-
-## Deployment order
-
-1. Let submitted baseline smoke 241036 complete; full baseline 241037 is gated
-   on its success. Both use source `0097a66`. Native source validation passed
-   1,143 tests with one allowed traceability skip and eight policy deselections.
-2. Fetch successful training/render/split outputs automatically. Repeat B before
-   interpreting reconstruction differences against a future radar arm.
-3. Complete calibrated seed generation, Gaussian initialization, input-contract
-   provenance gates, and measured opacity-weight calibration. Add synthetic
-   known-answer tests without using evaluation cuboids as supervision.
-4. Pass the same data/reference/overlay gates and smoke R before full R runs.
-   Compare repeated B/R runs on the same June evaluation targets and views.
-5. D/OD remain optional extensions requiring approval. Semantic VB/VC require a
-   separately authorized supervision pipeline; radar rendering remains excluded.
-
-June data is validated and published on the cluster workdisk. Contract validation
-now streams frames, fixing memory exhaustion after otherwise complete
-extraction. Both profiles passed native preflight, and all ten alignment overlays
-were reviewed without an obvious gross registration error. The user explicitly
-requested skipping local Docker tests; these results are native-cluster results,
-not reference-image validation. See [remote_training.md](remote_training.md) for
-the Mac submit-host workflow. No radar training run has been submitted.
+Implementation and live launch records: [loss_only_implementation.md](loss_only_implementation.md).
+Proposal interpretation and acceptance gates: [proposal_implementation_plan.md](proposal_implementation_plan.md).

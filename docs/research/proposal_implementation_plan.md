@@ -49,8 +49,7 @@ completed repeat rather than selecting favorable outcomes.
 ### A. Establish the baseline and immutable inputs
 
 - Reconcile jobs 241036/241037 and inspect logs and completion milestones.
-  SSH authentication currently prevents confirming their outcome; do not infer
-  success or an empty queue from the failed connection.
+  Both baseline runs were verified successful and fetched on November 11.
 - Reuse validated June data and the canonical split. Do not overwrite published
   inputs or reuse extraction caches for another chunk set.
 - Record source, environment locks, dataset hashes, split membership and settings

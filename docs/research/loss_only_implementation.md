@@ -83,6 +83,42 @@ Measure device-side gate time/memory before the full run. The earlier CPU-tree
 benchmark took roughly 30 s on five million Gaussians/201,471 anchors, motivating
 device-side cell lookup. It is not the timing of the current GPU implementation.
 
+### Measured runtime release
+
+`benchmark_radar_support.py` runs inside a short A6000 Slurm allocation. It uses
+the completed B run's exported map-frame Gaussians and current map-frame anchors
+to measure index construction and two full-scene gate passes. These are workload
+measurements only: B's trained geometry never initializes L or sets its loss weight.
+The prediction retains the entire measured full B walltime, adds the slower gate
+pass times the profile's iteration count and one-time index construction, then
+applies the allocation headroom in `configs/slurm.yaml`. Requests are rounded up
+to minutes and refused above the cluster's five-day cap.
+
+Submit reviewed smoke with `submit-remote --hold-for-budget --afterok <probe-job>`
+and full with `--afterok <smoke-job>`. A small CPU control job, dependent on probe
+success, runs `release_radar_budget.py --specification <runtime-json>`. Its runtime
+specification records source revision, stage root, benchmark report and both
+job/run/profile identities. The controller verifies the exact pending jobs,
+updates full then smoke, writes their `allocation.json`, and releases smoke last.
+A missing/failed probe, wrong source or excessive budget leaves smoke held.
+This requires no Mac session to perform the release; monitoring/fetching uses the Mac.
+
+### November 11 launch
+
+Source `da76f8d`: final native validation and both preflights each passed 1,177
+tests, one allowed no-pending-transform skip and eight configured GPU/real-data
+deselections. Contract and canonical split passed. All five camera overlays and
+the radar/LiDAR BEV were inspected; the two profiles' views were byte-identical.
+These are coarse alignment checks, not independent clock or reconstruction GT.
+The published artifact contains 201,471 anchors from 3,328 training radar sweeps.
+
+The first L launch is a **pilot**, not a repeated scientific comparison:
+GPU probe 243986; budget controller 243991; smoke 243989; full 243990.
+Both training jobs use A6000 allocations sized from live node reports (24 CPUs,
+109 GiB). At submission the probe waited for resources, smoke was intentionally
+held and full waited on smoke. No L training result exists yet. Baseline jobs
+241036/241037 were successful and fetched; full B took 11,072 seconds walltime.
+
 ## Scientific result requirements still outstanding
 
 A running loss is not a detection result. Complete and validate P2 Gaussian
