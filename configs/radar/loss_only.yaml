@@ -10,6 +10,8 @@ max_range_m: 42.0
 confidence_quantile: 0.95
 # Median distinct-sweep support; two distinct sweeps remain the semantic minimum.
 persistence_quantile: 0.5
-# Restricted header-clock search: half one measured LiDAR period of total
-# correction. Boundary/uncertain fits fail; this never silently assumes sync.
-clock_search_periods: 0.5
+# Derive clock search bounds from actual contiguous training-time corridors,
+# targeting their median available timing margin, independently of Doppler fits.
+# Every selected fit observation must remain train across the entire search box.
+# Boundary/uncertain fits still fail; no clock is assumed synchronized.
+clock_fit_retained_fraction: 0.5

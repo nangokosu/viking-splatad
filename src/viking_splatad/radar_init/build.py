@@ -16,7 +16,7 @@ from viking_splatad.radar_init.artifact import (
     load_verified_anchors, object_digest, train_radar_mask, validate_clock_report,
 )
 from viking_splatad.radar_init.clock import (
-    doppler_ego_velocity, fit_affine_clock, regularize_velocity_noise, safe_clock_fit_mask,
+    clock_search_domain, doppler_ego_velocity, fit_affine_clock, regularize_velocity_noise, safe_clock_fit_mask,
 )
 from viking_splatad.splatad.viking_conversions import open_dataset_view
 
@@ -92,16 +92,9 @@ def measure_clock(records, fields, view, lidar_frames, motion, options):
     reference_ns = int(view.manifest["pipeline"]["reference_ns"])
     stamps = np.array([stamp for stamp, _ in records], dtype=np.int64)
     raw_times = (stamps - reference_ns).astype(np.float64) / 1_000_000_000
-    centre = (lidar_frames[0].time_s + lidar_frames[-1].time_s) / 2
-    cadence = float(np.median(np.diff([frame.time_s for frame in lidar_frames])))
-    # Divide the configured total correction budget equally between offset and
-    # drift at the recording endpoints. Both candidate extremes stay train-safe.
-    total_excursion = cadence * options["clock_search_periods"]
-    offset_limit = total_excursion / 2
-    half_duration = (lidar_frames[-1].time_s - lidar_frames[0].time_s) / 2
-    if half_duration <= 0:
-        raise ValueError("radar recording has no temporal span for affine calibration")
-    drift_limit = offset_limit / half_duration
+    centre, offset_limit, drift_limit = clock_search_domain(
+        raw_times, lidar_frames, options["clock_fit_retained_fraction"],
+    )
     safe = safe_clock_fit_mask(raw_times, lidar_frames, offset_limit, drift_limit, centre)
     fit_records, velocities, radial_noise, velocity_noise = [], [], [], []
     observed_cell_widths = []
@@ -146,7 +139,10 @@ def measure_clock(records, fields, view, lidar_frames, motion, options):
                   fit_stamps_ns=fit_stamps.tolist(), fit_source_sha256=source_digest(fit_records),
                   doppler_noise_std_mps=common_noise,
                   observed_doppler_cell_width_mps=float(np.median(observed_cell_widths)),
-                  doppler_noise_model="max_training_median_MAD_and_observed_uniform_cell_std")
+                  doppler_noise_model="max_training_median_MAD_and_observed_uniform_cell_std",
+                  search_domain_policy="quantile_of_training_time_corridor_margins",
+                  clock_fit_retained_fraction=options["clock_fit_retained_fraction"],
+                  timing_uncertainty_definition="residual_rms_seconds_is_RMS_posterior_timing_std_from_velocity_fit_covariance")
     return report
 
 

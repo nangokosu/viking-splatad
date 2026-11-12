@@ -7,6 +7,48 @@ from scipy.stats import norm
 from viking_splatad.registry import transform
 
 
+@transform("T77", "Clock search bounds derived from training-only time corridors and configured retained fraction")
+def clock_search_domain(radar_times: np.ndarray, lidar_frames, retained_fraction: float):
+    """Derive an affine search box from actual holdout spacing, independent of Doppler values.
+
+    Args:
+        radar_times: Raw relative header seconds [N]; lidar_frames: sorted split records.
+        retained_fraction: Desired nominal training observation fraction in (0,1).
+
+    Returns:
+        Centre, positive offset/drift limits. Each observation's maximum safe
+        correction is its distance to a forbidden/unsupported time corridor;
+        a quantile allocates equal worst-case correction budgets to offset/drift.
+        The subsequent T75 mask is authoritative for every candidate in this box.
+    """
+    radar_times = np.asarray(radar_times, dtype=np.float64)
+    reference = np.array([frame.time_s for frame in lidar_frames])
+    train = np.array([frame.split == "train" for frame in lidar_frames])
+    if (radar_times.ndim != 1 or not np.isfinite(radar_times).all() or len(reference) < 2
+            or np.any(np.diff(reference) <= 0) or not 0 < retained_fraction < 1):
+        raise ValueError("ordered split frames and a valid clock-fit retained fraction required")
+    centre = float((reference[0] + reference[-1]) / 2)
+    half_duration = float((reference[-1] - reference[0]) / 2)
+    transitions = np.diff(np.concatenate([[False], train, [False]]).astype(np.int8))
+    starts, stops = np.flatnonzero(transitions == 1), np.flatnonzero(transitions == -1)
+    budgets = []
+    for start, stop in zip(starts, stops):
+        lower = (reference[start - 1] + reference[start]) / 2 if start else reference[0]
+        upper = (reference[stop - 1] + reference[stop]) / 2 if stop < len(reference) else reference[-1]
+        selected = radar_times[(radar_times > lower) & (radar_times < upper)]
+        margin = np.minimum(selected - lower, upper - selected)
+        # A total budget b gives excursion b/2 * (1 + |t-centre|/half_duration).
+        budgets.extend(2 * margin / (1 + np.abs(selected - centre) / half_duration))
+    if not budgets:
+        raise ValueError("no nominal training timing corridors available for clock calibration")
+    total_budget = float(np.quantile(budgets, 1 - retained_fraction))
+    # Keep a numerical margin when recomputing inclusive midpoint tests downstream.
+    total_budget *= 1 - np.sqrt(np.finfo(float).eps)
+    if total_budget <= 0:
+        raise ValueError("training timing corridors have no positive clock search domain")
+    return centre, total_budget / 2, total_budget / (2 * half_duration)
+
+
 @transform("T76", "Measured Doppler-cell noise floor prevents zero-residual scans from claiming infinite timing precision")
 def regularize_velocity_noise(radial_noise: np.ndarray, velocity_noise: np.ndarray,
                                observed_cell_widths: np.ndarray):
