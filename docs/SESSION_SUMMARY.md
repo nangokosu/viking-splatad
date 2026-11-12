@@ -4,45 +4,56 @@ Date: 2026-11-12
 
 ## Done
 
-- Checked current Slurm jobs and diagnostics. Source `da76f8d` remains frozen for
-  the loss-only pilot; no training/config changes this session.
-- GPU probe 243986 succeeded: full-scene support passes 1.399/0.725 s,
-  index construction 3.952 s. Controller 243991 applied measured caps of 8 h 30 m
-  smoke / 21 h 43 m full and released training successfully.
-- Smoke 243989 completed successfully: train 8,113 s, plot written, camera/LiDAR
-  renders, Gaussian export and matching split; end 2026-11-12T08:17:06Z.
-  Confirmed zero added radar Gaussians, initial weight 0.0036067375 and nonempty
-  support. Background fetch had started; a resumable fetch was restarted to
-  ensure all result files arrive.
-- Restarted one background monitor/fetch for the remaining full job. Previous
-  implementation/handoff commits: `da76f8d`, `bba9fa1`.
+- User clarified that running training is insufficient: the experiment must
+  answer whether radar loss strengthens weak trunks missed by B. Implemented
+  the missing matched P1/P2 occupancy/evidence comparison and per-trunk figures
+  in `8c8aa77` (script 17, T57/T78, new analytic tests). Extended only the frozen
+  transform manifest; no existing assertions/tolerances were weakened.
+- Native validation 244543: 1,185 passed, one allowed traceability skip, eight
+  configured deselections. Alignment job 244544 prepared June-only eval GT and
+  overview: 175 scored trunks, voxel edge 0.5219 m from existing GT rule. Coarse
+  XY correspondence reviewed; exact label/frame correspondence is not certified.
+- Input diagnostic 244551 found zero B/full-window-L-smoke observation mismatches,
+  but 263,332 invalid float32 covariance exports in full B (five million Gaussians).
+  Held comparison 244546 before execution; it must NOT be released.
+- Fixed evaluation to re-export full-precision checkpoint axes/scales separately
+  and evaluate the same Gaussian without covariance inversion/repair (`c48e60d`),
+  plus both stock/radar trainer directory layouts (`f43e055`). New tests added.
+  Neither trained models nor successful run exports were changed. These fixes
+  are committed but NOT yet native-validated: SSH expired during submission.
 
 ## Current state
 
-- Full loss-only job 243990 runs on gpunode3, RTX A6000, 24 CPUs/109 GiB.
-  Latest observed coverage step 18,400/20,001 (~92%), 97% GPU utilization,
-  11,220 MiB GPU memory. Nonempty support: 4,457,820 Gaussians / 89.01% anchors.
-  Training log ETA ~45 min at this check, then plotting/render/export/split gates.
-  No full L result or radar benefit established yet.
-- Full run: `june_tall_grass-june_loss_only-20261112-012542-da76f8d`.
-  Smoke: `june_tall_grass-june_loss_only_smoke-20261112-012541-da76f8d`.
-  Baseline smoke/full successful and fetched. Raw data and immutable 201,471-anchor
-  artifact remain on cluster workdisk; no raw bags on Mac. Recipe unchanged:
-  `splatad-3f478d42f203`. Final native source validation/preflights passed 1,177
-  tests, one allowed skip/eight configured deselections under local-Docker exception.
-- Scope remains B versus loss-only L, stock initialization, no radar rendering.
-  Static persistent occupancy selector is not a semantic trunk detector.
-  Hidden-trunk attribution, Gaussian occupancy/false-positive evaluation and
-  repeat-aware scientific comparison remain unfinished. Commits remain local.
+- Latest verified full L progress: job 243990, gpunode3, coverage step 19,400/20,001,
+  nonempty support ~89.03% of anchors. Do not infer its current state from expired
+  SSH. Baseline runs and L smoke succeeded. L smoke fetch was restarted; full
+  monitor/fetch is configured in ignored `data/cluster-validation/`.
+- Training source remains `da76f8d`; env `splatad-3f478d42f203` unchanged. Baseline
+  source `0097a66`. Same canonical June split, LiDAR loss, camera-painted stock
+  initialization, no radar Gaussians or rendering. No measured radar benefit yet.
+- Corrected evaluation source is frozen at `f43e055`. A continuation script/log in
+  ignored `data/cluster-validation/finish_hidden_evaluation.py` /
+  `hidden-evaluation-watch.log` waits for authenticated SSH, validates that exact
+  source, submits replacement comparison after full training success, then fetches
+  reports and per-trunk images. It refuses failed validation or missing reports.
+  The user was asked to restore SSH via Terminal; no password is stored.
+- GT outputs are evaluation-only under cluster `evaluation-inputs/`; diagnostics
+  under `evaluations/hidden-trunks/8c8aa77.../alignment`. Small alignment image/JSON
+  fetched to `data/evaluation-results/hidden-trunks/alignment/`. Raw data remain
+  remote. Docs: `docs/research/hidden_trunk_evaluation.md`. All commits local.
 
 ## Next steps
 
-1. Reconcile `submit_run.py runs`; ensure one background wait for active full job
-   and finish smoke fetch. Runtime watch/spec/log files are ignored under
-   `data/cluster-validation/`.
-2. On full completion verify plot/render/export/split/end milestones, fetch
-   automatically, and inspect loss/coverage curves and held-out renders/metrics.
-3. Complete and validate hidden-trunk occupancy/visibility/false-positive metrics
-   with matching views and GT used only for evaluation.
-4. Fix matched B/L repeat budget/seeds before comparing between-arm improvements
-   against within-arm variability. The current pair is a pilot, not repeat evidence.
+1. Restore authenticated SSH; reconcile runs and inspect continuation/watch logs.
+   Confirm native validation of `f43e055` before corrected evaluation submission.
+   Original 244546 is held/superseded; it reserves no compute resources.
+2. Verify full-run completion milestones and fetch automatically. Inspect fixed
+   comparison logs/results and label correspondence in per-trunk views; do not
+   interpret numerical results while alignment remains unreviewed.
+3. Report B/L P1/P2 recall on blocked/no-return GT cells alongside precision loss,
+   off-trunk cells, unknown/conflicting evidence, and pictures of all scored trunks.
+   The new metric is occupancy in a frozen trunk neighbourhood, not a global
+   unmatched-tree detector; blocked does not independently mean grass, and camera
+   visibility is unclassified. One pilot cannot establish repeatable benefit.
+4. Fix matched repeat budget/seeds, complete unmatched-trunk false-positive and
+   sensitivity analysis, and compare arm gaps with within-arm variation.
