@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from viking_splatad.eval.repeated_hidden import summarize_comparisons
+from viking_splatad.eval.repeated_hidden import summarize_comparisons, validate_alignment_review
 from viking_splatad.viz.repeated_hidden import write_consistency_map
 
 
@@ -21,6 +21,7 @@ def main(argument_list=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("comparisons", type=Path, nargs="+")
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--alignment-review", type=Path, help="Separate completed review bound to the exact label and dataset hashes.")
     args = parser.parse_args(argument_list)
     reports = [json.loads((directory / "comparison.json").read_text()) for directory in args.comparisons]
     arrays = []
@@ -28,6 +29,13 @@ def main(argument_list=None):
         with np.load(directory / "cells.npz", allow_pickle=False) as archive:
             arrays.append({key: archive[key] for key in archive.files})
     summary, views = summarize_comparisons(reports, arrays)
+    if args.alignment_review:
+        review = json.loads(args.alignment_review.read_text())
+        alignments = [json.loads((directory / "alignment.json").read_text()) for directory in args.comparisons]
+        review_hash = validate_alignment_review(review, alignments)
+        summary["all_alignment_reviews_complete"] = True
+        summary["alignment_review"] = {"receipt_sha256": review_hash, "scope": review["review_scope"],
+                                        "policy": "separate post-evaluation review; original numerical products unchanged"}
     args.out.mkdir(parents=True, exist_ok=True)
     for representation, view in views.items():
         write_consistency_map(args.out / f"{representation}-consistency.png", arrays[0]["centres"], arrays[0]["truth"],

@@ -1,8 +1,31 @@
 """Repeated hidden-trunk summaries: describe between-arm gaps against within-arm spread."""
 
+import hashlib
+import json
+
 import numpy as np
 
 from viking_splatad.eval.hidden_geometry import EVIDENCE_NAMES, exclusive_evidence_labels, occupied_cell_metrics
+
+
+def validate_alignment_review(review, alignment_records):
+    """Bind a completed visual review to every comparison's exact label/dataset identities.
+
+    Args:
+        review: Separate post-evaluation review receipt with reviewed=True and notes.
+        alignment_records: Script 17 alignment.json records, one per comparison.
+    Returns:
+        Canonical receipt SHA256; no numerical report or cell archive is changed.
+    """
+    if review.get("reviewed") is not True or not review.get("review_scope") or not alignment_records:
+        raise ValueError("completed documented alignment review required")
+    keys = ("session", "manifest_sha256", "cuboids_sha256", "labels_sha256")
+    for key in keys:
+        if not isinstance(review.get(key), str) or not review[key]:
+            raise ValueError("complete alignment source identities required")
+    if any(any(record.get(key) != review[key] for key in keys) for record in alignment_records):
+        raise ValueError("alignment review does not match the exact compared labels/dataset")
+    return hashlib.sha256(json.dumps(review, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def scalar_repeat_summary(values):
