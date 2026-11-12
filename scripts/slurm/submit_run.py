@@ -1024,7 +1024,7 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         job_environment["RADAR_LIDAR_GATE_CHUNK_SIZE"] = str(int(radar_lidar_options["chunk_size"]))
         job_environment["RADAR_LIDAR_AUTO_WEIGHT"] = str(radar_lidar_options.get("auto_weight", False))
         if radar_lidar_options["method"] == "splatad-radar-lidar":
-            job_environment["RADAR_DIAGNOSTICS_PATH"] = f"{stage_root}/runs/{run_id}/radar_diagnostics.jsonl"
+            job_environment["RADAR_DIAGNOSTICS_PATH"] = f"{absolute_stage_root}/runs/{run_id}/radar_diagnostics.jsonl"
         if radar_lidar_options["inputs_dir"] is not None:
             job_environment["RADAR_INPUTS_DIR"] = str(radar_lidar_options["inputs_dir"])
     if "train_lidar_only" in profile_settings:
