@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Optional, Type
 
@@ -27,6 +28,7 @@ try:
     from nerfstudio.models.splatad import SplatADModel, SplatADModelConfig
 
     from viking_splatad.splatad.radar_lidar_loss import calibrate_opacity_weight, compute_radar_lidar_loss
+    from viking_splatad.splatad.radar_support_index import RadarSupportIndex
 
     NERFSTUDIO_AVAILABLE = True
 except ImportError:
@@ -69,6 +71,7 @@ if NERFSTUDIO_AVAILABLE:
             self.register_buffer("radar_calibrated_weight", torch.tensor(float("nan"), dtype=torch.float64))
             self._radar_initialization_hash = gaussian_parameter_fingerprint(self.gauss_params)
             self._radar_last_logged_step = None
+            self._radar_support_index = None
             self._write_radar_diagnostic({"event": "stock_initialization", "step": 0,
                                           "gaussian_sha256": self._radar_initialization_hash,
                                           "gaussian_count": len(self.gauss_params["means"]),
@@ -102,17 +105,24 @@ if NERFSTUDIO_AVAILABLE:
             radar_seeds = metadata.get("radar_seeds")
             if radar_seeds is None:
                 raise ValueError("radar_lidar_loss_weight is enabled but radar_seeds metadata is missing")
+            if getattr(self, "_radar_support_index", None) is None:
+                means = radar_seeds["means"].to(device=self.device, dtype=self.gauss_params["means"].dtype)
+                covariances = radar_seeds["covariances"].to(device=self.device, dtype=means.dtype)
+                self._radar_support_index = RadarSupportIndex(means, covariances,
+                    self.config.radar_lidar_gate_quantile, self.config.radar_lidar_gate_chunk_size,
+                    workers=int(os.environ.get("SLURM_CPUS_PER_TASK", "1")))
             static_gaussian_mask = self.gauss_params["id"].reshape(-1) >= self.dynamic_actors.actor_sizes.shape[0]
             result = compute_radar_lidar_loss(
                 gaussian_means=self.gauss_params["means"],
                 opacity_logits=self.gauss_params["opacities"],
                 static_gaussian_mask=static_gaussian_mask,
-                radar_seed_means=radar_seeds["means"].to(self.device),
-                radar_seed_covariances=radar_seeds["covariances"].to(self.device),
+                radar_seed_means=self._radar_support_index.means,
+                radar_seed_covariances=self._radar_support_index.covariances,
                 # Always measure the unweighted term; weighting happens once below.
                 loss_weight=1.0,
                 gate_quantile=self.config.radar_lidar_gate_quantile,
                 chunk_size=self.config.radar_lidar_gate_chunk_size,
+                support_index=self._radar_support_index,
             )
             weight = self.config.radar_lidar_loss_weight
             if self.config.radar_lidar_auto_weight:
@@ -139,6 +149,7 @@ if NERFSTUDIO_AVAILABLE:
                 metrics_dict["radar_lidar_supported_gaussians"] = result.supported_gaussian_count
                 metrics_dict["radar_lidar_supported_seed_fraction"] = result.supported_seed_fraction
                 metrics_dict["radar_lidar_empty_support"] = int(result.empty_support)
+                metrics_dict["radar_lidar_candidate_pairs"] = self._radar_support_index.last_candidate_pairs
             if self.step % self.config.radar_lidar_log_interval == 0 and self._radar_last_logged_step != self.step:
                 self._write_radar_diagnostic({"event": "coverage", "step": int(self.step),
                                               "supported_gaussians": result.supported_gaussian_count,

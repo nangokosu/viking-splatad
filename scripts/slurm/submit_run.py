@@ -791,8 +791,11 @@ def profile_radar_lidar_options(profile_settings: Dict[str, Any], baseline_optio
     if enabled:
         if profile_settings.get("train_lidar_only") is not True:
             raise ValueError("loss-only core profiles require train_lidar_only")
+        anchor_profile = profile_settings.get("radar_anchor_profile", profile)
+        if not isinstance(anchor_profile, str) or RUN_ID_PATTERN.fullmatch(anchor_profile) is None:
+            raise ValueError("radar_anchor_profile must be a safe profile identifier")
         options.update(method="splatad-radar-lidar", loss_weight=0.0, auto_weight=True,
-                       inputs_dir=f"{stage_root}/radar-inputs/{session}/{profile}/{git_sha}")
+                       inputs_dir=f"{stage_root}/radar-inputs/{session}/{anchor_profile}/{git_sha}")
     return options
 
 
@@ -1783,6 +1786,9 @@ def submit_radar_preparation(config: Dict[str, Any], session: str, profile: str,
         raise ValueError("invalid radar preparation session/profile")
     if config["profiles"][profile].get("radar_loss_only") is not True:
         raise ValueError("prepare-radar requires an explicit loss-only profile")
+    profile = config["profiles"][profile].get("radar_anchor_profile", profile)
+    if profile not in config["profiles"] or config["profiles"][profile].get("radar_loss_only") is not True:
+        raise ValueError("radar anchor profile must name an existing loss-only profile")
     if afterok is not None and not re.fullmatch(r"[0-9]+", afterok):
         raise ValueError("--afterok accepts one numeric job id")
     target = resolve_ssh_target(config["ssh_host"])

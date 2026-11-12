@@ -126,19 +126,19 @@ profiles:
     test_block_core_fraction: 0.2
     # ~120 training frames (80% of ~150) x ~25 visits each = 3000 iterations (one image per iteration):
     # enough for a recognisable fit, a tenth of SplatAD's stock 30001.
-    max_num_iterations: 3000
+    max_num_iterations: &smoke_iterations 3000
     # At least 50 whole-stretch evals per run (the user's minimum, 2026-10-26). submit_run.py derives
     # the eval interval k = (N-1)//50 = 59 (T63) and exports it as --steps-per-eval-all-images.
     minimum_eval_points: 50
     # 3000 / 1000 = 3 checkpoints, so a kill mid-run still leaves something to render.
-    steps_per_save: 1000
+    steps_per_save: &smoke_save_interval 1000
     # ns-train --machine.seed (python/numpy/torch RNGs). 42 = nerfstudio's MachineConfig default,
     # so earlier smoke runs used the same value; set here so every run records it. It does not
     # make training bit-exact (float-atomic gradient sums in gsplat/SplatAD and tcnn backward).
     seed: 42
     # Conservative cap, far under the 5-day limit, for 3k iterations plus loading and the render.
     # Refine from the measured train/render timings in job_info.txt and `sacct` Elapsed.
-    time_limit: "0-02:00:00"
+    time_limit: &smoke_time_limit "0-02:00:00"
     # Render only the held-out views (the T72 render subset of the held-out instants): they expose wrong geometry
     # that training views can hide by memorising, and training views are not re-rendered, which
     # keeps the data copied back to the Mac small (user's choice 2026-10-26).
@@ -240,3 +240,12 @@ profiles:
   smoke_a4500_june_loss_only:
     <<: *june_smoke_profile
     radar_loss_only: true
+  june_loss_only_smoke:
+    # Full canonical June window: its longer motion trace permits clock calibration.
+    # Shorten optimization only. Full-data caches require the default A6000 allocation.
+    <<: *june_core_profile
+    max_num_iterations: *smoke_iterations
+    steps_per_save: *smoke_save_interval
+    time_limit: *smoke_time_limit
+    radar_loss_only: true
+    radar_anchor_profile: june_loss_only

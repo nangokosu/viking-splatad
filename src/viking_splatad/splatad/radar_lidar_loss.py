@@ -26,6 +26,7 @@ def compute_radar_lidar_loss(
     loss_weight: float,
     gate_quantile: float,
     chunk_size: int,
+    support_index=None,
 ) -> RadarLidarLossResult:
     """Compute an opacity term for static Gaussians near radar seeds.
 
@@ -39,6 +40,7 @@ def compute_radar_lidar_loss(
         loss_weight: Non-negative multiplier for the radar-supported term.
         gate_quantile: Chi-square CDF quantile in the open interval ``(0, 1)``.
         chunk_size: Positive number of Gaussian means processed per chunk.
+        support_index: Optional reusable exact spatial index for immutable anchors.
 
     Returns:
         RadarLidarLossResult containing the loss and support diagnostics.
@@ -81,6 +83,7 @@ def compute_radar_lidar_loss(
     supported_mask, supported_seed_mask = radar_support_gate(
         gaussian_means[static_indices], radar_seed_means, radar_seed_covariances,
         gate_quantile, chunk_size,
+        support_index=support_index,
     )
     supported_indices = static_indices[supported_mask]
     if supported_indices.numel() == 0:
@@ -100,7 +103,7 @@ def compute_radar_lidar_loss(
 
 @transform("T42", "Inclusive Mahalanobis union gate, bounded over both Gaussians and radar anchors")
 def radar_support_gate(gaussian_means, radar_seed_means, radar_seed_covariances,
-                       gate_quantile: float, chunk_size: int):
+                       gate_quantile: float, chunk_size: int, support_index=None):
     """Return Gaussian and anchor support masks without position gradients.
 
     Args:
@@ -108,6 +111,7 @@ def radar_support_gate(gaussian_means, radar_seed_means, radar_seed_covariances,
         radar_seed_means, radar_seed_covariances: Validated anchors [S,3], [S,3,3].
         gate_quantile: Chi-square probability in (0,1).
         chunk_size: Maximum rows on either pairwise axis.
+        support_index: Optional exact indexed backend; dense mode remains the reference.
 
     Returns:
         Boolean masks [G], [S]. Work is O(G*S), temporary storage O(chunk_size**2).
@@ -119,6 +123,9 @@ def radar_support_gate(gaussian_means, radar_seed_means, radar_seed_covariances,
         raise ValueError("chunk_size must be a positive integer")
     if not 0.0 < gate_quantile < 1.0:
         raise ValueError("gate quantile must be in (0, 1)")
+    if support_index is not None:
+        support_index.check_targets(radar_seed_means, radar_seed_covariances, gate_quantile, chunk_size)
+        return support_index.support_masks(gaussian_means)
     seed_count = int(radar_seed_means.shape[0])
     seed_covariance_inverses = torch.linalg.inv(radar_seed_covariances)
     chi_square_threshold = float(chi2.ppf(gate_quantile, df=3))
