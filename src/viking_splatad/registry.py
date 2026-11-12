@@ -31,7 +31,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # their 2000 m placeholders in the dataparser (splatad/viking_conversions.py).
         "T51", "T52", "T53", "T54", "T55",
         # P2: a run's checkpoint Gaussians in the map frame (eval/gaussian_occupancy.py).
-        "T56",
+        "T56", "T57",
+        # Evaluation-only recorded-beam evidence for matched hidden-trunk cells.
+        "T78",
         # A run's exact train/test frames rebuilt without torch (dataset/run_split.py,
         # scripts/09_extract_run_split.py): neurad's time window and per-sensor LINSPACE split.
         "T58", "T59",
