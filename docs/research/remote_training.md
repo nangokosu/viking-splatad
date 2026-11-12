@@ -121,8 +121,10 @@ matching split record, and `end_utc` milestone before fetching.
 initialization. Older photometric runs of that profile are B+cam and must not be
 mislabelled as core B. Reference split settings have not changed.
 
-Radar rendering remains disabled. The radar arm still requires calibrated seed
-construction, Gaussian initialization, artifact gates, and loss-weight calibration.
-A successful baseline does not demonstrate radar recovery of hidden trunks.
-Repeat arms before interpreting differences because stock SplatAD kernels vary
-between runs even with a fixed seed. Evaluation cuboids remain outside training.
+The selected radar arm is now loss-only L: fixed anchors supervise opacity,
+with no additional Gaussians, semantic labels or radar rendering. Calibrated
+train-only artifact construction, checksum/split/frame gates, stock-config
+preservation, automatic step-zero weight matching and support diagnostics are
+implemented. See [the implementation notes](loss_only_implementation.md).
+A successful baseline or falling radar loss does not establish hidden-trunk gain.
+Repeat arms before interpreting differences; evaluation cuboids remain outside training.

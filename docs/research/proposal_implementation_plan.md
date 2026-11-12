@@ -1,7 +1,7 @@
 # Proposal implementation plan: June tall-grass radar experiments
 
 Date: 2026-11-11. Scope confirmed by the user: loss-only ablation, no radar initialization.
-This document is a plan, not an implementation or an experiment result.
+This document records the selected plan, not an experiment result. Implementation status and deliberate limits are tracked in [loss_only_implementation.md](loss_only_implementation.md).
 
 ## 1. Source and scope decision
 
