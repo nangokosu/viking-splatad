@@ -20,13 +20,19 @@ def require_rigid_transform(matrix: np.ndarray) -> np.ndarray:
     Returns:
         Validated matrix; reflections, scaling and non-homogeneous rows are rejected.
     """
+    original = np.asarray(matrix)
+    precision = np.finfo(original.dtype if original.dtype.kind == "f" else np.float64).eps
     matrix = np.asarray(matrix, dtype=np.float64)
     if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
         raise ValueError("expected finite homogeneous transform [4,4]")
     rotation = matrix[:3, :3]
-    if (not np.allclose(matrix[3], [0, 0, 0, 1])
-            or not np.allclose(rotation.T @ rotation, np.eye(3))
-            or not np.isclose(np.linalg.det(rotation), 1.0)):
+    # A stored float32 rotation is not exactly orthogonal when promoted to
+    # float64. Bound the small matrix arithmetic error by n^2 input ulps; this
+    # preserves the encoded rotation, and still rejects actual scale/reflection.
+    arithmetic_bound = rotation.shape[0]**2 * precision
+    if (not np.array_equal(matrix[3], [0, 0, 0, 1])
+            or not np.allclose(rotation.T @ rotation, np.eye(3), rtol=0., atol=arithmetic_bound)
+            or not np.isclose(np.linalg.det(rotation), 1.0, rtol=0., atol=arithmetic_bound)):
         raise ValueError("transform must have unit scale and proper rotation")
     return matrix
 

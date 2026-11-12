@@ -228,8 +228,9 @@ def transform_anchor_arrays(arrays: dict, world_to_parser: np.ndarray, scale: fl
     """
     if scale != 1.0:
         raise ValueError("radar supervision requires unit dataparser scale")
-    matrix = np.eye(4)
-    matrix[:3] = np.asarray(world_to_parser)
+    encoded = np.asarray(world_to_parser)
+    matrix = np.eye(4, dtype=encoded.dtype if encoded.dtype.kind == "f" else np.float64)
+    matrix[:3] = encoded
     matrix = require_rigid_transform(matrix)
     rotation, translation = matrix[:3, :3], matrix[:3, 3]
     result = {key: value.copy() for key, value in arrays.items()}
