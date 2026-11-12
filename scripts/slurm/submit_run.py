@@ -1817,7 +1817,8 @@ def submit_radar_preparation(config: Dict[str, Any], session: str, profile: str,
 
 def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
                       preflight_only: bool, reviewed_preflight: bool = False,
-                      afterok: Optional[str] = None, resource_key: Optional[str] = None) -> str:
+                      afterok: Optional[str] = None, resource_key: Optional[str] = None,
+                      hold_for_budget: bool = False) -> str:
     """Submit validation or training against remote data; return the job id.
 
     Args:
@@ -1828,12 +1829,15 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
         reviewed_preflight: Explicit acknowledgement that matching overlays were inspected.
         afterok: Optional numeric success dependency, e.g. data prep before preflight or smoke before full training.
         resource_key: Optional configured validation allocation; forbidden for optimization.
+        hold_for_budget: Submit training held until the measured-budget release job succeeds.
     """
     check_clean_tree()
     if not preflight_only and not reviewed_preflight:
         raise ValueError("inspect the completed remote-preflight overlays, then pass --reviewed-preflight")
     if not preflight_only and resource_key is not None:
         raise ValueError("validation resource overrides cannot be used for training")
+    if preflight_only and hold_for_budget:
+        raise ValueError("budget holds apply to training only")
     if afterok is not None and not re.fullmatch(r"[0-9]+", afterok):
         raise ValueError("--afterok accepts one numeric job id")
     if RUN_ID_PATTERN.fullmatch(session) is None or profile not in config["profiles"]:
@@ -1889,6 +1893,8 @@ def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
     )
     if afterok is not None:
         sbatch_arguments.insert(-1, f"--dependency=afterok:{afterok}")
+    if hold_for_budget:
+        sbatch_arguments.insert(-1, "--hold")
     job_id = submit_sbatch(ssh_target, sbatch_arguments)
     if not preflight_only:
         SUBMITTED_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -2769,6 +2775,7 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         remote_parser.add_argument("--reviewed-preflight", action="store_true")
         remote_parser.add_argument("--afterok", help="start only after the specified job succeeds")
         remote_parser.add_argument("--resources", choices=("render_only", "validation_gpu", "validation_cpu"))
+        remote_parser.add_argument("--hold-for-budget", action="store_true")
     stage_parser = subparsers.add_parser("stage", help="copy data and code to the cluster")
     stage_parser.add_argument("--session", required=True)
     submit_parser = subparsers.add_parser("submit", help="sbatch a run")
@@ -2813,7 +2820,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         elif arguments.command in {"remote-preflight", "submit-remote"}:
             submit_remote_run(config, arguments.session, arguments.profile,
                               arguments.command == "remote-preflight", arguments.reviewed_preflight,
-                              arguments.afterok, arguments.resources)
+                              arguments.afterok, arguments.resources,
+                              **({"hold_for_budget": True} if arguments.hold_for_budget else {}))
         elif arguments.command == "stage":
             stage_session(config, arguments.session)
         elif arguments.command == "submit":

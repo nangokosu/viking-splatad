@@ -9,6 +9,7 @@ Path on the Mac after `submit_run.py fetch <run_id>`: `runs/<run_id>/`. On the c
 runs/<run_id>/
 ├── job_info.txt                       settings, environment, GPU, timings
 ├── radar_diagnostics.jsonl            loss-only runs: unchanged initial Gaussian hash, measured weight and coverage
+├── allocation.json                   optional measured GPU-benchmark walltime amendment; iterations/model unchanged
 ├── split.json                         exact train/test frames + provenance; successful runs only
 ├── split_frames.csv                   the same frames, one row each; successful runs only
 ├── overfitting/                       train-vs-test curves from the training log; runs since the overfitting monitor only

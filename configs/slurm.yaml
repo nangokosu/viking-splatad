@@ -82,6 +82,11 @@ validation_cpu:
   resource_source: render_only
   time_limit: "0-00:15:00"
 
+radar_runtime_budget:
+  # Allocation headroom only, not a model/loss hyperparameter. The stock full
+  # allocation likewise used roughly twice measured training/rendering time.
+  headroom_factor: 2.0
+
 # Render-only jobs (submit_run.py render, scripts/slurm/render_only.sbatch): guard frames of a finished
 # run, rendered from its checkpoint without training.
 render_only:
