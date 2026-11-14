@@ -20,3 +20,5 @@ PYTHONPATH="$REPO_ROOT/src" python -m viking_splatad.splatad.patches.apply_ouste
 # Step 2: print how to register the dataparser with ns-train.
 echo "Register the dataparser with:"
 echo "  export NERFSTUDIO_DATAPARSER_CONFIGS=viking-data=viking_splatad.splatad.viking_dataparser:VIKING_DATAPARSER_SPEC"
+echo "Register the radar initialization method with:"
+echo "  export NERFSTUDIO_METHOD_CONFIGS=splatad-radar-init=viking_splatad.splatad.radar_init_method:RADAR_INIT_METHOD_SPEC"

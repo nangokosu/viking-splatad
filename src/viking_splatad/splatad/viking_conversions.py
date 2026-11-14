@@ -465,3 +465,113 @@ def resolve_train_fraction(view: DatasetView, override: Optional[float]) -> floa
     """
     # None means "no override", so the session's recorded fraction applies.
     return float(view.manifest["session"]["train_fraction"] if override is None else override)
+
+
+@transform(
+    "T39",
+    "Map-frame radar seed means, origins and covariances -> dataparser frame",
+)
+def transform_radar_seeds_to_dataparser(
+    seed_arrays: Dict[str, np.ndarray],
+    dataparser_transform: np.ndarray,
+    dataparser_scale: float,
+) -> Dict[str, np.ndarray]:
+    """Apply the dataparser's rigid similarity transform to radar seed geometry.
+
+    Means and sensor origins use ``p' = scale*(R p + t)`` while covariance uses
+    ``Sigma' = scale^2 R Sigma R^T``. Non-geometric arrays are copied unchanged.
+
+    Args:
+        seed_arrays: Validated map-frame artifact arrays.
+        dataparser_transform: World-to-dataparser transform ``[3,4]`` or ``[4,4]``.
+        dataparser_scale: Positive global scene scale.
+
+    Returns:
+        New array mapping in the dataparser frame.
+    """
+    transform_array = np.asarray(dataparser_transform, dtype=np.float64)
+    if transform_array.shape not in ((3, 4), (4, 4)):
+        raise ValueError("dataparser_transform must have shape [3,4] or [4,4]")
+    if not np.isfinite(transform_array).all() or not np.isfinite(dataparser_scale):
+        raise ValueError("dataparser transform and scale must be finite")
+    if dataparser_scale <= 0.0:
+        raise ValueError("dataparser_scale must be positive")
+    rotation = transform_array[:3, :3]
+    translation = transform_array[:3, 3]
+    rotation_tolerance = np.sqrt(np.finfo(np.float64).eps)
+    if not np.allclose(rotation @ rotation.T, np.eye(3), atol=rotation_tolerance):
+        raise ValueError("dataparser transform rotation must be orthonormal")
+    if not np.isclose(np.linalg.det(rotation), 1.0, atol=rotation_tolerance):
+        raise ValueError("dataparser transform rotation must have determinant +1")
+    transformed = {array_name: np.asarray(values).copy() for array_name, values in seed_arrays.items()}
+    for point_array_name in ("means", "sensor_origins"):
+        points = np.asarray(seed_arrays[point_array_name], dtype=np.float64)
+        transformed[point_array_name] = (
+            dataparser_scale * (points @ rotation.T + translation)
+        )
+    covariances = np.asarray(seed_arrays["covariances"], dtype=np.float64)
+    transformed["covariances"] = (
+        dataparser_scale**2 * (rotation[None] @ covariances @ rotation.T[None])
+    )
+    return transformed
+
+
+@transform(
+    "T40",
+    "Dataparser-frame radar seeds -> scene/time-window crop with relative times",
+)
+def crop_radar_seeds_to_scene_and_time(
+    seed_arrays: Dict[str, np.ndarray],
+    absolute_window_start_s: float,
+    window_duration_s: float,
+    scene_aabb: np.ndarray,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
+    """Keep seeds intersecting the sensor window and inside the scene box.
+
+    A seed's observation span need only overlap the train sensor window. Retained spans
+    are clipped to that window and shifted to the same relative time basis as neurad.
+
+    Args:
+        seed_arrays: T39 output with absolute ``time_spans_s``.
+        absolute_window_start_s: First retained sensor timestamp before time adjustment.
+        window_duration_s: Positive retained sensor duration.
+        scene_aabb: Dataparser scene bounds ``[2,3]``.
+
+    Returns:
+        ``(cropped_arrays, counts)`` where counts records input and each rejection gate.
+    """
+    if not np.isfinite(absolute_window_start_s) or not np.isfinite(window_duration_s):
+        raise ValueError("radar seed crop times must be finite")
+    if window_duration_s < 0.0:
+        raise ValueError("window_duration_s must be non-negative")
+    bounds = np.asarray(scene_aabb, dtype=np.float64)
+    if bounds.shape != (2, 3) or not np.isfinite(bounds).all() or np.any(bounds[1] < bounds[0]):
+        raise ValueError("scene_aabb must be finite ordered bounds with shape [2,3]")
+    means = np.asarray(seed_arrays["means"], dtype=np.float64)
+    time_spans = np.asarray(seed_arrays["time_spans_s"], dtype=np.float64)
+    if means.ndim != 2 or means.shape[1] != 3 or time_spans.shape != (len(means), 2):
+        raise ValueError("radar seed means/time spans have inconsistent shapes")
+    absolute_window_end_s = absolute_window_start_s + window_duration_s
+    spatial_mask = np.all((means >= bounds[0]) & (means <= bounds[1]), axis=1)
+    temporal_mask = (
+        (time_spans[:, 1] >= absolute_window_start_s)
+        & (time_spans[:, 0] <= absolute_window_end_s)
+    )
+    keep_mask = spatial_mask & temporal_mask
+    cropped = {
+        array_name: np.asarray(values)[keep_mask].copy()
+        for array_name, values in seed_arrays.items()
+    }
+    if keep_mask.any():
+        clipped_absolute_times = np.clip(
+            cropped["time_spans_s"], absolute_window_start_s, absolute_window_end_s
+        )
+        cropped["time_spans_s"] = clipped_absolute_times - absolute_window_start_s
+    counts = {
+        "input": int(len(means)),
+        "outside_scene": int((~spatial_mask).sum()),
+        "outside_time": int((~temporal_mask).sum()),
+        "retained": int(keep_mask.sum()),
+        "retained_fraction": float(keep_mask.mean()) if len(keep_mask) else 0.0,
+    }
+    return cropped, counts

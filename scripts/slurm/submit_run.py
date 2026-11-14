@@ -725,6 +725,45 @@ def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDI
     return flag
 
 
+def session_radar_initialization(
+    session: str,
+    intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
+    session_config_directory: Path = SESSION_CONFIG_DIRECTORY,
+) -> Tuple[str, Optional[str], float]:
+    """Resolve and validate the session's stock or radar-initialization method.
+
+    Args:
+        session: Dataset name under the intermediate root.
+        intermediate_root: Directory holding local datasets.
+        session_config_directory: Directory holding session YAML files.
+
+    Returns:
+        ``(method, radar_inputs_dir, radar_seed_opacity)``. The stock method has a
+        ``None`` artifact directory and retains the opacity only as an unused default.
+    """
+    session_name, session_config = load_dataset_session_config(
+        session, intermediate_root, session_config_directory
+    )
+    splatad_config = session_config.get("splatad", {})
+    method = splatad_config.get("method", "splatad")
+    if method not in ("splatad", "splatad-radar-init"):
+        raise ValueError(
+            f"configs/sessions/{session_name}.yaml: splatad.method must be splatad or "
+            f"splatad-radar-init, got {method!r}"
+        )
+    configured_directory = splatad_config.get("radar_inputs_dir")
+    if method == "splatad" and configured_directory is not None:
+        raise ValueError("stock splatad must not configure radar_inputs_dir")
+    if method == "splatad-radar-init" and not isinstance(configured_directory, str):
+        raise ValueError("splatad-radar-init requires a relative radar_inputs_dir string")
+    if configured_directory is not None and Path(configured_directory).is_absolute():
+        raise ValueError("radar_inputs_dir must be relative to the staged session directory")
+    opacity = splatad_config.get("radar_seed_opacity", 0.5)
+    if isinstance(opacity, bool) or not isinstance(opacity, (int, float)) or not 0.0 < opacity < 1.0:
+        raise ValueError("splatad.radar_seed_opacity must be a number strictly between zero and one")
+    return method, configured_directory, float(opacity)
+
+
 def dataset_train_fraction(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT) -> float:
     """``session.train_fraction`` of the local dataset's manifest, the fraction the dataparser uses.
 
@@ -863,7 +902,10 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
                           test_split_method: Optional[str] = None,
                           test_render_fraction: Optional[float] = None,
                           minimum_eval_points: Optional[int] = None,
-                          steps_per_eval_all_images: Optional[int] = None) -> Dict[str, str]:
+                          steps_per_eval_all_images: Optional[int] = None,
+                          train_method: Optional[str] = None,
+                          radar_inputs_dir: Optional[str] = None,
+                          radar_seed_opacity: Optional[float] = None) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
 
     Args:
@@ -893,6 +935,9 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
             MINIMUM_EVAL_POINTS. Same rule as ``add_missing_points``: None leaves it out.
         steps_per_eval_all_images: The derived eval interval (``profile_eval_cadence``), exported as
             STEPS_PER_EVAL_ALL_IMAGES. Same rule: None leaves it out.
+        train_method: ``splatad`` or ``splatad-radar-init``, exported as TRAIN_METHOD.
+        radar_inputs_dir: Session-relative artifact directory, exported only for radar init.
+        radar_seed_opacity: Seed opacity probability, exported only for radar init.
 
     Returns:
         Mapping variable name -> string value.
@@ -944,6 +989,12 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         job_environment["MINIMUM_EVAL_POINTS"] = str(int(minimum_eval_points))
     if steps_per_eval_all_images is not None:
         job_environment["STEPS_PER_EVAL_ALL_IMAGES"] = str(int(steps_per_eval_all_images))
+    if train_method is not None:
+        job_environment["TRAIN_METHOD"] = train_method
+    if radar_inputs_dir is not None:
+        job_environment["RADAR_INPUTS_DIR"] = radar_inputs_dir
+    if radar_seed_opacity is not None:
+        job_environment["RADAR_SEED_OPACITY"] = repr(float(radar_seed_opacity))
     return job_environment
 
 
@@ -1197,6 +1248,7 @@ def build_render_job_environment(run_id: str, rerender_label: str, absolute_stag
         "ENV_PREFIX": env_marker["env_prefix"],
         # Same camera resolution as the run's own renders.
         "RENDER_DOWNSCALE_FACTOR": run_job_info["RENDER_DOWNSCALE_FACTOR"],
+        "TRAIN_METHOD": run_job_info.get("TRAIN_METHOD", "splatad"),
     }
 
 
@@ -1284,6 +1336,10 @@ def run_gates(session: str) -> None:
     dataset_dir = PROJECT_ROOT / "data" / "intermediate" / session
     contract_command = ["uv", "run", "python", "scripts/06_validate_contract.py",
                         "--dataset", str(dataset_dir)]
+    train_method, radar_inputs_dir, _ = session_radar_initialization(session)
+    if train_method == "splatad-radar-init":
+        radar_artifact_path = dataset_dir / radar_inputs_dir
+        contract_command += ["--radar-inputs-dir", str(radar_artifact_path), "--session", session]
     if run_command(contract_command, capture_output=False).returncode != 0:
         raise GateFailure(f"contract validation failed for {dataset_dir}")
     # Step 4: when the session has a committed reference split record, the dataset must reproduce it
@@ -1435,6 +1491,15 @@ def stage_session(config: Dict[str, Any], session: str) -> str:
     if not dataset_dir.is_dir():
         raise FileNotFoundError(f"dataset {dataset_dir} not found")
     require_no_return_sidecar(dataset_dir, session_add_missing_points(session))
+    train_method, radar_inputs_dir, _ = session_radar_initialization(session)
+    if train_method == "splatad-radar-init":
+        from viking_splatad.contract.splatad_contract import validate_radar_inputs
+
+        radar_report = validate_radar_inputs(
+            dataset_dir / radar_inputs_dir, session, dataset_dir
+        )
+        if not radar_report.passed:
+            raise ValueError(radar_report.to_markdown())
     git_sha = get_head_sha()
     # Step 2: create remote directories (rsync creates only the last path component).
     run_checked(ssh_command(ssh_target, ["mkdir", "-p", f"{absolute_stage_root}/data/{session}",
@@ -1667,6 +1732,7 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     if profile not in config["profiles"]:
         raise KeyError(f"unknown profile {profile!r}; known: {sorted(config['profiles'])}")
     profile_settings = config["profiles"][profile]
+    train_method, radar_inputs_dir, radar_seed_opacity = session_radar_initialization(session)
     # The eval cadence is checked before any ssh/sbatch, so a profile too short for its minimum fails early.
     minimum_eval_points, steps_per_eval_all_images = profile_eval_cadence(profile_settings)
     # The split fractions too (profile overrides, else the dataset's), so a bad value fails early.
@@ -1713,7 +1779,11 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
                               test_split_method=test_split_method,
                               test_render_fraction=render_fraction,
                               minimum_eval_points=minimum_eval_points,
-                              steps_per_eval_all_images=steps_per_eval_all_images),
+                              steps_per_eval_all_images=steps_per_eval_all_images,
+                              train_method=train_method,
+                              radar_inputs_dir=radar_inputs_dir,
+                              radar_seed_opacity=(radar_seed_opacity
+                                                  if train_method == "splatad-radar-init" else None)),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=job_gres, cpus=cpus, memory_gb=memory_gb,
@@ -1966,7 +2036,8 @@ def resume_run(config: Dict[str, Any], run_id: str, skip_gates: bool) -> str:
         raise ValueError(f"run {run_id} has a queued or running job; wait for it or scancel it first")
     # Step 4: the final checkpoint (step max_num_iterations - 1, nerfstudio's step-%09d name) must exist.
     final_step = int(run_exports["MAX_NUM_ITERATIONS"]) - 1
-    checkpoint_path = (f"{remote_run_dir}/train/{run_exports['SESSION']}/splatad/{run_id}/nerfstudio_models/"
+    train_method = run_exports.get("TRAIN_METHOD", "splatad")
+    checkpoint_path = (f"{remote_run_dir}/train/{run_exports['SESSION']}/{train_method}/{run_id}/nerfstudio_models/"
                        f"step-{final_step:09d}.ckpt")
     if run_command(ssh_command(ssh_target, ["test", "-f", checkpoint_path])).returncode != 0:
         raise RuntimeError(f"final checkpoint {checkpoint_path} is missing; resubmit the run instead")

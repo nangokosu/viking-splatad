@@ -6,7 +6,7 @@ These checks are not plan transforms (no ``@transform``); they gate hand-off to 
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 import numpy as np
 
@@ -595,3 +595,36 @@ def validate_dataset(root: Path) -> ContractReport:
     except (SchemaVersionError, OSError, KeyError, ValueError, zipfile.BadZipFile) as load_error:
         return ContractReport([CheckResult("dataset_loadable", False, str(load_error))])
     return ContractReport([check(dataset) for check in CONTRACT_CHECKS])
+
+
+def validate_radar_inputs(
+    root: Path, session_name: str, dataset_root: Optional[Path] = None
+) -> ContractReport:
+    """Validate a versioned radar seed artifact for GPU hand-off.
+
+    Args:
+        root: Radar artifact directory.
+        session_name: Session tag the artifact must match.
+        dataset_root: Optional current dataset whose manifest and poses hashes must match.
+
+    Returns:
+        One-check report covering hashes, tags, arrays and covariance definiteness.
+    """
+    from viking_splatad.radar_init.artifact import load_radar_seed_artifact, sha256_file
+
+    try:
+        arrays, metadata = load_radar_seed_artifact(root, session_name)
+        if dataset_root is not None:
+            provenance = metadata["provenance"]
+            for filename, provenance_name in (
+                ("manifest.json", "manifest_sha256"), ("poses.npz", "poses_sha256")
+            ):
+                if provenance.get(provenance_name) != sha256_file(Path(dataset_root) / filename):
+                    raise ValueError(f"radar artifact {provenance_name} does not match the dataset")
+    except (OSError, KeyError, TypeError, ValueError) as validation_error:
+        return ContractReport([
+            CheckResult("radar_seed_artifact", False, str(validation_error))
+        ])
+    return ContractReport([
+        CheckResult("radar_seed_artifact", True, f"ok ({len(arrays['means'])} seeds)")
+    ])
