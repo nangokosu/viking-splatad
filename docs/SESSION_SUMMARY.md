@@ -1,53 +1,45 @@
 # Session summary
 
-Date: 2026-11-12
+Date: 2026-11-14
 
 ## Done
 
-- Updated the requested visual layout (CPU composition job 244860): original
-  tall-grass observation leftmost, full B/L reconstructions in the middle,
-  original with June dataset trunk annotations rightmost. The model has no
-  semantic trunk classifier; annotations are explicitly GT, not predictions.
-- Updated `data/evaluation-results/tall-grass-loss-only-preview/index.html`
-  and added `four-panel-comparison.png`, keeping the paired RGB/geometry PNGs
-  and exact-source provenance. Checked the final image visually. No training,
-  classification model, scientific metric or existing test changed.
-- Core evaluator `f43e055` passed 1,189 native tests; final repeat summary/review
-  source `394db6a` passed 1,194 (one allowed traceability skip/eight configured
-  deselections, standing native-cluster exception to local Docker). No code or
-  test changes for this preview. Prior visual-preview handoff commit: `36c9843`.
+- Reviewed publication of all project work committed through `cc932e4` on
+  `Neel-RLF` (38 commits ahead of the last recorded upstream before this handoff).
+  Working tree was clean. No source, dependency or test changes today.
+- Checked changed tracked files for personal identifiers and credential patterns:
+  no hits. Generated datasets, run outputs, local runtime scripts and the visual
+  gallery remain Git-ignored; they are not force-added to the project history.
+- Last completed native validation: 1,194 tests on summary/review source `394db6a`,
+  one allowed traceability skip and eight configured deselections, under the
+  standing local-Docker exception. Main evaluator source `f43e055` passed 1,189.
 
 ## Current state
 
-- Pilot B and L full runs and both smoke runs completed and fetched. First
-  hidden-trunk comparison 244829 completed/fetched: 175 per-trunk pictures and
-  shared cells in `data/evaluation-results/hidden-trunks/f43e055.../comparison/`.
-- Matched repeat B 244827 and L 244828 are running on A6000 nodes 2/3. Sources
-  remain `0097a66` B / `da76f8d` L, same configured seed/settings. Two runs per
-  arm are the initial descriptive noise check. Both use 24 CPUs/109 GiB; L's
-  measured cap is 21 h 43 m, B's six hours. No radar initialization or rendering.
-- Comparison 244830 waits for both repeats. Summary 244855 (source `394db6a`)
-  waits for comparison 244830, uses the separate exact-hash label review and
-  reports gaps versus within-arm spread with matching consistency maps.
-- One repeat training monitor/fetch and one three-job analysis monitor/fetch
-  confirmed active. Runtime scripts/records/logs: ignored `data/cluster-validation/`.
-  Restart waits next session if gone; remote Slurm dependencies persist.
-  Old covariance-based 244546 is deliberately held; never release it.
-- Raw data, eval-only GT and stable checkpoint factors remain on workdisk;
-  env unchanged `splatad-3f478d42f203`. Label correspondence reviewed in real
-  LiDAR/camera observations without fitting a transform; receipt is in
-  `data/evaluation-results/hidden-trunks/june-label-alignment-review.json`.
-- New visual preview is explicitly one pair, not a repeat-validated result.
-  No overall radar benefit claimed. Local occupancy FP is not global phantom-tree
-  counting; blockage is geometric, camera visibility unclassified, grid 0.5219 m.
-  Commits local; no push.
+- User requested commit/push of all project changes; this handoff accompanies
+  the branch publication. Verify upstream equals HEAD after pushing.
+- Cluster status could not be reconciled this session; the sandboxed check failed
+  to resolve the host. No queue emptiness, completion or failure inferred.
+- Last verified November 12: original B/L full and smoke runs complete/fetched;
+  first hidden-trunk comparison 244829 complete/fetched (175 trunk views).
+  Repeat B/L jobs: 244827/244828. Their comparison: 244830. Final repeated summary:
+  244855. Their current outcomes need checking. Old 244546 is held/superseded;
+  never release its covariance-based evaluator.
+- Training sources: `0097a66` B / `da76f8d` L. Environment unchanged:
+  `splatad-3f478d42f203`. No radar initialization/rendering or camera-loss extension.
+- Local preview: `data/evaluation-results/tall-grass-loss-only-preview/index.html`
+  and `four-panel-comparison.png`. Layout: original, B, L, original with dataset
+  trunk GT. No semantic trunk classifier; rightmost labels are not predictions.
+- Results and watch records are ignored under `data/evaluation-results/` and
+  `data/cluster-validation/`. Raw data, eval GT and factors remain on workdisk.
+  No repeat-aware radar benefit concluded. Local occupancy FP is not global
+  phantom-tree counting; geometric blockage is not a semantic grass label.
 
 ## Next steps
 
-1. Reconcile `submit_run.py runs`; monitor/fetch repeat jobs automatically and
-   inspect any failures before cleanup. Do not duplicate queued work.
-2. Inspect/fetch comparison 244830 and summary 244855, verify review provenance,
-   then read blocked/no-return P1/P2 recall with precision and within-arm spread.
-3. Use stable recovered/lost/off-trunk cells plus per-trunk views for the answer;
-   report tradeoffs and negative results. Expand repeats/sensitivity/global
-   phantom-trunk analysis if needed for broader claims.
+1. Complete/verify the requested push and ensure the branch is synchronized.
+2. Restore cluster access, run `submit_run.py runs`, fetch successes automatically
+   and inspect comparison 244830/summary 244855. Restart watchers only if needed;
+   do not duplicate queued training/evaluations.
+3. Review repeated recall/precision, within-arm spread and matched pictures before
+   a research conclusion; extend repeats/sensitivity/global FP analysis as needed.
