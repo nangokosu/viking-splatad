@@ -70,11 +70,18 @@ if NERFSTUDIO_AVAILABLE:
                 raise ValueError("radar_lidar_log_interval must be positive")
             self.register_buffer("radar_calibrated_weight", torch.tensor(float("nan"), dtype=torch.float64))
             self._radar_initialization_hash = gaussian_parameter_fingerprint(self.gauss_params)
+            # Matched-initialisation audit: hash only the stock rows (appended seeds are the last
+            # radar_gaussians_added rows of every parameter), comparable to arm B's hash.
+            gaussian_count = len(self.gauss_params["means"])
+            stock_row_count = gaussian_count - int(getattr(self, "_radar_gaussians_added", 0))
+            stock_gaussian_hash = gaussian_parameter_fingerprint(
+                {name: parameter[:stock_row_count] for name, parameter in self.gauss_params.items()})
             self._radar_last_logged_step = None
             self._radar_support_index = None
             self._write_radar_diagnostic({"event": "stock_initialization", "step": 0,
                                           "gaussian_sha256": self._radar_initialization_hash,
-                                          "gaussian_count": len(self.gauss_params["means"]),
+                                          "stock_gaussian_sha256": stock_gaussian_hash,
+                                          "gaussian_count": gaussian_count,
                                           # Set by RadarInitSplatADModel when it is in the MRO; 0 otherwise.
                                           "radar_gaussians_added": int(getattr(self, "_radar_gaussians_added", 0))})
 

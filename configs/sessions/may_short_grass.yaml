@@ -119,8 +119,7 @@ splatad:
   load_cuboids: false
   # The method, the radar artifact directory and the loss weight come from the run profile
   # (configs/slurm.yaml: radar_variant), not from the session.
-  # Opacity given to the appended radar seed Gaussians. 0.5 = stock MCMC initial opacity.
-  radar_seed_opacity: 0.5
+  # Radar seed opacity follows stock's init_opacities unless a run profile sets radar_seed_opacity.
   # Radar opacity-loss gate (used by the init_loss variant): quantile and chunk size.
   radar_lidar_gate_quantile: 0.95
   radar_lidar_gate_chunk_size: 4096

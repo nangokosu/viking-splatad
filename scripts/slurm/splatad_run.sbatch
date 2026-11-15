@@ -38,7 +38,7 @@
 # Optional:
 #   RADAR_INPUTS_DIR  (required by every radar method: the anchor artifact; absolute, or relative to
 #                      $STAGE_ROOT/data/$SESSION)
-#   RADAR_SEED_OPACITY  (required by the seed methods splatad-radar-init and splatad-radar-init-lidar)
+#   RADAR_SEED_OPACITY  (optional override for the seed methods; unset = stock init_opacities)
 #   RADAR_LIDAR_AUTO_WEIGHT RADAR_DIAGNOSTICS_PATH  (loss methods; default False and
 #                                                    <run dir>/radar_diagnostics.jsonl)
 #   TRAIN_LIDAR_ONLY  (True = lidar-only training, no photometric loss; default False)
@@ -277,12 +277,10 @@ else
   fi
 fi
 if [ "$USES_RADAR_SEEDS" = 1 ]; then
-  # Seed methods also need the opacity the appended seed Gaussians start with.
-  if [ -z "${RADAR_SEED_OPACITY:-}" ]; then
-    echo "ERROR: $TRAIN_METHOD requires RADAR_SEED_OPACITY" >&2
-    exit 1
+  # Optional seed-opacity override; unset means the seeds follow stock's init_opacities.
+  if [ -n "${RADAR_SEED_OPACITY:-}" ]; then
+    RADAR_MODEL_ARGS+=(--pipeline.model.radar-seed-opacity "$RADAR_SEED_OPACITY")
   fi
-  RADAR_MODEL_ARGS+=(--pipeline.model.radar-seed-opacity "$RADAR_SEED_OPACITY")
 fi
 if [ "$USES_RADAR_LOSS" = 1 ]; then
   # Loss methods carry the radar opacity-loss settings (weight, gate, calibration, diagnostics).

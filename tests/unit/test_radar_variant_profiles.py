@@ -124,7 +124,8 @@ def test_resolver_variant_options(submit_module, slurm_config, profile_name, mon
     """Resolver output per variant: method, artifact directory, weights and gate from the session YAML."""
     session_splatad = load_session_yaml(MONTH_TO_SESSION[month])["splatad"]
     options = resolve(submit_module, slurm_config, profile_name, month)
-    assert options["seed_opacity"] == session_splatad["radar_seed_opacity"]
+    # No session or profile override: the model uses stock's init_opacities (user, 2026-11-14).
+    assert options["seed_opacity"] is None
     assert options["loss_weight"] == 0.0
     if variant == "init":
         assert options["method"] == "splatad-radar-init"
@@ -185,7 +186,8 @@ def test_init_loss_environment_exports(submit_module, slurm_config, profile_name
     environment, options = build_environment(submit_module, slurm_config, profile_name, month)
     assert environment["TRAIN_METHOD"] == "splatad-radar-init-lidar"
     assert environment["RADAR_INPUTS_DIR"] == options["inputs_dir"]
-    assert float(environment["RADAR_SEED_OPACITY"]) == options["seed_opacity"]
+    # Seed opacity unset -> not exported; the model falls back to stock's init_opacities.
+    assert "RADAR_SEED_OPACITY" not in environment
     assert environment["RADAR_LIDAR_AUTO_WEIGHT"] == "True"
     assert float(environment["RADAR_LIDAR_LOSS_WEIGHT"]) == options["loss_weight"]
     assert float(environment["RADAR_LIDAR_GATE_QUANTILE"]) == options["gate_quantile"]
@@ -199,7 +201,8 @@ def test_init_environment_exports(submit_module, slurm_config, profile_name, mon
     """init exports the seed opacity and inputs directory but no diagnostics path."""
     environment, options = build_environment(submit_module, slurm_config, profile_name, month)
     assert environment["TRAIN_METHOD"] == "splatad-radar-init"
-    assert float(environment["RADAR_SEED_OPACITY"]) == options["seed_opacity"]
+    # Seed opacity unset -> not exported; the model falls back to stock's init_opacities.
+    assert "RADAR_SEED_OPACITY" not in environment
     assert environment["RADAR_INPUTS_DIR"] == options["inputs_dir"]
     assert "RADAR_DIAGNOSTICS_PATH" not in environment
 
@@ -255,12 +258,11 @@ DuplicateKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TA
 
 @pytest.mark.parametrize("session_name", [session for session, _, _ in SESSION_MONTHS])
 def test_session_yaml_splatad_section(session_name):
-    """The splatad: section drops the per-method keys and carries a seed opacity in (0, 1)."""
+    """The splatad: section drops the per-method keys and the seed opacity (stock's is used)."""
     splatad_section = load_session_yaml(session_name)["splatad"]
     for removed_key in ("method", "radar_inputs_dir", "radar_lidar_loss_weight"):
         assert removed_key not in splatad_section
-    seed_opacity = splatad_section["radar_seed_opacity"]
-    assert not isinstance(seed_opacity, bool) and 0 < seed_opacity < 1
+    assert "radar_seed_opacity" not in splatad_section
 
 
 def test_no_yaml_file_has_duplicate_keys():

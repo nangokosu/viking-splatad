@@ -1,7 +1,7 @@
 """SplatAD model extension that appends radar-initialized static Gaussians."""
 
 from dataclasses import dataclass, field
-from typing import Dict, Type
+from typing import Dict, Optional, Type
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -68,15 +68,16 @@ if NERFSTUDIO_AVAILABLE:
         """Stock SplatAD model configuration plus radar seed opacity."""
 
         _target: Type = field(default_factory=lambda: RadarInitSplatADModel)
-        radar_seed_opacity: float = 0.5
-        """Initial seed opacity probability; 0.5 matches stock MCMC initialization."""
+        radar_seed_opacity: Optional[float] = None
+        """Seed opacity probability override; None uses ``init_opacities`` as it is when seeds are appended."""
 
         def __post_init__(self) -> None:
             """Validate radar opacity after applying stock model validation."""
             parent_post_init = getattr(super(), "__post_init__", None)
             if parent_post_init is not None:
                 parent_post_init()
-            if not 0.0 < self.radar_seed_opacity < 1.0:
+            # Validate only an explicit override; None defers to stock's init_opacities.
+            if self.radar_seed_opacity is not None and not 0.0 < self.radar_seed_opacity < 1.0:
                 raise ValueError("radar_seed_opacity must be strictly between zero and one")
 
     class RadarInitSplatADModel(SplatADModel):
@@ -115,8 +116,15 @@ if NERFSTUDIO_AVAILABLE:
             seed_count = means.shape[0]
             # Read by RadarLidarSplatADModel diagnostics.
             self._radar_gaussians_added = int(seed_count)
+            # Opacity probability: the override, else the value stock used for its own Gaussians. Stock
+            # populate_modules reassigns init_opacities (MCMC) only after create_gauss_param_dict, so
+            # reading it here gives the same value stock's rows were built with.
+            seed_opacity_probability = (self.config.radar_seed_opacity
+                                        if self.config.radar_seed_opacity is not None
+                                        else self.config.init_opacities)
             # Per-seed rows: covariance-shaped scales/rotation, colour rgb / dtype max (stock's rgb/255),
-            # zero appearance features, and logit(radar_seed_opacity) as the opacity logit.
+            # random appearance features drawn like stock (after stock's own draws, so stock rows are
+            # unchanged), and logit(seed opacity) as the opacity logit.
             radar_values: Dict[str, "torch.Tensor"] = {
                 "means": means,
                 "scales": torch.as_tensor(log_scales_numpy, device=device, dtype=floating_dtype),
@@ -124,14 +132,14 @@ if NERFSTUDIO_AVAILABLE:
                 "features_dc": radar_seeds["rgb"].to(
                     device=device, dtype=floating_dtype
                 ) / torch.iinfo(radar_seeds["rgb"].dtype).max,
-                "features_rest": torch.zeros(
+                "features_rest": torch.randn(
                     (seed_count, *stock_parameters["features_rest"].shape[1:]),
                     device=device,
                     dtype=stock_parameters["features_rest"].dtype,
                 ),
                 "opacities": torch.full(
                     (seed_count, *stock_parameters["opacities"].shape[1:]),
-                    torch.logit(torch.tensor(self.config.radar_seed_opacity)).item(),
+                    torch.logit(torch.tensor(seed_opacity_probability)).item(),
                     device=device,
                     dtype=stock_parameters["opacities"].dtype,
                 ),

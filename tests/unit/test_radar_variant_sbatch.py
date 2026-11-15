@@ -190,11 +190,18 @@ def test_unknown_method_exits_non_zero():
 
 
 @pytest.mark.parametrize("method_name", SEED_METHODS)
-def test_seed_method_without_seed_opacity_exits_non_zero(method_name):
-    """Seed methods require RADAR_SEED_OPACITY."""
+def test_seed_method_without_seed_opacity_follows_stock_initial_opacity(method_name):
+    """Without RADAR_SEED_OPACITY a seed method runs and passes no seed-opacity flag.
+
+    The model then uses stock SplatAD's own init_opacities for the seeds (user's decision
+    2026-11-14); RADAR_SEED_OPACITY is only an optional override (its presence is covered by
+    test_model_flags_follow_the_seed_and_loss_contract).
+    """
     environment = method_environment(method_name)
     del environment["RADAR_SEED_OPACITY"]
-    assert run_selection(environment).returncode != 0
+    completed = run_selection(environment)
+    assert completed.returncode == 0
+    assert not flag_names(parse_records(completed)["MODEL"]) & SEED_FLAG_NAMES
 
 
 @pytest.mark.parametrize("method_name", SEED_METHODS)

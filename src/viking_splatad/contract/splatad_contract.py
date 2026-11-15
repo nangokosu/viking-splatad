@@ -632,7 +632,7 @@ def validate_radar_inputs(
         # Step 2: radar-initialization variants cannot start without seed colours.
         if require_seed_colours and "rgb" not in arrays:
             raise ValueError("radar initialization needs a painted artifact (no rgb array)")
-    except (OSError, KeyError, TypeError, ValueError) as validation_error:
+    except (OSError, KeyError, TypeError, ValueError, AttributeError, zipfile.BadZipFile) as validation_error:
         return ContractReport([
             CheckResult("radar_anchor_artifact", False, str(validation_error))
         ])

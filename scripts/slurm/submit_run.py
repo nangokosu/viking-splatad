@@ -744,13 +744,11 @@ STALE_SESSION_RADAR_KEYS = ("method", "radar_inputs_dir")
 # Defaults of the gate settings when a session omits them (matching the dataparser/model defaults).
 DEFAULT_RADAR_GATE_QUANTILE = 0.95
 DEFAULT_RADAR_GATE_CHUNK_SIZE = 4096
-# Seed opacity default: 0.5 = stock MCMC initial opacity.
-DEFAULT_RADAR_SEED_OPACITY = 0.5
 # Directory (inside a dataset) holding one radar anchor artifact per anchor profile.
 RADAR_INPUTS_DIRECTORY_NAME = "radar_inputs"
 
 
-def read_session_gate_settings(session_name: str, radar_config: Dict[str, Any]) -> Tuple[float, int, float]:
+def read_session_gate_settings(session_name: str, radar_config: Dict[str, Any]) -> Tuple[float, int, Optional[float]]:
     """Validate the session's radar gate quantile, gate chunk size and seed opacity.
 
     Args:
@@ -758,21 +756,23 @@ def read_session_gate_settings(session_name: str, radar_config: Dict[str, Any]) 
         radar_config: The session YAML's ``splatad:`` mapping.
 
     Returns:
-        (gate_quantile, gate_chunk_size, seed_opacity).
+        (gate_quantile, gate_chunk_size, seed_opacity); seed_opacity is None unless the session sets
+        ``radar_seed_opacity`` (then the seeds follow stock's ``init_opacities``).
 
     Raises:
         ValueError: If a value has the wrong type or range.
     """
     gate_quantile = radar_config.get("radar_lidar_gate_quantile", DEFAULT_RADAR_GATE_QUANTILE)
     chunk_size = radar_config.get("radar_lidar_gate_chunk_size", DEFAULT_RADAR_GATE_CHUNK_SIZE)
-    seed_opacity = radar_config.get("radar_seed_opacity", DEFAULT_RADAR_SEED_OPACITY)
+    seed_opacity = radar_config.get("radar_seed_opacity")
     if isinstance(gate_quantile, bool) or not isinstance(gate_quantile, (int, float)) or not 0 < gate_quantile < 1:
         raise ValueError(f"configs/sessions/{session_name}.yaml: radar_lidar_gate_quantile must be in (0, 1)")
     if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
         raise ValueError(f"configs/sessions/{session_name}.yaml: radar_lidar_gate_chunk_size must be positive")
-    if isinstance(seed_opacity, bool) or not isinstance(seed_opacity, (int, float)) or not 0 < seed_opacity < 1:
+    if seed_opacity is not None and (isinstance(seed_opacity, bool)
+                                     or not isinstance(seed_opacity, (int, float)) or not 0 < seed_opacity < 1):
         raise ValueError(f"configs/sessions/{session_name}.yaml: radar_seed_opacity must be in (0, 1)")
-    return float(gate_quantile), chunk_size, float(seed_opacity)
+    return float(gate_quantile), chunk_size, None if seed_opacity is None else float(seed_opacity)
 
 
 def refuse_stale_session_radar_keys(session_name: str, radar_config: Dict[str, Any]) -> None:
@@ -872,6 +872,13 @@ def profile_radar_variant_options(config: Dict[str, Any], session_config: Dict[s
     if not isinstance(anchor_profile, str) or RUN_ID_PATTERN.fullmatch(anchor_profile) is None:
         raise ValueError("radar_anchor_profile must be a safe profile identifier")
     # Step 3: the method and artifact directory; the opacity loss auto-weights from step 0.
+    # A profile's own radar_seed_opacity overrides the session's (both optional; None = stock's value).
+    profile_seed_opacity = profile_settings.get("radar_seed_opacity")
+    if profile_seed_opacity is not None:
+        if (isinstance(profile_seed_opacity, bool) or not isinstance(profile_seed_opacity, (int, float))
+                or not 0 < profile_seed_opacity < 1):
+            raise ValueError(f"profile {profile_name}: radar_seed_opacity must be in (0, 1)")
+        options["seed_opacity"] = float(profile_seed_opacity)
     options.update(method=RADAR_VARIANT_METHODS[variant],
                    inputs_dir=f"{RADAR_INPUTS_DIRECTORY_NAME}/{anchor_profile}",
                    auto_weight=variant == RADAR_VARIANT_INIT_LOSS)
@@ -1238,7 +1245,7 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         gate_chunk_size = radar_lidar_options.get("gate_chunk_size", radar_lidar_options.get("chunk_size"))
         job_environment["RADAR_LIDAR_GATE_CHUNK_SIZE"] = str(int(gate_chunk_size))
         job_environment["RADAR_LIDAR_AUTO_WEIGHT"] = str(radar_lidar_options.get("auto_weight", False))
-        if radar_method in SEED_METHODS:
+        if radar_method in SEED_METHODS and radar_lidar_options["seed_opacity"] is not None:
             job_environment["RADAR_SEED_OPACITY"] = repr(float(radar_lidar_options["seed_opacity"]))
         if radar_method in LOSS_METHODS:
             job_environment["RADAR_DIAGNOSTICS_PATH"] = f"{absolute_stage_root}/runs/{run_id}/radar_diagnostics.jsonl"
