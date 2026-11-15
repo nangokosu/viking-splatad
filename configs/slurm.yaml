@@ -231,8 +231,13 @@ profiles:
     # Same seed as May (and as the later lidar-only B and R runs).
     seed: 42
     # As May: same iteration count on a slightly smaller recording (2153 vs 2401 camera frames),
-    # so May's ~2.7 h (measured, scaled to 20001) is an upper bound; 6 h leaves ~2x headroom.
-    time_limit: &june_core_time_limit "0-06:00:00"
+    # so May's ~2.7 h (measured, scaled to 20001) is an upper bound for stock. The radar init + loss
+    # arm (job 249572) ran at ~1.35 s/step with 4.8 M Gaussians at step 1600, i.e. ~0.7 h elapsed +
+    # ~6.8 h ETA = ~7.5 h of training, plus the render (~0.15 h). With
+    # radar_runtime_budget.headroom_factor (2.0) that is ~15.3 h; rounded up to 16 h, far under the
+    # 5-day limit. A cap only, shared by all June variants (a radar profile must equal its stock
+    # profile except for the radar keys, tests/unit/test_radar_variant_profiles.py).
+    time_limit: &june_core_time_limit "0-16:00:00"
     # As May: render only the T72 render subset (~22 of June's ~216 held-out sweeps, and the camera frames nearest them).
     render_pose_source: test
     # As May: full resolution.
