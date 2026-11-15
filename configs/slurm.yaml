@@ -200,9 +200,14 @@ profiles:
     # Same seed as the smoke and as June B / R, so the three runs differ only in their data/method.
     seed: 42
     # The full May run trained 30001 iterations in 14717 s (~4.1 h, evals included) on an A6000, so
-    # 20001 take ~2.7 h; the after-training render took ~9 min. 6 h leaves ~2x headroom, far under the
-    # 5-day limit.
-    time_limit: "0-06:00:00"
+    # 20001 take ~2.7 h; the after-training render took ~9 min. The radar init + loss arm (job 249567)
+    # was slower and hit a 6 h limit at step 17990 of 20001, i.e. ~6 h * 20001 / 17990 = 6.67 h of
+    # training plus the ~9 min render = ~6.8 h. With radar_runtime_budget.headroom_factor (2.0) that
+    # is ~13.6 h; rounded up to 14 h, far under the 5-day limit. The limit is only a cap (a run
+    # ends when training and the render end), and it is shared by all May variants because a radar
+    # profile must equal its stock profile except for the radar keys
+    # (tests/unit/test_radar_variant_profiles.py).
+    time_limit: "0-14:00:00"
     # Render only the test frames (the T72 render subset of the T71 held-out instants), for the held-out
     # metrics in renders/test/lidar_metrics.json and for viewing. Training views are not
     # re-rendered, so far less is copied back to the Mac (user's choice 2026-10-26).
