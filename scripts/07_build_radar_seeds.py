@@ -9,10 +9,12 @@ settings every consuming profile verifies. Never appends model Gaussians itself.
 import argparse
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import yaml
 
+from viking_splatad.contract.splatad_contract import validate_radar_inputs
 from viking_splatad.radar_init.build import build_radar_anchor_artifact
 
 
@@ -39,8 +41,9 @@ def main(argument_list=None):
             dataset name), --profile, optional --out, --calibration and --radar-config.
 
     Returns:
-        0 once ``build_radar_anchor_artifact`` returns (it raises on failure). This script does not
-        run ``validate_radar_inputs`` itself; scripts/06 and ``submit_run.py stage``/``gates`` do.
+        0 when the built artifact passes ``validate_radar_inputs``; 1 (report printed) when it fails
+        or the profile is unknown (message on stderr). Raises ``GateFailure`` when the profile's split
+        differs from its anchor profile's.
     """
     code_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -55,14 +58,19 @@ def main(argument_list=None):
     # Step 1: resolve the anchor profile and whether it (or the requesting profile) is a radar variant.
     helpers = load_submit_helpers(code_root)
     profiles = helpers.load_slurm_config(code_root / "configs/slurm.yaml")["profiles"]
+    if arguments.profile not in profiles:
+        print(f"error: unknown profile {arguments.profile!r}; known: {sorted(profiles)}", file=sys.stderr)
+        return 1
     anchor_profile = profiles[arguments.profile].get("radar_anchor_profile", arguments.profile)
     paint_seed_colours = ("radar_variant" in profiles[arguments.profile]
                           or "radar_variant" in profiles[anchor_profile])
-    # Step 2: split settings of the ANCHOR profile, as the consuming profiles verify them.
+    # Step 2: the profile must share its anchor's split (train-only rule), then use the ANCHOR's split
+    # settings, as the consuming profiles verify them.
+    helpers.require_radar_anchor_split_matches(code_root, arguments.dataset, arguments.session, arguments.profile)
     session_config, settings = helpers.profile_radar_split_settings(
         code_root, arguments.dataset, arguments.session, anchor_profile)
     # Step 3: build into the anchor's artifact directory, with the radar options and optional calibration.
-    out_directory = arguments.out or arguments.dataset / "radar_inputs" / anchor_profile
+    out_directory = arguments.out or arguments.dataset / helpers.RADAR_INPUTS_DIRECTORY_NAME / anchor_profile
     options = yaml.safe_load(arguments.radar_config.read_text())
     calibration = json.loads(arguments.calibration.read_text()) if arguments.calibration else None
     metadata = build_radar_anchor_artifact(arguments.dataset, session_config, settings, options,
@@ -72,6 +80,13 @@ def main(argument_list=None):
         print(f"painted_fraction: {metadata['painting']['painted_fraction']}", flush=True)
     print(json.dumps({key: metadata[key] for key in ("anchor_count", "training_radar_sweeps", "static_training_returns",
                                                     "voxel_size_m", "clock_calibration")}, indent=2), flush=True)
+    # Step 5: the built artifact must pass the contract against the anchor's split (colours required
+    # when painted), exactly as ``submit_run.py stage`` and ``gates`` will check it.
+    report = validate_radar_inputs(out_directory, arguments.session, arguments.dataset, settings,
+                                   require_seed_colours=paint_seed_colours)
+    if not report.passed:
+        print(report.to_markdown(), flush=True)
+        return 1
     return 0
 
 

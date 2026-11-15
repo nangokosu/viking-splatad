@@ -173,7 +173,13 @@ source "$ENV_PREFIX/viking-activate.sh"
 # This run's committed src/ goes first on sys.path, ahead of the env's editable install
 # (PYTHONPATH entries precede site-packages .pth paths), so the code is exactly GIT_SHA's.
 export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
-# The radar method registration and its input checks happen in (d), next to ns-train, in one place.
+# The radar method input checks happen in (d), next to ns-train. The method registration is also
+# exported here (this section runs on resume too, where (d) is skipped), so the ns-render and
+# scripts of a resumed job find the radar method specs, as render_only.sbatch does. The literal must
+# equal RADAR_METHOD_REGISTRATION in (d) (tests/unit/test_radar_review_fixes.py compares them).
+if [ "$TRAIN_METHOD" != splatad ]; then
+  export NERFSTUDIO_METHOD_CONFIGS="splatad-radar-init=viking_splatad.splatad.radar_init_method:RADAR_INIT_METHOD_SPEC,splatad-radar-lidar=viking_splatad.splatad.radar_lidar_method:RADAR_LIDAR_METHOD_SPEC,splatad-radar-init-lidar=viking_splatad.splatad.radar_init_lidar_method:RADAR_INIT_LIDAR_METHOD_SPEC"
+fi
 # Caches inside the run dir, so nothing depends on (or writes to) $HOME.
 mkdir -p "$RUN_DIR/.cache/torch"
 export TORCH_HOME="$RUN_DIR/.cache/torch" XDG_CACHE_HOME="$RUN_DIR/.cache"

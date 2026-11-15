@@ -731,7 +731,10 @@ def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDI
 
 
 # Run-profile ``radar_variant`` values and the training method each selects.
-RADAR_VARIANT_METHODS = {"init": "splatad-radar-init", "init_loss": "splatad-radar-init-lidar"}
+RADAR_VARIANT_INIT = "init"
+RADAR_VARIANT_INIT_LOSS = "init_loss"
+RADAR_VARIANT_METHODS = {RADAR_VARIANT_INIT: "splatad-radar-init",
+                         RADAR_VARIANT_INIT_LOSS: "splatad-radar-init-lidar"}
 # Methods that append radar seed Gaussians (read RADAR_SEED_OPACITY) and methods with the opacity loss
 # (write RADAR_DIAGNOSTICS_PATH).
 SEED_METHODS = frozenset({"splatad-radar-init", "splatad-radar-init-lidar"})
@@ -772,6 +775,22 @@ def read_session_gate_settings(session_name: str, radar_config: Dict[str, Any]) 
     return float(gate_quantile), chunk_size, float(seed_opacity)
 
 
+def refuse_stale_session_radar_keys(session_name: str, radar_config: Dict[str, Any]) -> None:
+    """Refuse session ``splatad:`` keys that moved to the run profile.
+
+    Args:
+        session_name: Session name, for the error message.
+        radar_config: The session YAML's ``splatad:`` mapping.
+
+    Raises:
+        ValueError: If a key of ``STALE_SESSION_RADAR_KEYS`` is present.
+    """
+    for stale_key in STALE_SESSION_RADAR_KEYS:
+        if stale_key in radar_config:
+            raise ValueError(f"configs/sessions/{session_name}.yaml: splatad.{stale_key} is stale; "
+                             "set radar_variant on the run profile in configs/slurm.yaml instead")
+
+
 def session_radar_lidar_options(
     session: str,
     intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
@@ -798,10 +817,7 @@ def session_radar_lidar_options(
         session, intermediate_root, session_config_directory
     )
     radar_config = session_config.get("splatad", {})
-    for stale_key in STALE_SESSION_RADAR_KEYS:
-        if stale_key in radar_config:
-            raise ValueError(f"configs/sessions/{session_name}.yaml: splatad.{stale_key} is stale; "
-                             "set radar_variant on the run profile in configs/slurm.yaml instead")
+    refuse_stale_session_radar_keys(session_name, radar_config)
     # Step 2: validate the gate settings.
     gate_quantile, chunk_size, _ = read_session_gate_settings(session_name, radar_config)
     return {
@@ -831,13 +847,16 @@ def profile_radar_variant_options(config: Dict[str, Any], session_config: Dict[s
 
     Raises:
         ValueError: On an unknown variant, a variant combined with ``radar_loss_only``, an unsafe
-            anchor-profile name or an invalid session setting.
+            anchor-profile name, a stale session key (``splatad.method``, ``splatad.radar_inputs_dir``)
+            or an invalid session setting.
     """
-    # Step 1: session settings shared by every variant.
+    # Step 1: session settings shared by every variant; a stale session key is refused here, so no
+    # caller depends on a separate side-effect call for it.
     profile_settings = config["profiles"][profile_name]
     radar_config = session_config.get("splatad", {})
-    gate_quantile, gate_chunk_size, seed_opacity = read_session_gate_settings(
-        str(session_config.get("session", {}).get("name", "session")), radar_config)
+    session_name = str(session_config.get("session", {}).get("name", "session"))
+    refuse_stale_session_radar_keys(session_name, radar_config)
+    gate_quantile, gate_chunk_size, seed_opacity = read_session_gate_settings(session_name, radar_config)
     options = {"method": "splatad", "inputs_dir": None, "seed_opacity": seed_opacity, "loss_weight": 0.0,
                "auto_weight": False, "gate_quantile": gate_quantile, "gate_chunk_size": gate_chunk_size}
     variant = profile_settings.get("radar_variant")
@@ -855,7 +874,7 @@ def profile_radar_variant_options(config: Dict[str, Any], session_config: Dict[s
     # Step 3: the method and artifact directory; the opacity loss auto-weights from step 0.
     options.update(method=RADAR_VARIANT_METHODS[variant],
                    inputs_dir=f"{RADAR_INPUTS_DIRECTORY_NAME}/{anchor_profile}",
-                   auto_weight=variant == "init_loss")
+                   auto_weight=variant == RADAR_VARIANT_INIT_LOSS)
     return options
 
 
@@ -879,9 +898,13 @@ def profile_radar_split_settings(code_root: Path, dataset: Path, session: str,
 
     Raises:
         KeyError: If ``profile`` is not under ``profiles``.
-        ValueError: If the profile sets only one of ``window_start_seconds`` / ``window_seconds``, or a
+        ValueError: If ``dataset.name`` differs from ``session``, the profile sets only one of ``window_start_seconds`` / ``window_seconds``, or a
             split value is invalid.
     """
+    # Step 0: the lookups below use dataset.parent / session, so the two names must agree.
+    if Path(dataset).resolve().name != session:
+        raise ValueError(f"dataset directory name {Path(dataset).resolve().name!r} must equal the session "
+                         f"{session!r}: the manifest and session config are looked up as <dataset parent>/{session}")
     # Step 1: the profile and session config from the given code root.
     slurm_config = load_slurm_config(code_root / "configs" / "slurm.yaml")
     profile_settings = slurm_config["profiles"][profile]
@@ -908,6 +931,39 @@ def profile_radar_split_settings(code_root: Path, dataset: Path, session: str,
         "test_split_method": session_test_split_method(session, intermediate_root, session_directory),
         "test_render_fraction": profile_test_render_fraction(
             profile_settings, session, intermediate_root, session_directory)}
+
+
+def require_radar_anchor_split_matches(code_root: Path, dataset: Path, session: str, profile: str) -> None:
+    """Refuse a radar profile whose split settings differ from its anchor profile's.
+
+    The artifact a profile reads was built and verified against its anchor profile's split. A
+    profile with its own window or fractions reading that artifact would train on a different
+    train set, so radar from its held-out frames would reach the seeds (a train-only violation).
+
+    Args:
+        code_root: Repository (or committed snapshot) root holding ``configs/``.
+        dataset: Intermediate dataset directory ``<root>/<session>``.
+        session: Dataset name; must equal ``dataset.name``.
+        profile: Profile name under ``profiles``.
+
+    Raises:
+        GateFailure: Naming the differing split keys, when the profile and its anchor disagree.
+    """
+    # Step 1: the anchor is the profile's radar_anchor_profile, or the profile itself.
+    slurm_config = load_slurm_config(code_root / "configs" / "slurm.yaml")
+    anchor_profile = slurm_config["profiles"][profile].get("radar_anchor_profile", profile)
+    if anchor_profile == profile:
+        return
+    # Step 2: both profiles' effective split settings.
+    _, profile_split = profile_radar_split_settings(code_root, dataset, session, profile)
+    _, anchor_split = profile_radar_split_settings(code_root, dataset, session, anchor_profile)
+    # Step 3: every key must agree; name the ones that do not.
+    differing_keys = sorted(key for key in profile_split if profile_split[key] != anchor_split.get(key))
+    if differing_keys:
+        raise GateFailure(
+            f"profile {profile!r} reads the radar artifact of anchor profile {anchor_profile!r} but its split "
+            f"differs in {differing_keys} ({ {key: profile_split[key] for key in differing_keys} } vs "
+            f"{ {key: anchor_split[key] for key in differing_keys} }); held-out radar would reach the seeds")
 
 
 def profile_radar_lidar_options(profile_settings: Dict[str, Any], baseline_options: Dict[str, Any],
@@ -1546,6 +1602,8 @@ def run_gates(session: str, profile: Optional[str] = None) -> None:
             raise GateFailure(f"unknown profile {profile!r}")
         gate_profile_settings = gate_config["profiles"][profile]
         if gate_profile_settings.get("radar_variant") is not None:
+            # Train-only rule: the profile's split must equal its anchor profile's (the artifact's).
+            require_radar_anchor_split_matches(PROJECT_ROOT, dataset_dir, session, profile)
             _, gate_session_config = load_dataset_session_config(session)
             variant_options = profile_radar_variant_options(gate_config, gate_session_config, profile)
             anchor_profile = Path(variant_options["inputs_dir"]).name
@@ -1685,33 +1743,49 @@ def stage_code(ssh_target: str, absolute_stage_root: str, git_sha: str) -> str:
     return remote_code_dir
 
 
-def require_valid_radar_inputs(dataset_dir: Path, session: str) -> None:
+def require_valid_radar_inputs(dataset_dir: Path, session: str, config: Dict[str, Any]) -> None:
     """Refuse to stage a dataset whose radar anchor artifacts fail the contract.
 
-    Every directory under ``<dataset>/radar_inputs/`` is an artifact named after its anchor profile;
-    each must be painted (seed colours) and match that profile's exact split.
+    The artifacts checked are exactly the anchor profiles that ``radar_variant`` profiles name
+    (``<dataset>/radar_inputs/<anchor profile>/``), each painted (seed colours required) and matching
+    its anchor profile's exact split. Other folders (an unpainted loss-only artifact, leftovers) are
+    ignored with a one-line note. A dataset without ``radar_inputs/`` has nothing to check. Profiles
+    carry no session, so an anchor that is absent is an error only when ``radar_inputs/`` holds none of
+    the named anchors (anchors of the other session's profiles are legitimately absent).
 
     Args:
         dataset_dir: Local dataset directory.
-        session: Session name.
+        session: Session name (must equal ``dataset_dir.name``).
+        config: Parsed Slurm config (``profiles`` mapping).
 
     Raises:
-        GateFailure: If an artifact fails ``validate_radar_inputs``.
-        KeyError: If an artifact directory is not named after a profile in configs/slurm.yaml.
+        GateFailure: If no named anchor artifact exists, or an artifact fails ``validate_radar_inputs``.
     """
-    from viking_splatad.contract.splatad_contract import validate_radar_inputs
-
     # Step 1: nothing to check without a radar_inputs directory.
     radar_root = dataset_dir / RADAR_INPUTS_DIRECTORY_NAME
     if not radar_root.is_dir():
         return
-    # Step 2: validate every artifact against the split of the profile it is named after.
-    for artifact_dir in sorted(path for path in radar_root.iterdir() if path.is_dir()):
-        _, split_settings = profile_radar_split_settings(PROJECT_ROOT, dataset_dir, session, artifact_dir.name)
-        report = validate_radar_inputs(artifact_dir, session, dataset_dir, split_settings,
+    # Step 2: the anchors named by radar_variant profiles, and the folders actually present.
+    named_anchors = sorted({settings.get("radar_anchor_profile", name)
+                            for name, settings in config["profiles"].items() if settings.get("radar_variant")})
+    present_folders = sorted(path.name for path in radar_root.iterdir() if path.is_dir())
+    present_anchors = [anchor for anchor in named_anchors if anchor in present_folders]
+    if not present_anchors:
+        raise GateFailure(f"{radar_root} holds none of the radar anchor artifacts that radar_variant profiles "
+                          f"name ({named_anchors}); build one with scripts/07_build_radar_seeds.py "
+                          "--profile <variant profile>")
+    ignored_folders = [folder for folder in present_folders if folder not in present_anchors]
+    if ignored_folders:
+        print(f"note: not validated (no radar_variant profile names them as anchor): {ignored_folders}")
+    # Step 3: validate each present anchor against the split of the profile it is named after. The
+    # contract import waits until here so a dataset without radar artifacts never needs it.
+    from viking_splatad.contract.splatad_contract import validate_radar_inputs
+    for anchor in present_anchors:
+        _, split_settings = profile_radar_split_settings(PROJECT_ROOT, dataset_dir, session, anchor)
+        report = validate_radar_inputs(radar_root / anchor, session, dataset_dir, split_settings,
                                        require_seed_colours=True)
         if not report.passed:
-            raise GateFailure(f"radar artifact {artifact_dir} fails the contract:\n{report.to_markdown()}")
+            raise GateFailure(f"radar artifact {radar_root / anchor} fails the contract:\n{report.to_markdown()}")
 
 
 def stage_session(config: Dict[str, Any], session: str) -> str:
@@ -1736,7 +1810,7 @@ def stage_session(config: Dict[str, Any], session: str) -> str:
     if not dataset_dir.is_dir():
         raise FileNotFoundError(f"dataset {dataset_dir} not found")
     require_no_return_sidecar(dataset_dir, session_add_missing_points(session))
-    require_valid_radar_inputs(dataset_dir, session)
+    require_valid_radar_inputs(dataset_dir, session, config)
     git_sha = get_head_sha()
     # Step 2: create remote directories (rsync creates only the last path component).
     run_checked(ssh_command(ssh_target, ["mkdir", "-p", f"{absolute_stage_root}/data/{session}",
@@ -2197,26 +2271,34 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
         KeyError: If the profile is unknown.
         RuntimeError/ValueError: On remote failure, a missing environment, or invalid resources.
     """
-    # Step 1: gates and config lookups.
+    # Step 1: cheap refusals first (they must not wait for the full test suite the gates run), then gates.
     if profile not in config["profiles"]:
         raise KeyError(f"unknown profile {profile!r}; known: {sorted(config['profiles'])}")
     profile_settings = config["profiles"][profile]
+    if profile_settings.get("radar_loss_only"):
+        raise ValueError("loss-only workdisk profiles require submit-remote with a verified radar artifact")
+    # The session baseline resolved with the profile's radar variant (a stale session key is refused
+    # inside the resolver).
+    _, variant_session_config = load_dataset_session_config(session)
+    radar_lidar_options = profile_radar_variant_options(config, variant_session_config, profile)
+    if profile_settings.get("radar_variant"):
+        # Even with --skip-gates: the profile's split must equal its anchor's, and the artifact it reads
+        # must exist locally (it is staged with the dataset).
+        dataset_dir = INTERMEDIATE_DATA_ROOT / session
+        require_radar_anchor_split_matches(PROJECT_ROOT, dataset_dir, session, profile)
+        if not (dataset_dir / radar_lidar_options["inputs_dir"]).is_dir():
+            raise GateFailure(f"profile {profile!r} reads {dataset_dir / radar_lidar_options['inputs_dir']}, "
+                              "which does not exist; build it with scripts/07_build_radar_seeds.py")
     if not skip_gates:
         # Only a radar-variant profile has anything extra for the gates to check (its artifact).
         run_gates(session, **({"profile": profile} if profile_settings.get("radar_variant") else {}))
-    if profile_settings.get("radar_loss_only"):
-        raise ValueError("loss-only workdisk profiles require submit-remote with a verified radar artifact")
     # The eval cadence is checked before any ssh/sbatch, so a profile too short for its minimum fails early.
     minimum_eval_points, steps_per_eval_all_images = profile_eval_cadence(profile_settings)
     # The split fractions too (profile overrides, else the dataset's), so a bad value fails early.
     train_fraction, train_fraction_override, core_fraction = profile_split_fractions(profile_settings, session)
     test_split_method = session_test_split_method(session)
     render_fraction = profile_test_render_fraction(profile_settings, session)
-    # The session baseline (validates the session YAML), then the profile's radar variant on top.
-    session_radar_lidar_options(session)
-    _, variant_session_config = load_dataset_session_config(session)
-    radar_lidar_options = profile_radar_variant_options(config, variant_session_config, profile)
-    # And the GPU type (the profile's gres, else the default).
+    # The GPU type (the profile's gres, else the default).
     job_gres = resolve_job_gres(config, profile_settings)
     ssh_target = resolve_ssh_target(config["ssh_host"])
     absolute_stage_root = resolve_remote_stage_root(config, ssh_target)

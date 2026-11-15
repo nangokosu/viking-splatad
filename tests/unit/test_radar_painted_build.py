@@ -207,6 +207,12 @@ def run_script_07(tmp_path, monkeypatch, profile, extra_arguments=()):
         return _Metadata(painting={"painted_fraction": 0.0}) if paint_seed_colours else _Metadata()
 
     monkeypatch.setattr(script, "build_radar_anchor_artifact", record_build)
+    # The recorder writes no artifact, so the post-build contract check (covered by
+    # test_radar_review_fixes.py) is replaced by a passing report here.
+    from viking_splatad.contract.splatad_contract import CheckResult, ContractReport
+
+    monkeypatch.setattr(script, "validate_radar_inputs", lambda *arguments, **keywords: ContractReport(
+        [CheckResult("radar_anchor_artifact", True, "stubbed: no artifact written")]))
     status = script.main(["--dataset", str(dataset_directory), "--session", SESSION_NAME,
                           "--profile", profile, *extra_arguments])
     assert status == 0

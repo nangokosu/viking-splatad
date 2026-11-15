@@ -263,8 +263,9 @@ profiles:
   # (splatad-radar-init); init_loss = the same + the radar opacity loss (splatad-radar-init-lidar).
   # radar_anchor_profile names the profile whose artifact (<dataset>/radar_inputs/<profile>/) is read;
   # it defaults to the profile itself. One artifact per month serves init and init_loss, because both
-  # share the core's split settings (checked by profile_radar_split_settings). May trains with the
-  # camera loss on; June is lidar-only (train_lidar_only comes from the core).
+  # share the core's split settings (enforced by require_radar_anchor_split_matches in submit_run.py,
+  # called by gates, submit and scripts/07: a profile whose split differs from its anchor's is refused).
+  # May trains with the camera loss on; June is lidar-only (train_lidar_only comes from the core).
   may_scene_a_radar_init:
     <<: *may_core_profile
     radar_variant: init
@@ -283,6 +284,9 @@ profiles:
   # ---- Radar smokes: the month's full-window core with the smoke profile's iteration and save
   # settings (anchors reused), reading the month's full-run init artifact so no separate artifact
   # is built for a smoke.
+  # The smokes keep the core's 6 h time_limit instead of the smoke profile's 2 h, for the same reason as
+  # june_loss_only_smoke: they keep the evals of the full run on the full-window dataset, so the short
+  # iteration count does not shorten the job in proportion.
   may_radar_init_smoke:
     <<: *may_core_profile
     max_num_iterations: *smoke_iterations
