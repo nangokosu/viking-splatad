@@ -1,4 +1,7 @@
-"""Build immutable loss-only radar anchors on a Slurm CPU node, without touching baseline inputs."""
+"""Build immutable radar anchor artifacts on a Slurm CPU node, without touching baseline inputs.
+
+Schema /1 is loss-only; schema /2 adds camera-painted anchor colours for Gaussian initialisation.
+"""
 
 import json
 from pathlib import Path
@@ -174,7 +177,7 @@ def build_radar_anchor_artifact(dataset_directory: Path, session_config: dict, s
         calibration: Optional independently measured report; None measures a train-safe local fit.
         paint_seed_colours: True paints each anchor from the nearest unobstructed train camera frame
             and writes schema /2 (``rgb``, ``painting`` record, ``gaussian_initialization`` true);
-            False writes Neel's schema /1 unchanged.
+            False writes the loss-only schema /1 unchanged.
 
     Returns:
         Artifact summary after checksum/split/source/frame validation and atomic publication.
@@ -263,6 +266,7 @@ def build_radar_anchor_artifact(dataset_directory: Path, session_config: dict, s
         azimuth_cell_rad = np.deg2rad(options["azimuth_cell_degrees"])
         elevation_cell_rad = np.deg2rad(options["elevation_cell_degrees"])
         camera_name = session_config["camera"]["name"]
+        # Occlusion margin = one radar range cell: a LiDAR return within it is the anchor's own surface.
         arrays["rgb"], painted_mask, camera_stamps_ns = paint_anchors_from_train_cameras(
             arrays["means"], arrays["time_spans"], view, train_files, camera_name,
             session_config["lidar"]["name"], azimuth_cell_rad, elevation_cell_rad,

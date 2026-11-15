@@ -35,13 +35,17 @@ def covariance_to_log_scales_and_quaternions(
         raise ValueError("covariances must be finite")
     if not np.allclose(covariance_array, covariance_array.transpose(0, 2, 1)):
         raise ValueError("covariances must be symmetric")
+    # Sigma = V diag(lambda) V^T, so R = V and exp(log_scale) = sqrt(lambda).
     eigenvalues, eigenvectors = np.linalg.eigh(covariance_array)
     if np.any(eigenvalues <= 0.0):
         raise ValueError("covariances must be positive definite")
+    # Negating one eigenvector column flips det(V) to +1 and leaves V diag(lambda) V^T unchanged.
     reflected = np.linalg.det(eigenvectors) < 0.0
     eigenvectors[reflected, :, 0] *= -1.0
+    # SciPy returns scalar-last (x, y, z, w); reorder to SplatAD's (w, x, y, z).
     quaternions_xyzw = Rotation.from_matrix(eigenvectors).as_quat()
     quaternions_wxyz = quaternions_xyzw[:, [3, 0, 1, 2]]
+    # log(sqrt(lambda)) = 0.5 * log(lambda).
     log_scales = 0.5 * np.log(eigenvalues)
     return log_scales, quaternions_wxyz
 
@@ -99,6 +103,7 @@ if NERFSTUDIO_AVAILABLE:
             # Seeds initialize Gaussian colour, so unpainted (rgb-less) anchors are unusable here.
             if "rgb" not in radar_seeds:
                 raise ValueError("radar_seeds metadata has no rgb; radar initialization needs painted seed colours")
+            # Seed rows take the device/dtype of the stock parameters they are concatenated onto.
             reference_parameter = stock_parameters["means"]
             device = reference_parameter.device
             floating_dtype = reference_parameter.dtype
@@ -110,6 +115,8 @@ if NERFSTUDIO_AVAILABLE:
             seed_count = means.shape[0]
             # Read by RadarLidarSplatADModel diagnostics.
             self._radar_gaussians_added = int(seed_count)
+            # Per-seed rows: covariance-shaped scales/rotation, colour rgb / dtype max (stock's rgb/255),
+            # zero appearance features, and logit(radar_seed_opacity) as the opacity logit.
             radar_values: Dict[str, "torch.Tensor"] = {
                 "means": means,
                 "scales": torch.as_tensor(log_scales_numpy, device=device, dtype=floating_dtype),
@@ -137,6 +144,7 @@ if NERFSTUDIO_AVAILABLE:
                 device=device,
                 dtype=stock_parameters["id"].dtype,
             )
+            # Guard against an upstream SplatAD change adding or renaming a Gaussian parameter.
             if set(radar_values) != set(stock_parameters):
                 raise RuntimeError(
                     "pinned SplatAD Gaussian parameter keys changed; radar initialization needs review"

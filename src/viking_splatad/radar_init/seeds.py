@@ -17,6 +17,7 @@ from viking_splatad.splatad.viking_conversions import load_lidar_sweep
 # Camera-stamp value for an anchor that no train camera frame painted.
 UNPAINTED_STAMP_NS = -1
 
+# Colour of an unpainted anchor: uint8 mid-grey (floor(255 / 2)), a prior that favours no hue.
 NEUTRAL_GREY_RGB = np.array([127, 127, 127], dtype=np.uint8)
 
 
@@ -35,10 +36,13 @@ def project_map_points(
     Returns:
         ``(pixels [N,2] (u, v), depth [N])``; pixels are NaN where depth is not positive.
     """
+    # Map -> camera: p_c = R^T (p_m - t), applied via the inverted pose.
     transform_camera_map = np.linalg.inv(np.asarray(transform_map_camera, dtype=np.float64))
     points_camera = points_map @ transform_camera_map[:3, :3].T + transform_camera_map[:3, 3]
+    # OpenCV camera looks along +z; points at or behind the image plane get NaN pixels.
     depth = points_camera[:, 2]
     safe_depth = np.where(depth > 0.0, depth, np.nan)
+    # Pinhole projection: u = fx * x / z + cx, v = fy * y / z + cy.
     pixel_u = camera_matrix[0, 0] * points_camera[:, 0] / safe_depth + camera_matrix[0, 2]
     pixel_v = camera_matrix[1, 1] * points_camera[:, 1] / safe_depth + camera_matrix[1, 2]
     return np.column_stack([pixel_u, pixel_v]), depth
@@ -67,14 +71,17 @@ def paint_visible_seed_colors(
     Returns:
         ``(rgb [N,3] uint8, painted [N] bool)``.
     """
+    # Step 1: every seed starts grey and unpainted.
     seed_means = np.asarray(seed_means_map, dtype=np.float64)
     colors = np.repeat(NEUTRAL_GREY_RGB[None, :], len(seed_means), axis=0)
     painted = np.zeros(len(seed_means), dtype=bool)
+    # Step 2: project seeds and LiDAR occluders into the same image.
     seed_pixels, seed_depths = project_map_points(seed_means, transform_map_camera, camera_matrix)
     lidar_pixels, lidar_depths = project_map_points(
         np.asarray(occluder_points_map, dtype=np.float64), transform_map_camera, camera_matrix
     )
     image_height, image_width = image_rgb.shape[:2]
+    # Step 3: keep only occluders in front of the camera and inside the image.
     lidar_valid = (
         (lidar_depths > 0.0)
         & np.isfinite(lidar_pixels).all(axis=1)
@@ -85,7 +92,9 @@ def paint_visible_seed_colors(
     )
     valid_lidar_pixels = lidar_pixels[lidar_valid]
     valid_lidar_depths = lidar_depths[lidar_valid]
+    # Step 4: per seed, O(L) scan of occluders (O(N * L) per image).
     for seed_index, (pixel, seed_depth) in enumerate(zip(seed_pixels, seed_depths)):
+        # A seed behind the camera or off the image cannot be painted.
         inside = (
             seed_depth > 0.0
             and np.isfinite(pixel).all()
@@ -94,6 +103,7 @@ def paint_visible_seed_colors(
         )
         if not inside:
             continue
+        # Occluded: a LiDAR return inside the footprint disc and more than the margin nearer.
         pixel_distances = np.linalg.norm(valid_lidar_pixels - pixel, axis=1)
         closer_return = (
             (pixel_distances <= footprint_radius_pixels)
@@ -101,6 +111,7 @@ def paint_visible_seed_colors(
         )
         if closer_return.any():
             continue
+        # Nearest pixel (OpenCV pixel centres sit on integers), clipped for u or v just below the edge.
         column_index = int(np.clip(np.rint(pixel[0]), 0, image_width - 1))
         row_index = int(np.clip(np.rint(pixel[1]), 0, image_height - 1))
         colors[seed_index] = image_rgb[row_index, column_index]
