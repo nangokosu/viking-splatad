@@ -57,6 +57,18 @@ Re-run the CPU preflight whenever the dataparser, extraction or window changes:
 - camera render of 150 frames ~72–86 s
 - lidar render of 150 scans ~73 s (job 222633)
 
+## Radar variants: one session end to end
+Three variants per session (`splatad`, `splatad-radar-init`, `splatad-radar-init-lidar`), each a separate run. The radar artifact is built once per session on the Mac and rsynced by `stage`.
+```bash
+uv run python scripts/07_build_radar_seeds.py --dataset data/intermediate/<session> --session <session> --profile <month>_scene_a_radar_init
+uv run python scripts/slurm/submit_run.py gates  --session <session> --profile <profile>
+uv run python scripts/slurm/submit_run.py stage  --session <session>
+uv run python scripts/slurm/submit_run.py submit --session <session> --profile <profile>
+```
+- `<month>` is `may` or `june`; run `<profile>` over `<month>_radar_init_smoke` and `<month>_radar_init_loss_smoke` first, then the full `<month>_scene_a`, `<month>_scene_a_radar_init` and `<month>_scene_a_radar_init_loss`.
+- Both radar profiles read the one artifact (`radar_inputs/<month>_scene_a_radar_init/`); the profile key `radar_variant: init | init_loss` picks the method.
+- Rebuild the artifact and re-run `stage` whenever the window, split or extraction changes.
+
 ## Seed and reproducibility
 `seed` seeds Python, NumPy and torch (all CUDA devices) before setup (nerfstudio `train.py`). It covers Gaussian init, sensor sampling order, random background, and MCMC relocation and noise.
 
