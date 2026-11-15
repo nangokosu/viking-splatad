@@ -12,12 +12,13 @@ from viking_splatad.dataset.writer import FRAME_FILE_PATTERN
 from viking_splatad.extract.pose import Trajectory, interpolate_pose_se3
 from viking_splatad.radar_init.anchors import accumulate_radar, persistent_anchors, resolution_covariances, static_doppler_mask
 from viking_splatad.radar_init.artifact import (
-    ARTIFACT_SCHEMA, CLOCK_SCHEMA, anchor_split, corrected_radar_times,
+    ARTIFACT_SCHEMA, CLOCK_SCHEMA, PAINTED_ARTIFACT_SCHEMA, anchor_split, corrected_radar_times,
     load_verified_anchors, object_digest, train_radar_mask, validate_clock_report,
 )
 from viking_splatad.radar_init.clock import (
     clock_search_domain, doppler_ego_velocity, fit_affine_clock, regularize_velocity_noise, safe_clock_fit_mask,
 )
+from viking_splatad.radar_init.seeds import paint_anchors_from_train_cameras
 from viking_splatad.splatad.viking_conversions import open_dataset_view
 
 
@@ -148,6 +149,22 @@ def measure_clock(records, fields, view, lidar_frames, motion, options):
 
 def build_loss_only_artifact(dataset_directory: Path, session_config: dict, split_settings: dict,
                              options: dict, destination: Path, calibration=None):
+    """Build the unpainted (schema /1) loss-only anchor artifact; see ``build_radar_anchor_artifact``.
+
+    Args:
+        dataset_directory, session_config, split_settings, options, destination, calibration:
+            As in ``build_radar_anchor_artifact``.
+
+    Returns:
+        Artifact summary of the unpainted artifact (no ``rgb``, ``gaussian_initialization`` false).
+    """
+    return build_radar_anchor_artifact(dataset_directory, session_config, split_settings, options,
+                                       destination, calibration, paint_seed_colours=False)
+
+
+def build_radar_anchor_artifact(dataset_directory: Path, session_config: dict, split_settings: dict,
+                                options: dict, destination: Path, calibration=None,
+                                paint_seed_colours: bool = False):
     """Build and contract-check immutable fixed anchors; never edit the baseline manifest.
 
     Args:
@@ -155,6 +172,9 @@ def build_loss_only_artifact(dataset_directory: Path, session_config: dict, spli
         split_settings: Exact profile split/window kwargs; options: source-documented radar model.
         destination: New artifact directory, must not exist.
         calibration: Optional independently measured report; None measures a train-safe local fit.
+        paint_seed_colours: True paints each anchor from the nearest unobstructed train camera frame
+            and writes schema /2 (``rgb``, ``painting`` record, ``gaussian_initialization`` true);
+            False writes Neel's schema /1 unchanged.
 
     Returns:
         Artifact summary after checksum/split/source/frame validation and atomic publication.
@@ -236,6 +256,27 @@ def build_loss_only_artifact(dataset_directory: Path, session_config: dict, spli
                 "training_source_stamps_ns": [stamp for stamp, _ in accepted_records],
                 "training_radar_sweeps": len(accepted_records), "static_training_returns": len(points),
                 "anchor_count": len(arrays["means"]), "selection": "static_and_persistent_occupancy_not_semantic_trunks"}
+    if paint_seed_colours:
+        # Painting: anchor means and spans are map-frame / session-reference seconds, the same time
+        # base as the dataset view's camera times. Only train-split frames may colour an anchor.
+        train_files = {frame.file for frame in frames if frame.split == "train"}
+        azimuth_cell_rad = np.deg2rad(options["azimuth_cell_degrees"])
+        elevation_cell_rad = np.deg2rad(options["elevation_cell_degrees"])
+        camera_name = session_config["camera"]["name"]
+        arrays["rgb"], painted_mask, camera_stamps_ns = paint_anchors_from_train_cameras(
+            arrays["means"], arrays["time_spans"], view, train_files, camera_name,
+            session_config["lidar"]["name"], azimuth_cell_rad, elevation_cell_rad,
+            options["range_cell_m"])
+        # Footprint radius in pixels: f * tan(angular cell), larger of the two axes (as the painter).
+        intrinsics = view.manifest["cameras"][camera_name]
+        metadata.update(
+            schema=PAINTED_ARTIFACT_SCHEMA, gaussian_initialization=True,
+            painting={"camera": camera_name,
+                      "footprint_radius_pixels": float(max(intrinsics["fx"] * np.tan(azimuth_cell_rad),
+                                                           intrinsics["fy"] * np.tan(elevation_cell_rad))),
+                      "occlusion_margin_m": float(options["range_cell_m"]),
+                      "painted_fraction": float(painted_mask.mean()),
+                      "camera_stamps_ns": [int(stamp) for stamp in camera_stamps_ns]})
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="radar-anchors-", dir=destination.parent) as temporary:
         output = Path(temporary) / "artifact"

@@ -174,8 +174,8 @@ def run_script_07(tmp_path, monkeypatch, profile, extra_arguments=()):
     """Run script 07's main() with the builder replaced by a recorder.
 
     Args:
-        tmp_path: Holds the dataset directory ``<tmp>/<session>`` (no manifest, so the dataset
-            name is the session name, as submit_run resolves it).
+        tmp_path: Holds the dataset directory ``<tmp>/<session>`` (its manifest names that
+            session, so submit_run resolves the real session config).
         monkeypatch: pytest monkeypatch.
         profile: Profile name from configs/slurm.yaml.
         extra_arguments: Extra command-line arguments.
@@ -187,8 +187,13 @@ def run_script_07(tmp_path, monkeypatch, profile, extra_arguments=()):
 
     dataset_directory = tmp_path / SESSION_NAME
     write_dataset(dataset_directory, build_synthetic_dataset(num_frames=6))
-    # Without a manifest the dataset name stands for the session; poses.npz keeps time spans readable.
-    (dataset_directory / "manifest.json").unlink()
+    # A real dataset always has its manifest: it names the session (which selects the session YAML)
+    # and holds the train fraction that profiles without their own fraction use (T27). Name the
+    # synthetic dataset after the real session so script 07 resolves that session's config.
+    manifest_path = dataset_directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["session"]["name"] = SESSION_NAME
+    manifest_path.write_text(json.dumps(manifest))
     module_spec = importlib.util.spec_from_file_location("build_radar_seeds_script", SCRIPT_PATH)
     script = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(script)
@@ -198,7 +203,8 @@ def run_script_07(tmp_path, monkeypatch, profile, extra_arguments=()):
                      paint_seed_colours=False):
         """Capture the arguments script 07 hands the builder."""
         recorded.update(dataset=Path(dataset), out=Path(out), paint=paint_seed_colours)
-        return _Metadata()
+        # A painted build's metadata carries a painting record (script 07 prints its fraction).
+        return _Metadata(painting={"painted_fraction": 0.0}) if paint_seed_colours else _Metadata()
 
     monkeypatch.setattr(script, "build_radar_anchor_artifact", record_build)
     status = script.main(["--dataset", str(dataset_directory), "--session", SESSION_NAME,

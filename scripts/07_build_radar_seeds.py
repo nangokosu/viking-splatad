@@ -1,4 +1,10 @@
-"""Build calibrated train-only loss anchors on the cluster; never append model Gaussians."""
+"""Build calibrated train-only radar anchors: unpainted loss-only anchors (cluster) or painted init anchors (Mac).
+
+The radar variants (``radar_variant`` profiles) build on the Mac with camera-painted seed colours;
+loss-only profiles build on the cluster without colours. The artifact is built for the profile's
+anchor profile (``radar_anchor_profile``, default the profile itself) so that it matches the split
+settings every consuming profile verifies. Never appends model Gaussians itself.
+"""
 
 import argparse
 import importlib.util
@@ -7,36 +13,22 @@ from pathlib import Path
 
 import yaml
 
-from viking_splatad.radar_init.build import build_loss_only_artifact
+from viking_splatad.radar_init.build import build_radar_anchor_artifact
 
 
-def profile_settings(code_root: Path, dataset: Path, session: str, profile: str):
-    """Resolve the exact Slurm profile/window split using the submission helper's own rules.
+def load_submit_helpers(code_root: Path):
+    """Load ``scripts/slurm/submit_run.py`` of the given snapshot as a module.
 
     Args:
-        code_root: Committed snapshot; dataset: published session inputs.
-        session, profile: Existing canonical identifiers.
+        code_root: Repository (or committed snapshot) root.
 
     Returns:
-        Session configuration, exact artifact split kwargs.
+        The loaded helper module.
     """
     specification = importlib.util.spec_from_file_location("submit_helpers", code_root / "scripts/slurm/submit_run.py")
     helpers = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(helpers)
-    config = helpers.load_slurm_config(code_root / "configs/slurm.yaml")
-    selected = config["profiles"][profile]
-    session_directory = code_root / "configs/sessions"
-    _, session_config = helpers.load_dataset_session_config(session, dataset.parent, session_directory)
-    train_fraction, _, core_fraction = helpers.profile_split_fractions(selected, session, dataset.parent, session_directory)
-    start, end = 0., 1.
-    if "window_seconds" in selected or "window_start_seconds" in selected:
-        start, end = helpers.window_fractions(*helpers.dataset_time_span(dataset),
-                                              selected["window_start_seconds"], selected["window_seconds"])
-    return session_config, {"start_fraction": start, "end_fraction": end, "train_fraction": train_fraction,
-        "test_block_count": helpers.session_test_block_count(session, dataset.parent, session_directory),
-        "test_block_core_fraction": core_fraction,
-        "test_split_method": helpers.session_test_split_method(session, dataset.parent, session_directory),
-        "test_render_fraction": helpers.profile_test_render_fraction(selected, session, dataset.parent, session_directory)}
+    return helpers
 
 
 def main(argument_list=None):
@@ -46,14 +38,27 @@ def main(argument_list=None):
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--session", required=True)
     parser.add_argument("--profile", required=True)
-    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path, default=None,
+                        help="Artifact directory; default <dataset>/radar_inputs/<anchor profile>")
     parser.add_argument("--calibration", type=Path, help="Optional independent measured report, validated against exact source IDs")
     parser.add_argument("--radar-config", type=Path, default=code_root / "configs/radar/loss_only.yaml")
     arguments = parser.parse_args(argument_list)
-    session_config, settings = profile_settings(code_root, arguments.dataset, arguments.session, arguments.profile)
+    # Step 1: resolve the anchor profile and whether it (or the requesting profile) is a radar variant.
+    helpers = load_submit_helpers(code_root)
+    profiles = helpers.load_slurm_config(code_root / "configs/slurm.yaml")["profiles"]
+    anchor_profile = profiles[arguments.profile].get("radar_anchor_profile", arguments.profile)
+    paint_seed_colours = ("radar_variant" in profiles[arguments.profile]
+                          or "radar_variant" in profiles[anchor_profile])
+    # Step 2: split settings of the ANCHOR profile, as the consuming profiles verify them.
+    session_config, settings = helpers.profile_radar_split_settings(
+        code_root, arguments.dataset, arguments.session, anchor_profile)
+    out_directory = arguments.out or arguments.dataset / "radar_inputs" / anchor_profile
     options = yaml.safe_load(arguments.radar_config.read_text())
     calibration = json.loads(arguments.calibration.read_text()) if arguments.calibration else None
-    metadata = build_loss_only_artifact(arguments.dataset, session_config, settings, options, arguments.out, calibration)
+    metadata = build_radar_anchor_artifact(arguments.dataset, session_config, settings, options,
+                                           out_directory, calibration, paint_seed_colours=paint_seed_colours)
+    if paint_seed_colours:
+        print(f"painted_fraction: {metadata['painting']['painted_fraction']}", flush=True)
     print(json.dumps({key: metadata[key] for key in ("anchor_count", "training_radar_sweeps", "static_training_returns",
                                                     "voxel_size_m", "clock_calibration")}, indent=2), flush=True)
     return 0
