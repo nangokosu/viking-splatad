@@ -158,12 +158,13 @@ profiles:
     # Its peak GPU memory and RSS tell whether full runs could fit an A4500 too.
     <<: *smoke_profile
     gres: gpu:rtx_a4500:1
-  smoke_a4500_scene_split:
+  smoke_a4500_scene_split: &smoke_scene_split_profile
     # smoke_a4500 with the May / June Scene A split instead of the smoke's 80/20 override (user's
     # choice 2026-11-01): the same f and r as configs/sessions/*.yaml split:, so the smoke tests the
     # exact hold-out the full runs use. On the ~150-frame window that is every 1/(1 - 0.9) = 10th sweep
     # held out (~15 per sensor), of which ceil(15 x 0.1) = 2 per sensor are rendered and ~13 are guard
     # (T71, T72). The eval during training still uses all ~15 held-out frames (T65).
+    # The anchor lets the smoke_a4500_scene_split_radar_* profiles reuse every setting.
     <<: *smoke_profile
     gres: gpu:rtx_a4500:1
     # Same value as configs/sessions/may_short_grass.yaml split.train_fraction.
@@ -299,6 +300,19 @@ profiles:
     steps_per_save: *smoke_save_interval
     radar_variant: init_loss
     radar_anchor_profile: may_scene_a_radar_init
+  # The radar smokes on the may_chunks0_1_smoke dataset (May chunks 0-1; user's choice 2026-11-15):
+  # smoke_a4500_scene_split unchanged (YAML merge: same window, steps, seed, split, GPU type) plus the
+  # radar variant, so each is compared with the stock run of that profile on the same frames. Unlike the
+  # full-window radar smokes around them, they use the 15 s smoke window, the smoke's 2 h time_limit and
+  # their own artifact: both read the one built for the init profile
+  # (<dataset>/radar_inputs/smoke_a4500_scene_split_radar_init).
+  smoke_a4500_scene_split_radar_init:
+    <<: *smoke_scene_split_profile
+    radar_variant: init
+  smoke_a4500_scene_split_radar_init_loss:
+    <<: *smoke_scene_split_profile
+    radar_variant: init_loss
+    radar_anchor_profile: smoke_a4500_scene_split_radar_init
   june_radar_init_smoke:
     <<: *june_core_profile
     max_num_iterations: *smoke_iterations

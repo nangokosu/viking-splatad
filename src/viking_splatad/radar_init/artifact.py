@@ -202,7 +202,10 @@ def load_verified_anchors(directory: Path, dataset_directory: Path, session: str
 
     Args:
         directory: Immutable artifact directory; dataset_directory: baseline inputs.
-        session: Exact session identifier; expected_settings: actual profile split kwargs.
+        session: The caller's name for the dataset: either its extraction session (``manifest.json``
+            ``session.name``) or its folder name (the dataparser's ``session_name``; e.g. folder
+            ``may_chunks0_1_smoke`` holds data extracted as ``may_short_grass``).
+        expected_settings: actual profile split kwargs.
 
     Returns:
         Validated arrays and provenance. Legacy optional-metadata artifacts are refused.
@@ -211,10 +214,16 @@ def load_verified_anchors(directory: Path, dataset_directory: Path, session: str
     """
     directory, dataset_directory = Path(directory), Path(dataset_directory)
     metadata = json.loads((directory / "radar_inputs.json").read_text())
+    # Step 0: the artifact and its clock report are tagged with the extraction session, so that is
+    # the tag to compare; the caller's name must denote this dataset under one of its two names.
+    extraction_session = json.loads((dataset_directory / "manifest.json").read_text())["session"]["name"]
+    if session not in (extraction_session, dataset_directory.name):
+        raise ValueError(f"radar artifact requested for session {session!r}, but dataset "
+                         f"{dataset_directory.name!r} holds session {extraction_session!r}")
     # Step 1: schema tag must be one of the two known versions; the flag is checked against it below.
     schema = metadata.get("schema")
     painted_schema = schema == PAINTED_ARTIFACT_SCHEMA
-    if (schema not in (ARTIFACT_SCHEMA, PAINTED_ARTIFACT_SCHEMA) or metadata.get("session") != session
+    if (schema not in (ARTIFACT_SCHEMA, PAINTED_ARTIFACT_SCHEMA) or metadata.get("session") != extraction_session
             or metadata.get("frame") != "map" or metadata.get("time_base") != "session_reference_seconds"
             or metadata.get("gaussian_initialization") is not painted_schema):
         raise ValueError(
@@ -233,7 +242,7 @@ def load_verified_anchors(directory: Path, dataset_directory: Path, session: str
         raise ValueError("radar artifact does not match this profile's training/held-out split")
     reference_ns = int(view.manifest["pipeline"]["reference_ns"])
     calibration = metadata["clock_calibration"]
-    validate_clock_report(calibration, session, reference_ns, lidar_frames, bounds)
+    validate_clock_report(calibration, extraction_session, reference_ns, lidar_frames, bounds)
     source_paths = {}
     for path in (dataset_directory / "sidecar/radar").glob("*.npy"):
         match = FRAME_FILE_PATTERN.match(path.name)

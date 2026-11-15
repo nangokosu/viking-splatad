@@ -615,7 +615,8 @@ def validate_radar_inputs(
 
     Args:
         root: Radar artifact directory (``<dataset>/radar_inputs/<anchor_profile>``).
-        session_name: Session tag the artifact must match.
+        session_name: The dataset's extraction session or its folder name (see
+            ``load_verified_anchors``).
         dataset_root: Current intermediate dataset the artifact was built from.
         expected_split_settings: Split settings of the profile that will consume the artifact.
         require_seed_colours: True for radar-initialization variants, whose seed Gaussians
