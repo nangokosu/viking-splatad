@@ -1,0 +1,4 @@
+Label-free training input alignment diagnostic.
+Gray: sampled LiDAR. Orange: radar anchors.
+White: same XY pixel, not GT agreement or 3D correspondence.
+XY min/max: [[-41.93067932128906, -53.07868194580078], [62.63710021972656, 51.489097595214844]]; x right, y up; side 104.56777954101562 m.
