@@ -23,6 +23,16 @@ Branch `radar-init-loss-merge` (not pushed): Neel's radar opacity loss merged wi
     | Radar init + loss | 20.52 | 0.885 | 1.161 | 0.075 | 1432 s |
 
   - Single runs, non-trunk scene: wiring check only, not a result.
+- **Four full Scene A radar runs submitted** (code `1ed8131`; gates passed, splits identical to the reference records):
+
+  | Job | Run |
+  |---|---|
+  | 249564 | `may_short_grass-may_scene_a_radar_init-20261115-163941-1ed8131` |
+  | 249567 | `may_short_grass-may_scene_a_radar_init_loss-20261115-164255-1ed8131` |
+  | 249571 | `june_tall_grass-june_scene_a_radar_init-20261115-164604-1ed8131` |
+  | 249572 | `june_tall_grass-june_scene_a_radar_init_loss-20261115-164912-1ed8131` |
+
+  At submission 249564 was running (gpunode2) and the other three were pending. All four are in `runs/submitted.tsv`, so `submit_run.py runs` tracks them.
 
 ## Current state
 - **Radar artifacts (gitignored):**
@@ -36,7 +46,7 @@ Branch `radar-init-loss-merge` (not pushed): Neel's radar opacity loss merged wi
   The chunks 0-1 clock fit is looser on its 15 s window: offset 55 ms, residual 32 ms.
 - **Cluster workdisk at its ~100 GB per-user quota.** It counts the user's other projects (~45 GB). Being full silently killed four smoke jobs (no log error, 0-byte checkpoint).
   - Freed so far: `pip-cache` and the cluster copy of the stock chunks 0-1 smoke (the Mac copy is kept).
-  - The two new runs then took ~4 GB; only ~4 GB is free now.
+  - Before the four full runs: 67 GB used, and a 5 GB test write passed. The four runs need ~16 GB at peak and ~10 GB once finished.
 - Cluster login: key authorized; the passphrase is in Keychain (`UseKeychain`).
 - **Risks:**
   - Every anchor becomes a Gaussian (200k-360k on Scene A).
@@ -46,7 +56,7 @@ Branch `radar-init-loss-merge` (not pushed): Neel's radar opacity loss merged wi
 - Carried over: `pyvista-pose-viewer` not merged; T16 elevation bias undecided.
 
 ## Next steps
-1. Free workdisk space (user's call) before the six full Scene A runs.
-2. With approval: the six full runs (`<month>_scene_a`, `_radar_init`, `_radar_init_loss`); gates and stage per session first.
+1. Run `submit_run.py runs` to check the four radar jobs (249564, 249567, 249571, 249572). Fetch the successful runs; diagnose and clean any that fail. If several died together, suspect the workdisk quota first.
+2. Compare them with the existing stock full runs (`may_scene_a` and `june_scene_a`, run 2026-11-01).
 3. Repeats per variant; evaluation with scripts 13 and 15.
 4. Push the branch and open a PR to main (user's call); tell Dorsa and Neel which of their pieces changed.
