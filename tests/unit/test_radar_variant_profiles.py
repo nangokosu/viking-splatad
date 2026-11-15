@@ -128,8 +128,10 @@ def test_resolver_variant_options(submit_module, slurm_config, profile_name, mon
     assert options["loss_weight"] == 0.0
     if variant == "init":
         assert options["method"] == "splatad-radar-init"
-        # The init profile is its own anchor: its artifact lives under its own name.
-        assert options["inputs_dir"] == f"radar_inputs/{profile_name}"
+        # The artifact is named after the anchor profile (contract: "radar_inputs/<anchor_profile>").
+        # The full init run is its own anchor; an init smoke anchors on the month's full init run,
+        # so both resolve to the same directory.
+        assert options["inputs_dir"] == f"radar_inputs/{month}_scene_a_radar_init"
         assert options["auto_weight"] is False
     else:
         assert options["method"] == "splatad-radar-init-lidar"

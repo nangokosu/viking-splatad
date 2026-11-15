@@ -201,6 +201,10 @@
       "qualified_name": "viking_splatad.radar_init.anchors.resolution_covariances"
     },
     {
+      "id": "T37",
+      "qualified_name": "viking_splatad.radar_init.seeds.paint_anchors_from_train_cameras"
+    },
+    {
       "id": "T39",
       "qualified_name": "viking_splatad.radar_init.artifact.transform_anchor_arrays"
     },

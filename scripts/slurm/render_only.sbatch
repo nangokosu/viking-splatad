@@ -82,8 +82,10 @@ source "$ENV_PREFIX/viking-activate.sh"
 # The render code's src/ goes first on sys.path, ahead of the env's editable install
 # (PYTHONPATH entries precede site-packages .pth paths), so the code is exactly GIT_SHA's.
 export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
-if [ "$TRAIN_METHOD" = splatad-radar-init ]; then
-  export NERFSTUDIO_METHOD_CONFIGS="splatad-radar-init=viking_splatad.splatad.radar_init_method:RADAR_INIT_METHOD_SPEC"
+# Any radar method needs all radar specs registered to load its config (same value as
+# splatad_run.sbatch); stock registers nothing.
+if [ "$TRAIN_METHOD" != splatad ]; then
+  export NERFSTUDIO_METHOD_CONFIGS="splatad-radar-init=viking_splatad.splatad.radar_init_method:RADAR_INIT_METHOD_SPEC,splatad-radar-lidar=viking_splatad.splatad.radar_lidar_method:RADAR_LIDAR_METHOD_SPEC,splatad-radar-init-lidar=viking_splatad.splatad.radar_init_lidar_method:RADAR_INIT_LIDAR_METHOD_SPEC"
 fi
 # Caches inside the rerender dir, so nothing depends on (or writes to) $HOME.
 mkdir -p "$RERENDER_DIR/.cache/torch"

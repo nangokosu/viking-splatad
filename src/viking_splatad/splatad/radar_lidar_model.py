@@ -75,7 +75,8 @@ if NERFSTUDIO_AVAILABLE:
             self._write_radar_diagnostic({"event": "stock_initialization", "step": 0,
                                           "gaussian_sha256": self._radar_initialization_hash,
                                           "gaussian_count": len(self.gauss_params["means"]),
-                                          "radar_gaussians_added": 0})
+                                          # Set by RadarInitSplatADModel when it is in the MRO; 0 otherwise.
+                                          "radar_gaussians_added": int(getattr(self, "_radar_gaussians_added", 0))})
 
         def _write_radar_diagnostic(self, record):
             """Append one JSON-serializable runtime record to the configured run-local path."""
@@ -98,8 +99,18 @@ if NERFSTUDIO_AVAILABLE:
                 Loss dictionary consumed by the stock trainer.
             """
             loss_dict = super().get_loss_dict(outputs, batch, metrics_dict)
-            if (not self.training or "raster_pts" not in batch
+            is_lidar_batch = "raster_pts" in batch
+            if (not self.training
                     or (self.config.radar_lidar_loss_weight == 0.0 and not self.config.radar_lidar_auto_weight)):
+                return loss_dict
+            # Auto-weight calibration is needed on any batch type while still uncalibrated.
+            needs_calibration = False
+            if self.config.radar_lidar_auto_weight:
+                import torch
+
+                needs_calibration = not torch.isfinite(self.radar_calibrated_weight).item()
+            # A camera batch carries no radar term, so it only matters when it must calibrate.
+            if not is_lidar_batch and not needs_calibration:
                 return loss_dict
             metadata = self.kwargs.get("metadata", {})
             radar_seeds = metadata.get("radar_seeds")
@@ -126,9 +137,8 @@ if NERFSTUDIO_AVAILABLE:
             )
             weight = self.config.radar_lidar_loss_weight
             if self.config.radar_lidar_auto_weight:
-                import torch
-
-                if not torch.isfinite(self.radar_calibrated_weight).item():
+                if needs_calibration:
+                    # Calibrate only at step zero and only with non-empty support.
                     if self.step != 0 or result.empty_support:
                         self._write_radar_diagnostic({"event": "calibration_failed", "step": int(self.step),
                                                       "empty_support": result.empty_support})
@@ -141,6 +151,9 @@ if NERFSTUDIO_AVAILABLE:
                                                   "stock_opacity_regularizer": float(loss_dict["mcmc_opacity_reg"].detach()),
                                                   "weight": weight})
                 weight = float(self.radar_calibrated_weight.item())
+            if not is_lidar_batch:
+                # Calibration-only camera batch: the term is added on lidar batches only.
+                return loss_dict
             weighted_loss = result.loss * weight
             if metrics_dict is not None:
                 metrics_dict["radar_lidar_loss"] = float(weighted_loss.detach())

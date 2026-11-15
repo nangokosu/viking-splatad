@@ -94,7 +94,11 @@ if NERFSTUDIO_AVAILABLE:
             stock_parameters = super().create_gauss_param_dict(*args, **kwargs)
             radar_seeds = self.kwargs.get("metadata", {}).get("radar_seeds")
             if radar_seeds is None or radar_seeds["means"].shape[0] == 0:
+                self._radar_gaussians_added = 0
                 return stock_parameters
+            # Seeds initialize Gaussian colour, so unpainted (rgb-less) anchors are unusable here.
+            if "rgb" not in radar_seeds:
+                raise ValueError("radar_seeds metadata has no rgb; radar initialization needs painted seed colours")
             reference_parameter = stock_parameters["means"]
             device = reference_parameter.device
             floating_dtype = reference_parameter.dtype
@@ -104,6 +108,8 @@ if NERFSTUDIO_AVAILABLE:
                 numpy_covariances
             )
             seed_count = means.shape[0]
+            # Read by RadarLidarSplatADModel diagnostics.
+            self._radar_gaussians_added = int(seed_count)
             radar_values: Dict[str, "torch.Tensor"] = {
                 "means": means,
                 "scales": torch.as_tensor(log_scales_numpy, device=device, dtype=floating_dtype),

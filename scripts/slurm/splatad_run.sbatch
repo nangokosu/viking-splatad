@@ -144,9 +144,13 @@ if [ "$RESUMING" = False ]; then
     echo "TEST_RENDER_FRACTION: $TEST_RENDER_FRACTION"
   fi
   echo "TRAIN_METHOD: $TRAIN_METHOD"
-  if [ "$TRAIN_METHOD" = splatad-radar-init ]; then
+  # Every radar method has an inputs directory; only the seed methods have a seed opacity, so
+  # the key is written only when it is set (no method list here: the selection in (d) validates it).
+  if [ "$TRAIN_METHOD" != splatad ]; then
     echo "RADAR_INPUTS_DIR: ${RADAR_INPUTS_DIR:-}"
-    echo "RADAR_SEED_OPACITY: ${RADAR_SEED_OPACITY:-}"
+  fi
+  if [ -n "${RADAR_SEED_OPACITY:-}" ]; then
+    echo "RADAR_SEED_OPACITY: $RADAR_SEED_OPACITY"
   fi
   echo "environment build:"; sed 's/^/  /' "$ENV_PREFIX/.build-complete"
   echo "gpu (name, compute_cap, memory.total, driver_version):"
@@ -162,13 +166,7 @@ source "$ENV_PREFIX/viking-activate.sh"
 # This run's committed src/ goes first on sys.path, ahead of the env's editable install
 # (PYTHONPATH entries precede site-packages .pth paths), so the code is exactly GIT_SHA's.
 export PYTHONPATH="$CODE_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
-if [ "$TRAIN_METHOD" = splatad-radar-init ]; then
-  if [ -z "${RADAR_INPUTS_DIR:-}" ] || [ -z "${RADAR_SEED_OPACITY:-}" ]; then
-    echo "ERROR: splatad-radar-init needs RADAR_INPUTS_DIR and RADAR_SEED_OPACITY" >&2
-    exit 1
-  fi
-  export NERFSTUDIO_METHOD_CONFIGS="splatad-radar-init=viking_splatad.splatad.radar_init_method:RADAR_INIT_METHOD_SPEC"
-fi
+# The radar method registration and its input checks happen in (d), next to ns-train, in one place.
 # Caches inside the run dir, so nothing depends on (or writes to) $HOME.
 mkdir -p "$RUN_DIR/.cache/torch"
 export TORCH_HOME="$RUN_DIR/.cache/torch" XDG_CACHE_HOME="$RUN_DIR/.cache"
@@ -224,33 +222,63 @@ LIDAR_ONLY_ARGS=()
 if [ "${TRAIN_LIDAR_ONLY:-False}" = True ]; then
   LIDAR_ONLY_ARGS=(--pipeline.datamanager.train-lidar-only True)
 fi
-# Both registered methods belong to the splatad family; only the method suffix
-# changes, while trainer flags and their position before viking-data stay shared.
+# All radar methods belong to the splatad family; only the method suffix changes, while trainer
+# flags and their position before viking-data stay shared.
 TRAIN_METHOD_SUFFIX="${TRAIN_METHOD#splatad}"
-if [ "$TRAIN_METHOD" = "splatad-radar-lidar" ]; then
-  export NERFSTUDIO_METHOD_CONFIGS="splatad-radar-lidar=viking_splatad.splatad.radar_lidar_method:RADAR_LIDAR_METHOD_SPEC"
-  RADAR_MODEL_ARGS=(
+# The registration of every radar method spec ("<method>=<module>:<spec>", comma-joined), defined
+# once. Registering all three for any radar method is harmless and keeps ns-render/ns-train alike.
+RADAR_METHOD_REGISTRATION="splatad-radar-init=viking_splatad.splatad.radar_init_method:RADAR_INIT_METHOD_SPEC"
+RADAR_METHOD_REGISTRATION+=",splatad-radar-lidar=viking_splatad.splatad.radar_lidar_method:RADAR_LIDAR_METHOD_SPEC"
+RADAR_METHOD_REGISTRATION+=",splatad-radar-init-lidar=viking_splatad.splatad.radar_init_lidar_method:RADAR_INIT_LIDAR_METHOD_SPEC"
+# The two capabilities of a method, computed once and reused below: 1 = it appends radar seed
+# Gaussians (needs the seed opacity); 1 = it adds the radar opacity loss. Stock sets neither.
+USES_RADAR_SEEDS=0
+USES_RADAR_LOSS=0
+case "$TRAIN_METHOD" in
+  splatad) ;;
+  splatad-radar-init) USES_RADAR_SEEDS=1 ;;
+  splatad-radar-lidar) USES_RADAR_LOSS=1 ;;
+  splatad-radar-init-lidar) USES_RADAR_SEEDS=1; USES_RADAR_LOSS=1 ;;
+  *)
+    echo "ERROR: unsupported training method: $TRAIN_METHOD" >&2
+    exit 1
+    ;;
+esac
+if [ "$TRAIN_METHOD" = splatad ]; then
+  # Stock: nothing registered, no radar arguments.
+  export NERFSTUDIO_METHOD_CONFIGS=""
+else
+  # Every radar method reads the anchors from RADAR_INPUTS_DIR through the dataparser.
+  if [ -z "${RADAR_INPUTS_DIR:-}" ]; then
+    echo "ERROR: $TRAIN_METHOD requires RADAR_INPUTS_DIR" >&2
+    exit 1
+  fi
+  export NERFSTUDIO_METHOD_CONFIGS="$RADAR_METHOD_REGISTRATION"
+  # These arguments follow the viking-data subcommand, so use parser-local names. A relative
+  # directory is resolved under the session's dataset directory.
+  if [[ "$RADAR_INPUTS_DIR" = /* ]]; then
+    RADAR_DATAPARSER_ARGS+=(--radar-inputs-dir "$RADAR_INPUTS_DIR")
+  else
+    RADAR_DATAPARSER_ARGS+=(--radar-inputs-dir "$STAGE_ROOT/data/$SESSION/$RADAR_INPUTS_DIR")
+  fi
+fi
+if [ "$USES_RADAR_SEEDS" = 1 ]; then
+  # Seed methods also need the opacity the appended seed Gaussians start with.
+  if [ -z "${RADAR_SEED_OPACITY:-}" ]; then
+    echo "ERROR: $TRAIN_METHOD requires RADAR_SEED_OPACITY" >&2
+    exit 1
+  fi
+  RADAR_MODEL_ARGS+=(--pipeline.model.radar-seed-opacity "$RADAR_SEED_OPACITY")
+fi
+if [ "$USES_RADAR_LOSS" = 1 ]; then
+  # Loss methods carry the radar opacity-loss settings (weight, gate, calibration, diagnostics).
+  RADAR_MODEL_ARGS+=(
     --pipeline.model.radar-lidar-loss-weight "$RADAR_LIDAR_LOSS_WEIGHT"
     --pipeline.model.radar-lidar-gate-quantile "$RADAR_LIDAR_GATE_QUANTILE"
     --pipeline.model.radar-lidar-gate-chunk-size "$RADAR_LIDAR_GATE_CHUNK_SIZE"
     --pipeline.model.radar-lidar-auto-weight "${RADAR_LIDAR_AUTO_WEIGHT:-False}"
     --pipeline.model.radar-lidar-diagnostics-path "${RADAR_DIAGNOSTICS_PATH:-$RUN_DIR/radar_diagnostics.jsonl}"
   )
-  if [ -z "${RADAR_INPUTS_DIR:-}" ]; then
-    echo "ERROR: radar method requires RADAR_INPUTS_DIR" >&2
-    exit 1
-  fi
-  # These arguments follow the viking-data subcommand, so use parser-local names.
-  if [[ "$RADAR_INPUTS_DIR" = /* ]]; then
-    RADAR_DATAPARSER_ARGS+=(--radar-inputs-dir "$RADAR_INPUTS_DIR")
-  else
-    RADAR_DATAPARSER_ARGS+=(--radar-inputs-dir "$STAGE_ROOT/data/$SESSION/$RADAR_INPUTS_DIR")
-  fi
-elif [ "$TRAIN_METHOD" = splatad ]; then
-  export NERFSTUDIO_METHOD_CONFIGS=""
-else
-  echo "ERROR: unsupported training method: $TRAIN_METHOD" >&2
-  exit 1
 fi
 TRAIN_START_SECONDS=$(date +%s)
 echo "train_start_epoch_s: $TRAIN_START_SECONDS" >> "$JOB_INFO"

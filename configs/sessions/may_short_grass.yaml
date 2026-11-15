@@ -117,10 +117,11 @@ split:
 splatad:
   # Passed to the dataparser config; see plan contract table.
   load_cuboids: false
-  method: splatad
-  radar_inputs_dir: null
-  # Optional radar-supported term added to the existing LiDAR loss; zero keeps stock SplatAD unchanged.
-  radar_lidar_loss_weight: 0.0
+  # The method, the radar artifact directory and the loss weight come from the run profile
+  # (configs/slurm.yaml: radar_variant), not from the session.
+  # Opacity given to the appended radar seed Gaussians. 0.5 = stock MCMC initial opacity.
+  radar_seed_opacity: 0.5
+  # Radar opacity-loss gate (used by the init_loss variant): quantile and chunk size.
   radar_lidar_gate_quantile: 0.95
   radar_lidar_gate_chunk_size: 4096
   # true = append the recorded Ouster no-returns (lidar_no_return/, written by the converter since

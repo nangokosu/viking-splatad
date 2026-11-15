@@ -15,6 +15,12 @@ from viking_splatad.registry import transform
 from viking_splatad.splatad.viking_conversions import open_dataset_view
 
 ARTIFACT_SCHEMA = "viking-radar-loss-anchors/1"
+# Painted variant: adds per-anchor `rgb` and a `painting` record; enables Gaussian initialisation.
+PAINTED_ARTIFACT_SCHEMA = "viking-radar-loss-anchors/2"
+# Colour channels per anchor (RGB): a property of the format, not a tunable.
+RGB_CHANNEL_COUNT = 3
+# Camera stamp recorded for an anchor that received no colour (contract of the /2 painting record).
+UNPAINTED_CAMERA_STAMP_NS = -1
 CLOCK_SCHEMA = "viking-radar-clock/1"
 
 
@@ -123,7 +129,7 @@ def validate_anchor_arrays(arrays: dict) -> None:
 
     Args:
         arrays: NPZ arrays: means, covariances, sensor_origins, time_spans,
-            support_count, source_offsets, source_stamps_ns.
+            support_count, source_offsets, source_stamps_ns; optional rgb (uint8 [S,3]).
 
     Raises:
         ValueError: Invalid arrays, including duplicate/miscounted source sweeps.
@@ -137,6 +143,11 @@ def validate_anchor_arrays(arrays: dict) -> None:
     covariance = arrays["covariances"]
     if not np.allclose(covariance, covariance.swapaxes(-1, -2)) or np.any(np.linalg.eigvalsh(covariance) <= 0):
         raise ValueError("anchor covariances must be symmetric positive definite")
+    # Optional painted colours: one uint8 RGB triple per anchor.
+    if "rgb" in arrays:
+        rgb = arrays["rgb"]
+        if rgb.dtype != np.uint8 or rgb.shape != (count, RGB_CHANNEL_COUNT):
+            raise ValueError("anchor rgb must be uint8 with shape [anchor_count, 3]")
     offsets, stamps = arrays["source_offsets"], arrays["source_stamps_ns"]
     if (offsets.dtype.kind not in "iu" or stamps.dtype.kind not in "iu" or stamps.ndim != 1
             or arrays["support_count"].dtype.kind not in "iu" or offsets[0] != 0
@@ -150,6 +161,32 @@ def validate_anchor_arrays(arrays: dict) -> None:
             raise ValueError("duplicate sweep IDs inflate anchor persistence")
 
 
+def validate_painting_record(painting, anchor_count: int, frames) -> None:
+    """Require a /2 painting record whose camera stamps are train camera frames of this split.
+
+    Args:
+        painting: The metadata `painting` record (or None); must hold `camera_stamps_ns`.
+        anchor_count: Number of anchors S; the stamp list must have exactly S entries.
+        frames: Split frames from `anchor_split`; only train camera frames are legal sources.
+
+    Raises:
+        ValueError: Missing record, wrong length, or a stamp that is not a train camera frame
+            (a held-out or unknown stamp would leak test/guard imagery into the seed colours).
+    """
+    if not isinstance(painting, dict) or "camera_stamps_ns" not in painting:
+        raise ValueError("schema /2 radar artifact requires a painting record with camera_stamps_ns")
+    stamps = painting["camera_stamps_ns"]
+    if not isinstance(stamps, list) or len(stamps) != anchor_count:
+        raise ValueError("painting camera_stamps_ns must have one entry per anchor")
+    # Legal stamps: the unpainted marker, or the timestamp of a train-split camera frame.
+    train_camera_stamps = {frame.timestamp_ns for frame in frames
+                           if frame.kind == "camera" and frame.split == "train"}
+    illegal = {stamp for stamp in stamps
+               if stamp != UNPAINTED_CAMERA_STAMP_NS and stamp not in train_camera_stamps}
+    if illegal:
+        raise ValueError("painting references camera frames that are not train frames of this split")
+
+
 def load_verified_anchors(directory: Path, dataset_directory: Path, session: str,
                           expected_settings: dict):
     """Verify complete radar contract against actual data and exact training split.
@@ -160,13 +197,21 @@ def load_verified_anchors(directory: Path, dataset_directory: Path, session: str
 
     Returns:
         Validated arrays and provenance. Legacy optional-metadata artifacts are refused.
+        Schema /1 (no rgb, gaussian_initialization false) and schema /2 (rgb, flag true,
+        painting record naming only train camera frames) are the only accepted combinations.
     """
     directory, dataset_directory = Path(directory), Path(dataset_directory)
     metadata = json.loads((directory / "radar_inputs.json").read_text())
-    if (metadata.get("schema") != ARTIFACT_SCHEMA or metadata.get("session") != session
+    # Step 1: schema tag must be one of the two known versions; the flag is checked against it below.
+    schema = metadata.get("schema")
+    painted_schema = schema == PAINTED_ARTIFACT_SCHEMA
+    if (schema not in (ARTIFACT_SCHEMA, PAINTED_ARTIFACT_SCHEMA) or metadata.get("session") != session
             or metadata.get("frame") != "map" or metadata.get("time_base") != "session_reference_seconds"
-            or metadata.get("gaussian_initialization") is not False):
-        raise ValueError("loss-only radar artifact schema/session/frame/time tags do not match")
+            or metadata.get("gaussian_initialization") is not painted_schema):
+        raise ValueError(
+            f"radar artifact schema/session/frame/time tags do not match (schema {schema!r}, expected "
+            f"{ARTIFACT_SCHEMA!r} with gaussian_initialization false or {PAINTED_ARTIFACT_SCHEMA!r} "
+            f"with gaussian_initialization true)")
     for filename, key in (("radar_seeds.npz", "artifact_sha256"),):
         if metadata.get(key) != file_sha256(directory / filename):
             raise ValueError("radar artifact checksum mismatch")
@@ -202,6 +247,11 @@ def load_verified_anchors(directory: Path, dataset_directory: Path, session: str
     with np.load(directory / "radar_seeds.npz", allow_pickle=False) as archive:
         arrays = {key: archive[key] for key in archive.files}
     validate_anchor_arrays(arrays)
+    # Step 2: rgb presence must agree with the schema/flag (/2 requires it, /1 forbids it).
+    if ("rgb" in arrays) != painted_schema:
+        raise ValueError("radar artifact rgb presence contradicts its schema/gaussian_initialization flag")
+    if painted_schema:
+        validate_painting_record(metadata.get("painting"), len(arrays["means"]), frames)
     if not set(arrays["source_stamps_ns"].tolist()) <= set(metadata["training_source_stamps_ns"]):
         raise ValueError("anchor support IDs are absent from the pinned source observations")
     if not train_radar_mask(arrays["source_stamps_ns"], calibration, reference_ns, lidar_frames, bounds).all():
@@ -249,7 +299,8 @@ def crop_anchor_arrays(arrays: dict, time_bounds, scene_bounds: np.ndarray, time
         scene_bounds: Dataparser box [2,3]; time_offset: subtracted session time origin.
 
     Returns:
-        Means, covariances, origins, relative time spans, counts, and retained fraction.
+        Means, covariances, origins, relative time spans, counts, retained fraction and,
+        when the input carries them, the retained rgb rows.
         Ragged source arrays remain in the verified artifact, not model metadata.
     """
     scene_bounds = np.asarray(scene_bounds)
@@ -261,6 +312,9 @@ def crop_anchor_arrays(arrays: dict, time_bounds, scene_bounds: np.ndarray, time
     kept = ((spans[:, 0] >= time_bounds[0]) & (spans[:, 1] <= time_bounds[1])
             & (means >= scene_bounds[0]).all(axis=1) & (means <= scene_bounds[1]).all(axis=1))
     result = {key: arrays[key][kept].copy() for key in ("means", "covariances", "sensor_origins", "support_count")}
+    # Painted colours stay row-aligned with the retained anchors; no key when unpainted.
+    if "rgb" in arrays:
+        result["rgb"] = arrays["rgb"][kept].copy()
     result["time_spans"] = spans[kept] - time_offset
     result["retained_fraction"] = np.array(float(kept.mean()) if len(kept) else 0.0)
     result["dropped_count"] = np.array(int((~kept).sum()))

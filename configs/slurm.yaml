@@ -177,7 +177,7 @@ profiles:
     <<: *smoke_profile
     gres: gpu:rtx_a4500:1
     nodelist: [gpunode21]
-  may_scene_a:
+  may_scene_a: &may_core_profile
     # Goal: the full May Scene A model (CLAUDE.md scope: chunks 7-9 of may_short_grass, low grass),
     # trained with stock SplatAD and checked on the held-out instants (the sessions' split.method).
     # No window_start_seconds / window_seconds: the whole extracted recording (~241 s), since the
@@ -256,3 +256,54 @@ profiles:
     time_limit: *june_core_time_limit
     radar_loss_only: true
     radar_anchor_profile: june_loss_only
+
+  # ---- Radar variants (three variants x two sessions). Each profile is the month's core profile
+  # (may_scene_a / june_scene_a) plus the two radar keys, so a variant run differs from stock SplatAD
+  # only by its method and data. radar_variant: init = stock + radar seed Gaussians
+  # (splatad-radar-init); init_loss = the same + the radar opacity loss (splatad-radar-init-lidar).
+  # radar_anchor_profile names the profile whose artifact (<dataset>/radar_inputs/<profile>/) is read;
+  # it defaults to the profile itself. One artifact per month serves init and init_loss, because both
+  # share the core's split settings (checked by profile_radar_split_settings). May trains with the
+  # camera loss on; June is lidar-only (train_lidar_only comes from the core).
+  may_scene_a_radar_init:
+    <<: *may_core_profile
+    radar_variant: init
+  may_scene_a_radar_init_loss:
+    <<: *may_core_profile
+    radar_variant: init_loss
+    radar_anchor_profile: may_scene_a_radar_init
+  june_scene_a_radar_init:
+    <<: *june_core_profile
+    radar_variant: init
+  june_scene_a_radar_init_loss:
+    <<: *june_core_profile
+    radar_variant: init_loss
+    radar_anchor_profile: june_scene_a_radar_init
+
+  # ---- Radar smokes: the month's full-window core with the smoke profile's iteration and save
+  # settings (anchors reused), reading the month's full-run init artifact so no separate artifact
+  # is built for a smoke.
+  may_radar_init_smoke:
+    <<: *may_core_profile
+    max_num_iterations: *smoke_iterations
+    steps_per_save: *smoke_save_interval
+    radar_variant: init
+    radar_anchor_profile: may_scene_a_radar_init
+  may_radar_init_loss_smoke:
+    <<: *may_core_profile
+    max_num_iterations: *smoke_iterations
+    steps_per_save: *smoke_save_interval
+    radar_variant: init_loss
+    radar_anchor_profile: may_scene_a_radar_init
+  june_radar_init_smoke:
+    <<: *june_core_profile
+    max_num_iterations: *smoke_iterations
+    steps_per_save: *smoke_save_interval
+    radar_variant: init
+    radar_anchor_profile: june_scene_a_radar_init
+  june_radar_init_loss_smoke:
+    <<: *june_core_profile
+    max_num_iterations: *smoke_iterations
+    steps_per_save: *smoke_save_interval
+    radar_variant: init_loss
+    radar_anchor_profile: june_scene_a_radar_init
