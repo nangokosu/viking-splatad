@@ -26,6 +26,7 @@ import numpy as np
 from viking_splatad.align.spatial_check import project_lidar_to_image
 from viking_splatad.extract.geometry import apply_opencv_to_nerfstudio
 from viking_splatad.splatad.viking_dataparser import VikingHillDataParserConfig
+from viking_splatad.viz.radar_bev import write_radar_lidar_bev
 
 
 def to_homogeneous_4x4(pose_3x4: np.ndarray) -> np.ndarray:
@@ -205,6 +206,12 @@ def main(argument_list: Optional[List[str]] = None) -> int:
                         help="Same as viking-data --dataset-start-fraction (time window start).")
     parser.add_argument("--dataset-end-fraction", type=float, default=1.0,
                         help="Same as viking-data --dataset-end-fraction (time window end).")
+    parser.add_argument("--radar-inputs-dir", type=Path)
+    parser.add_argument("--train-fraction-override", type=float)
+    parser.add_argument("--test-split-method")
+    parser.add_argument("--test-block-count", type=int)
+    parser.add_argument("--test-block-core-fraction", type=float, default=1.0)
+    parser.add_argument("--test-render-fraction", type=float, default=1.0)
     arguments = parser.parse_args(argument_list)
 
     # Same config path as `ns-train splatad viking-data --data ... --session-name ...
@@ -213,11 +220,28 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         data=arguments.data, session_name=arguments.session_name,
         dataset_start_fraction=arguments.dataset_start_fraction,
         dataset_end_fraction=arguments.dataset_end_fraction,
+        radar_inputs_dir=arguments.radar_inputs_dir,
+        train_split_fraction_override=arguments.train_fraction_override,
+        test_split_method=arguments.test_split_method, test_block_count=arguments.test_block_count,
+        test_block_core_fraction=arguments.test_block_core_fraction,
+        test_render_fraction=arguments.test_render_fraction,
     ).setup()
     train_outputs = dataparser.get_dataparser_outputs(split="train")
     summarise_split("train", train_outputs)
     summarise_split("test", dataparser.get_dataparser_outputs(split="test"))
     write_overlays(train_outputs, arguments.frames, arguments.out)
+    if "radar_seeds" in train_outputs.metadata:
+        # Use existing train outputs and the same spread of LiDAR sweeps. The
+        # picture is label-free and never filters the anchors supplied to training.
+        lidars = train_outputs.metadata["lidars"]
+        indices = np.unique(np.linspace(0, len(lidars) - 1, arguments.frames).round().astype(int))
+        points = []
+        for sweep_index in indices:
+            local = train_outputs.metadata["point_clouds"][sweep_index][:, :3].cpu().numpy()
+            pose = lidars.lidar_to_worlds[sweep_index].cpu().numpy()
+            points.append(local @ pose[:3, :3].T + pose[:3, 3])
+        write_radar_lidar_bev(np.concatenate(points), train_outputs.metadata["radar_seeds"]["means"].cpu().numpy(),
+                              arguments.out / "radar_lidar_bev.png")
     return 0
 
 

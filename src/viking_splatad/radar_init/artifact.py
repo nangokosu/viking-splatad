@@ -1,197 +1,267 @@
-"""Versioned, content-addressed radar seed artifacts."""
+"""Versioned fixed radar-anchor artifacts and train/window/frame contract gates."""
 
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict
 
 import numpy as np
 
-from viking_splatad.radar_init.seeds import RadarSeedGaussians
-
-RADAR_INPUTS_SCHEMA = "viking-splatad/radar-inputs/1"
-RADAR_ARRAYS_FILENAME = "radar_seeds.npz"
-RADAR_METADATA_FILENAME = "radar_inputs.json"
-RADAR_MANIFEST_FILENAME = "manifest.json"
-ARRAY_NAMES = (
-    "means", "covariances", "rgb", "sensor_origins", "support_count", "time_spans_s"
+from viking_splatad.dataset.run_split import (
+    build_run_split_with_cores, file_sha256, nearest_reference_positions, split_digest,
 )
+from viking_splatad.dataset.writer import FRAME_FILE_PATTERN
+from viking_splatad.radar_init.anchors import require_rigid_transform
+from viking_splatad.registry import transform
+from viking_splatad.splatad.viking_conversions import open_dataset_view
+
+ARTIFACT_SCHEMA = "viking-radar-loss-anchors/1"
+CLOCK_SCHEMA = "viking-radar-clock/1"
 
 
-def sha256_file(path: Path) -> str:
-    """Return the lowercase SHA-256 digest of one file.
+def object_digest(value: dict) -> str:
+    """Return canonical JSON SHA256 for configuration/provenance, rejecting NaN."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def anchor_split(view, settings: dict):
+    """Return canonical split frames and reference LiDAR membership for one exact profile.
 
     Args:
-        path: File whose bytes are hashed.
+        view: Lightweight dataset view; settings: kwargs accepted by build_run_split_with_cores.
 
     Returns:
-        Sixty-four-character hexadecimal digest.
+        Split frames, sorted LiDAR frames, and inclusive profile time bounds.
     """
-    digest = hashlib.sha256()
-    with path.open("rb") as input_file:
-        for block in iter(lambda: input_file.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    frames, bounds, _, _ = build_run_split_with_cores(view, **settings)
+    lidar_frames = sorted((frame for frame in frames if frame.kind == "lidar"), key=lambda frame: frame.time_s)
+    if not lidar_frames or len({frame.sensor for frame in lidar_frames}) != 1:
+        raise ValueError("radar anchor assignment requires exactly one reference LiDAR")
+    if bounds is None:
+        sensor_times = np.concatenate(list(view.sensor_times.values()))
+        bounds = (float(sensor_times.min()), float(sensor_times.max()))
+    return frames, lidar_frames, bounds
 
 
-def _validate_seed_arrays(arrays: Dict[str, np.ndarray]) -> None:
-    """Validate the complete seed array contract or raise ``ValueError``.
+def parser_split_settings(config) -> dict:
+    """Return the actual parser's profile settings for strict artifact/split equality."""
+    return {"start_fraction": config.dataset_start_fraction, "end_fraction": config.dataset_end_fraction,
+            "train_fraction": config.train_split_fraction, "test_block_count": config.test_block_count,
+            "test_block_core_fraction": config.test_block_core_fraction,
+            "test_split_method": config.test_split_method, "test_render_fraction": config.test_render_fraction}
+
+
+def corrected_radar_times(stamps_ns: np.ndarray, calibration: dict, reference_ns: int) -> np.ndarray:
+    """Apply an explicit measured affine clock model after integer nanosecond subtraction.
 
     Args:
-        arrays: Mapping loaded from the compressed seed archive.
+        stamps_ns: Original integer radar header stamps; calibration: clock report.
+        reference_ns: Dataset's pipeline time origin.
 
     Returns:
-        None.
+        Float64 seconds in the dataset's reference clock, never absolute float32 time.
     """
-    missing_names = sorted(set(ARRAY_NAMES) - set(arrays))
-    extra_names = sorted(set(arrays) - set(ARRAY_NAMES))
-    if missing_names or extra_names:
-        raise ValueError(f"radar seed arrays mismatch: missing={missing_names}, extra={extra_names}")
-    seed_count = arrays["means"].shape[0] if arrays["means"].ndim == 2 else -1
-    expected_shapes = {
-        "means": (seed_count, 3),
-        "covariances": (seed_count, 3, 3),
-        "rgb": (seed_count, 3),
-        "sensor_origins": (seed_count, 3),
-        "support_count": (seed_count,),
-        "time_spans_s": (seed_count, 2),
-    }
-    for array_name, expected_shape in expected_shapes.items():
-        if arrays[array_name].shape != expected_shape:
-            raise ValueError(
-                f"{array_name} has shape {arrays[array_name].shape}, expected {expected_shape}"
-            )
-    if seed_count <= 0:
-        raise ValueError("radar seed artifact must contain at least one seed")
-    for array_name in ARRAY_NAMES:
-        if arrays[array_name].dtype.kind not in "biufc":
-            raise ValueError(f"{array_name} must have a numeric dtype")
-        if not np.isfinite(arrays[array_name]).all():
-            raise ValueError(f"{array_name} contains non-finite values")
-    if arrays["rgb"].dtype != np.uint8:
-        raise ValueError("rgb must have dtype uint8")
-    for floating_name in ("means", "covariances", "sensor_origins", "time_spans_s"):
-        if arrays[floating_name].dtype != np.float64:
-            raise ValueError(f"{floating_name} must have dtype float64")
-    if arrays["support_count"].dtype != np.int64 or np.any(arrays["support_count"] <= 0):
-        raise ValueError("support_count must contain positive int64 values")
-    if np.any(arrays["time_spans_s"][:, 1] < arrays["time_spans_s"][:, 0]):
-        raise ValueError("every radar seed time span must be ordered")
-    covariances = arrays["covariances"].astype(np.float64)
-    symmetry_tolerance = np.finfo(np.float64).eps * np.maximum(1.0, np.abs(covariances)).max()
-    if not np.allclose(covariances, covariances.transpose(0, 2, 1), atol=symmetry_tolerance):
-        raise ValueError("radar seed covariances must be symmetric")
-    if np.any(np.linalg.eigvalsh(covariances) <= 0.0):
-        raise ValueError("radar seed covariances must be positive definite")
+    stamps_ns = np.asarray(stamps_ns)
+    if stamps_ns.dtype.kind not in "iu" or stamps_ns.ndim != 1:
+        raise ValueError("original radar stamps must be an integer vector")
+    values = [calibration[key] for key in ("offset_seconds", "drift_rate", "clock_reference_seconds")]
+    if not np.isfinite(values).all() or calibration["drift_rate"] <= -1:
+        raise ValueError("clock model must be finite and monotonic")
+    seconds = (stamps_ns.astype(np.int64) - int(reference_ns)).astype(np.float64) / 1_000_000_000
+    return seconds + calibration["offset_seconds"] + calibration["drift_rate"] * (
+        seconds - calibration["clock_reference_seconds"])
 
 
-def write_radar_seed_artifact(
-    output_directory: Path,
-    seeds: RadarSeedGaussians,
-    session_name: str,
-    provenance: Dict[str, Any],
-    parameters: Dict[str, Any],
-) -> None:
-    """Write an immutable seed archive plus metadata and file hashes.
+def train_radar_mask(stamps_ns: np.ndarray, calibration: dict, reference_ns: int,
+                     lidar_frames, bounds) -> np.ndarray:
+    """Assign corrected radar observations to nearest reference instants, earlier on ties.
 
     Args:
-        output_directory: New, empty output directory.
-        seeds: T36 seed arrays in the session map frame.
-        session_name: Dataset session tag required by the dataparser.
-        provenance: Hashes/tags for the dataset, split and inputs.
-        parameters: Effective label-free selection parameters.
+        stamps_ns, calibration, reference_ns: Clock conversion inputs.
+        lidar_frames: Sorted windowed reference LiDAR SplitFrame records.
+        bounds: Inclusive camera/LiDAR profile window.
 
     Returns:
-        None.
+        Boolean vector; test/guard and out-of-reference-support observations are false.
+    """
+    times = corrected_radar_times(stamps_ns, calibration, reference_ns)
+    reference_times = np.array([frame.time_s for frame in lidar_frames])
+    positions = nearest_reference_positions(reference_times, times)
+    train = np.array([frame.split == "train" for frame in lidar_frames])
+    # Do not extend the first/last reference instant into unobserved recording tails.
+    inside = ((times >= max(bounds[0], reference_times[0]))
+              & (times <= min(bounds[1], reference_times[-1])))
+    return inside & train[positions]
+
+
+def validate_clock_report(calibration: dict, session: str, reference_ns: int,
+                          lidar_frames, bounds) -> None:
+    """Require measured calibration evidence whose fit observations do not leak holdouts.
+
+    Args:
+        calibration: Versioned report including source IDs, fit method and residual RMS.
+        session, reference_ns, lidar_frames, bounds: Exact target dataset/profile identity.
 
     Raises:
-        FileExistsError: If the target already exists.
-        ValueError: If the arrays or tags violate the artifact contract.
+        ValueError: Absent evidence, wrong clock/session, invalid fit or held-out source IDs.
     """
-    output_directory = Path(output_directory)
-    if output_directory.exists():
-        raise FileExistsError(f"refusing to reuse radar artifact directory: {output_directory}")
-    if not session_name:
-        raise ValueError("session_name must be non-empty")
-    arrays = {array_name: np.asarray(getattr(seeds, array_name)) for array_name in ARRAY_NAMES}
-    _validate_seed_arrays(arrays)
-    output_directory.mkdir(parents=True)
-    array_path = output_directory / RADAR_ARRAYS_FILENAME
-    np.savez_compressed(array_path, **arrays)
-    metadata = {
-        "schema": RADAR_INPUTS_SCHEMA,
-        "session": session_name,
-        "frame": "map",
-        "time_basis": "absolute_seconds",
-        "seed_count": int(arrays["means"].shape[0]),
-        "provenance": provenance,
-        "parameters": parameters,
-    }
-    metadata_path = output_directory / RADAR_METADATA_FILENAME
-    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
-    manifest = {
-        "schema": RADAR_INPUTS_SCHEMA,
-        "files": {
-            RADAR_ARRAYS_FILENAME: sha256_file(array_path),
-            RADAR_METADATA_FILENAME: sha256_file(metadata_path),
-        },
-    }
-    (output_directory / RADAR_MANIFEST_FILENAME).write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-    )
+    if (calibration.get("schema") != CLOCK_SCHEMA or calibration.get("session") != session
+            or calibration.get("reference_ns") != reference_ns or not calibration.get("method")):
+        raise ValueError("measured radar clock report with matching session/reference is required")
+    source_digest = calibration.get("fit_source_sha256", "")
+    if len(source_digest) != hashlib.sha256().digest_size * 2 or any(character not in "0123456789abcdef" for character in source_digest):
+        raise ValueError("clock fit must pin its observation-source SHA256")
+    residual = calibration.get("residual_rms_seconds")
+    if not isinstance(residual, (int, float)) or not np.isfinite(residual) or residual < 0:
+        raise ValueError("measured nonnegative clock fit residual is required")
+    stamps = np.asarray(calibration.get("fit_stamps_ns", []))
+    if not len(stamps) or not train_radar_mask(stamps, calibration, reference_ns, lidar_frames, bounds).all():
+        raise ValueError("clock calibration fit contains non-training or unsupported observations")
 
 
-def load_radar_seed_artifact(
-    input_directory: Path, expected_session_name: str
-) -> tuple[Dict[str, np.ndarray], Dict[str, Any]]:
-    """Load and fully validate a radar seed artifact.
+def validate_anchor_arrays(arrays: dict) -> None:
+    """Check finite SPD anchors and exact ragged source support/count/time shapes.
 
     Args:
-        input_directory: Directory containing the three versioned artifact files.
-        expected_session_name: Session requested by the dataparser.
+        arrays: NPZ arrays: means, covariances, sensor_origins, time_spans,
+            support_count, source_offsets, source_stamps_ns.
+
+    Raises:
+        ValueError: Invalid arrays, including duplicate/miscounted source sweeps.
+    """
+    count = len(arrays["means"])
+    shapes = {"means": (count, 3), "covariances": (count, 3, 3), "sensor_origins": (count, 3),
+              "time_spans": (count, 2), "support_count": (count,), "source_offsets": (count + 1,)}
+    if count == 0 or any(arrays[key].shape != shape or not np.isfinite(arrays[key]).all()
+                         for key, shape in shapes.items()):
+        raise ValueError("nonempty finite anchor arrays with matching shapes required")
+    covariance = arrays["covariances"]
+    if not np.allclose(covariance, covariance.swapaxes(-1, -2)) or np.any(np.linalg.eigvalsh(covariance) <= 0):
+        raise ValueError("anchor covariances must be symmetric positive definite")
+    offsets, stamps = arrays["source_offsets"], arrays["source_stamps_ns"]
+    if (offsets.dtype.kind not in "iu" or stamps.dtype.kind not in "iu" or stamps.ndim != 1
+            or arrays["support_count"].dtype.kind not in "iu" or offsets[0] != 0
+            or offsets[-1] != len(stamps) or np.any(np.diff(offsets) < 2)
+            or not np.array_equal(np.diff(offsets), arrays["support_count"])
+            or np.any(arrays["time_spans"][:, 0] > arrays["time_spans"][:, 1])):
+        raise ValueError("anchor support must record at least two distinct training sweeps")
+    for anchor_index in range(count):
+        sources = stamps[offsets[anchor_index]:offsets[anchor_index + 1]]
+        if len(np.unique(sources)) != len(sources):
+            raise ValueError("duplicate sweep IDs inflate anchor persistence")
+
+
+def load_verified_anchors(directory: Path, dataset_directory: Path, session: str,
+                          expected_settings: dict):
+    """Verify complete radar contract against actual data and exact training split.
+
+    Args:
+        directory: Immutable artifact directory; dataset_directory: baseline inputs.
+        session: Exact session identifier; expected_settings: actual profile split kwargs.
 
     Returns:
-        ``(arrays, metadata)`` after hash, tag and numerical validation.
+        Validated arrays and provenance. Legacy optional-metadata artifacts are refused.
     """
-    input_directory = Path(input_directory)
-    manifest_path = input_directory / RADAR_MANIFEST_FILENAME
-    try:
-        manifest = json.loads(manifest_path.read_text())
-        metadata_path = input_directory / RADAR_METADATA_FILENAME
-        array_path = input_directory / RADAR_ARRAYS_FILENAME
-    except (FileNotFoundError, json.JSONDecodeError) as error:
-        raise ValueError(f"invalid radar artifact manifest: {error}") from error
-    if manifest.get("schema") != RADAR_INPUTS_SCHEMA:
-        raise ValueError(f"unsupported radar artifact schema: {manifest.get('schema')!r}")
-    expected_files = {RADAR_ARRAYS_FILENAME, RADAR_METADATA_FILENAME}
-    if set(manifest.get("files", {})) != expected_files:
-        raise ValueError("radar artifact manifest must hash exactly the arrays and metadata files")
-    for filename in sorted(expected_files):
-        file_path = input_directory / filename
-        if not file_path.is_file() or sha256_file(file_path) != manifest["files"][filename]:
-            raise ValueError(f"radar artifact hash mismatch: {filename}")
-    try:
-        metadata = json.loads(metadata_path.read_text())
-        with np.load(array_path, allow_pickle=False) as archive:
-            arrays = {array_name: archive[array_name] for array_name in archive.files}
-    except (json.JSONDecodeError, OSError, ValueError, KeyError) as error:
-        raise ValueError(f"invalid radar artifact contents: {error}") from error
-    expected_tags = {
-        "schema": RADAR_INPUTS_SCHEMA,
-        "session": expected_session_name,
-        "frame": "map",
-        "time_basis": "absolute_seconds",
-    }
-    for tag_name, expected_value in expected_tags.items():
-        if metadata.get(tag_name) != expected_value:
-            raise ValueError(
-                f"radar artifact {tag_name} is {metadata.get(tag_name)!r}, expected {expected_value!r}"
-            )
-    _validate_seed_arrays(arrays)
-    if metadata.get("seed_count") != arrays["means"].shape[0]:
-        raise ValueError("radar artifact seed_count does not match its arrays")
-    if not isinstance(metadata.get("provenance"), dict) or not isinstance(
-        metadata.get("parameters"), dict
-    ):
-        raise ValueError("radar artifact provenance and parameters must be objects")
+    directory, dataset_directory = Path(directory), Path(dataset_directory)
+    metadata = json.loads((directory / "radar_inputs.json").read_text())
+    if (metadata.get("schema") != ARTIFACT_SCHEMA or metadata.get("session") != session
+            or metadata.get("frame") != "map" or metadata.get("time_base") != "session_reference_seconds"
+            or metadata.get("gaussian_initialization") is not False):
+        raise ValueError("loss-only radar artifact schema/session/frame/time tags do not match")
+    for filename, key in (("radar_seeds.npz", "artifact_sha256"),):
+        if metadata.get(key) != file_sha256(directory / filename):
+            raise ValueError("radar artifact checksum mismatch")
+    for filename, key in (("manifest.json", "dataset_manifest_sha256"), ("poses.npz", "dataset_poses_sha256")):
+        if metadata.get(key) != file_sha256(dataset_directory / filename):
+            raise ValueError("radar artifact dataset provenance mismatch")
+    view = open_dataset_view(dataset_directory)
+    frames, lidar_frames, bounds = anchor_split(view, expected_settings)
+    if metadata.get("split_settings") != expected_settings or metadata.get("split_sha256") != split_digest(frames):
+        raise ValueError("radar artifact does not match this profile's training/held-out split")
+    reference_ns = int(view.manifest["pipeline"]["reference_ns"])
+    calibration = metadata["clock_calibration"]
+    validate_clock_report(calibration, session, reference_ns, lidar_frames, bounds)
+    source_paths = {}
+    for path in (dataset_directory / "sidecar/radar").glob("*.npy"):
+        match = FRAME_FILE_PATTERN.match(path.name)
+        if match:
+            stamp = int(match.group(2))
+            if stamp in source_paths:
+                raise ValueError("duplicate radar source timestamps")
+            source_paths[stamp] = path
+    training_sources = np.asarray(metadata["training_source_stamps_ns"])
+    if (len(np.unique(training_sources)) != len(training_sources)
+            or not train_radar_mask(training_sources, calibration, reference_ns, lidar_frames, bounds).all()):
+        raise ValueError("pinned radar source observations must be unique training sweeps")
+    for source_ids, expected_hash in ((calibration["fit_stamps_ns"], calibration["fit_source_sha256"]),
+                                      (metadata["training_source_stamps_ns"], metadata["source_files_sha256"])):
+        if any(int(stamp) not in source_paths for stamp in source_ids):
+            raise ValueError("radar artifact source observation is missing")
+        actual_hash = object_digest({str(stamp): file_sha256(source_paths[int(stamp)]) for stamp in source_ids})
+        if actual_hash != expected_hash:
+            raise ValueError("radar source file provenance checksum mismatch")
+    with np.load(directory / "radar_seeds.npz", allow_pickle=False) as archive:
+        arrays = {key: archive[key] for key in archive.files}
+    validate_anchor_arrays(arrays)
+    if not set(arrays["source_stamps_ns"].tolist()) <= set(metadata["training_source_stamps_ns"]):
+        raise ValueError("anchor support IDs are absent from the pinned source observations")
+    if not train_radar_mask(arrays["source_stamps_ns"], calibration, reference_ns, lidar_frames, bounds).all():
+        raise ValueError("anchor artifact contains held-out radar observations")
+    times = corrected_radar_times(arrays["source_stamps_ns"], calibration, reference_ns)
+    for anchor_index in range(len(arrays["means"])):
+        selected = times[arrays["source_offsets"][anchor_index]:arrays["source_offsets"][anchor_index + 1]]
+        if not np.allclose(arrays["time_spans"][anchor_index], [selected.min(), selected.max()], rtol=0,
+                           atol=np.finfo(np.float64).eps * max(1.0, np.abs(selected).max())):
+            raise ValueError("anchor time span differs from its recorded source observations")
     return arrays, metadata
+
+
+@transform("T39", "Map-frame radar anchors/covariances/origins into an unscaled dataparser frame")
+def transform_anchor_arrays(arrays: dict, world_to_parser: np.ndarray, scale: float = 1.0) -> dict:
+    """Return copied anchors using R*mean+t, R*Sigma*R.T, and R*origin+t.
+
+    Args:
+        arrays: Validated artifact arrays; world_to_parser: [3,4] rigid transform.
+        scale: Dataparser scale, required exactly one for metre-valued radar targets.
+
+    Returns:
+        Transformed copy preserving temporal/source provenance without modifying inputs.
+    """
+    if scale != 1.0:
+        raise ValueError("radar supervision requires unit dataparser scale")
+    encoded = np.asarray(world_to_parser)
+    matrix = np.eye(4, dtype=encoded.dtype if encoded.dtype.kind == "f" else np.float64)
+    matrix[:3] = encoded
+    matrix = require_rigid_transform(matrix)
+    rotation, translation = matrix[:3, :3], matrix[:3, 3]
+    result = {key: value.copy() for key, value in arrays.items()}
+    result["means"] = arrays["means"] @ rotation.T + translation
+    result["sensor_origins"] = arrays["sensor_origins"] @ rotation.T + translation
+    result["covariances"] = rotation @ arrays["covariances"] @ rotation.T
+    return result
+
+
+@transform("T40", "Radar anchor time/scene-box crop with explicit retained fraction and shifted time spans")
+def crop_anchor_arrays(arrays: dict, time_bounds, scene_bounds: np.ndarray, time_offset: float):
+    """Return model loss targets inside the complete training window and scene box.
+
+    Args:
+        arrays: Transformed anchor arrays; time_bounds: inclusive session seconds.
+        scene_bounds: Dataparser box [2,3]; time_offset: subtracted session time origin.
+
+    Returns:
+        Means, covariances, origins, relative time spans, counts, and retained fraction.
+        Ragged source arrays remain in the verified artifact, not model metadata.
+    """
+    scene_bounds = np.asarray(scene_bounds)
+    if (scene_bounds.shape != (2, 3) or not np.isfinite(scene_bounds).all()
+            or np.any(scene_bounds[0] > scene_bounds[1]) or not np.isfinite(time_offset)
+            or not np.isfinite(time_bounds).all() or time_bounds[0] > time_bounds[1]):
+        raise ValueError("valid finite scene/time bounds required")
+    spans, means = arrays["time_spans"], arrays["means"]
+    kept = ((spans[:, 0] >= time_bounds[0]) & (spans[:, 1] <= time_bounds[1])
+            & (means >= scene_bounds[0]).all(axis=1) & (means <= scene_bounds[1]).all(axis=1))
+    result = {key: arrays[key][kept].copy() for key in ("means", "covariances", "sensor_origins", "support_count")}
+    result["time_spans"] = spans[kept] - time_offset
+    result["retained_fraction"] = np.array(float(kept.mean()) if len(kept) else 0.0)
+    result["dropped_count"] = np.array(int((~kept).sum()))
+    return result

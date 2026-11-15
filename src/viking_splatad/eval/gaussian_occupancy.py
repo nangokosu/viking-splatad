@@ -62,6 +62,8 @@ class MapFrameGaussians:
     covariances: np.ndarray
     axis_std: np.ndarray
     opacities: np.ndarray
+    principal_axes: np.ndarray = None
+    """Map-frame principal-axis basis. Kept separately for stable thin-Gaussian evaluation."""
 
 
 def gauss_params_from_state_dict(pipeline_state: Mapping[str, np.ndarray]) -> dict:
@@ -206,7 +208,28 @@ def checkpoint_gaussians_to_map_frame(
     covariances = np.einsum("nij,nkj->nik", scaled_axes, scaled_axes)
     # Step 5: centres, x_map = Aᵀx_dp − Aᵀt.
     means_map = np.asarray(means, dtype=np.float64).reshape(-1, 3) @ rotation_to_map.T + translation_to_map
-    return MapFrameGaussians(means=means_map, covariances=covariances, axis_std=axis_std, opacities=opacities)
+    return MapFrameGaussians(means=means_map, covariances=covariances, axis_std=axis_std, opacities=opacities,
+                             principal_axes=rotations_map)
+
+
+def save_gaussian_factors(output_path: Path, gaussians: MapFrameGaussians, checkpoint_step: int) -> None:
+    """Save full-precision map-frame factors without forming/inverting a rounded covariance.
+
+    Args:
+        output_path: Evaluation-only NPZ; gaussians: decoded T56 result with its
+        principal basis; checkpoint_step: exact checkpoint step.
+    Returns:
+        None. Legacy gaussians.npz keys/dtypes and successful run outputs stay unchanged.
+        For M=A diag(std), distance is ||diag(1/std) A^-1 (p-mu)||^2.
+        A is well-conditioned even when the covariance's condition number is huge.
+    """
+    if gaussians.principal_axes is None:
+        raise ValueError("principal axes from the checkpoint are required")
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(output_path, schema="viking-splatad/gaussian-factors/1", means=gaussians.means,
+                        principal_axes=gaussians.principal_axes, axis_std=gaussians.axis_std,
+                        opacities=gaussians.opacities, checkpoint_step=np.int64(checkpoint_step))
 
 
 def latest_checkpoint_path(checkpoint_dir: Path) -> Path:

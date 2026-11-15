@@ -46,6 +46,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-dir", type=Path, required=True,
                         help="ns-train output dir holding config.yml, dataparser_transforms.json, nerfstudio_models/.")
     parser.add_argument("--output-path", type=Path, required=True, help="Destination gaussians.npz.")
+    parser.add_argument("--factorized", action="store_true", help="Evaluation-only full-precision axes/scales archive; preserve legacy run export.")
     return parser
 
 
@@ -66,6 +67,7 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         gauss_params_from_state_dict,
         latest_checkpoint_path,
         save_gaussians_npz,
+        save_gaussian_factors,
     )
 
     arguments = build_argument_parser().parse_args(argument_list)
@@ -99,7 +101,10 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         dataparser_scale=float(dataparser_transforms["scale"]),
     )
     checkpoint_step = int(loaded_state["step"])
-    save_gaussians_npz(arguments.output_path, gaussians, dataparser_transform, checkpoint_step)
+    if arguments.factorized:
+        save_gaussian_factors(arguments.output_path, gaussians, checkpoint_step)
+    else:
+        save_gaussians_npz(arguments.output_path, gaussians, dataparser_transform, checkpoint_step)
     print(f"wrote {len(gaussians.opacities)} Gaussians (step {checkpoint_step}, {checkpoint_path.name}) "
           f"to {arguments.output_path}")
     return 0

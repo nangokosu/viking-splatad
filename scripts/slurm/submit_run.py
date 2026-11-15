@@ -47,6 +47,10 @@ import yaml
 
 # Project root = two levels above this file (scripts/slurm/submit_run.py).
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# The submit CLI must use this checkout's helpers even when an editable install
+# is stale or its .pth hook is disabled. Native batch jobs use the same source-first rule.
+if __name__ == "__main__":
+    sys.path.insert(0, str(PROJECT_ROOT / "src"))
 # Default Slurm settings file, relative to the project root.
 DEFAULT_SLURM_CONFIG_PATH = PROJECT_ROOT / "configs" / "slurm.yaml"
 # Batch scripts, as paths inside the staged code snapshot (code/<sha>/...).
@@ -59,7 +63,8 @@ STAGED_REPO_PATHS = ("pyproject.toml", "src", "tests", "configs", "scripts",
                      "docker/constraints.txt", "docker/Dockerfile.splatad",
                      ".claude/hooks/readonly_bash_guard.py",
                      # Read by tests/unit/test_render_lidar_script.py (the build's pytest step).
-                     "runs/RUN_FOLDER_GLOSSARY.md")
+                     "runs/RUN_FOLDER_GLOSSARY.md", "CLAUDE.md", "AGENTS.md",
+                     ".claude/skills", ".agents/skills", ".dockerignore", ".gitignore")
 # Hex digits of the recipe hash used in environment names: 12 hex = 48 bits, so two different
 # recipes collide with probability ~2**-48, negligible for the handful of envs ever built.
 RECIPE_HASH_LENGTH = 12
@@ -725,43 +730,78 @@ def session_add_missing_points(session: str, intermediate_root: Path = INTERMEDI
     return flag
 
 
-def session_radar_initialization(
+def session_radar_lidar_options(
     session: str,
     intermediate_root: Path = INTERMEDIATE_DATA_ROOT,
     session_config_directory: Path = SESSION_CONFIG_DIRECTORY,
-) -> Tuple[str, Optional[str], float]:
-    """Resolve and validate the session's stock or radar-initialization method.
+) -> Dict[str, Any]:
+    """Read and validate the optional radar-supported LiDAR-loss settings.
 
     Args:
-        session: Dataset name under the intermediate root.
-        intermediate_root: Directory holding local datasets.
+        session: Dataset name under ``intermediate_root``.
+        intermediate_root: Directory holding the local datasets.
         session_config_directory: Directory holding session YAML files.
 
     Returns:
-        ``(method, radar_inputs_dir, radar_seed_opacity)``. The stock method has a
-        ``None`` artifact directory and retains the opacity only as an unused default.
+        Method name, loss weight, gate quantile, chunk size, and optional seed directory.
+
+    Raises:
+        ValueError: If a configured value has the wrong type or range.
     """
     session_name, session_config = load_dataset_session_config(
         session, intermediate_root, session_config_directory
     )
-    splatad_config = session_config.get("splatad", {})
-    method = splatad_config.get("method", "splatad")
-    if method not in ("splatad", "splatad-radar-init"):
-        raise ValueError(
-            f"configs/sessions/{session_name}.yaml: splatad.method must be splatad or "
-            f"splatad-radar-init, got {method!r}"
-        )
-    configured_directory = splatad_config.get("radar_inputs_dir")
-    if method == "splatad" and configured_directory is not None:
-        raise ValueError("stock splatad must not configure radar_inputs_dir")
-    if method == "splatad-radar-init" and not isinstance(configured_directory, str):
-        raise ValueError("splatad-radar-init requires a relative radar_inputs_dir string")
-    if configured_directory is not None and Path(configured_directory).is_absolute():
-        raise ValueError("radar_inputs_dir must be relative to the staged session directory")
-    opacity = splatad_config.get("radar_seed_opacity", 0.5)
-    if isinstance(opacity, bool) or not isinstance(opacity, (int, float)) or not 0.0 < opacity < 1.0:
-        raise ValueError("splatad.radar_seed_opacity must be a number strictly between zero and one")
-    return method, configured_directory, float(opacity)
+    radar_config = session_config.get("splatad", {})
+    method = radar_config.get("method", "splatad")
+    if method not in {"splatad", "splatad-radar-lidar"}:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: unsupported splatad.method {method!r}")
+    loss_weight = radar_config.get("radar_lidar_loss_weight", 0.0)
+    gate_quantile = radar_config.get("radar_lidar_gate_quantile", 0.95)
+    chunk_size = radar_config.get("radar_lidar_gate_chunk_size", 4096)
+    if isinstance(loss_weight, bool) or not isinstance(loss_weight, (int, float)) or loss_weight < 0:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: radar_lidar_loss_weight must be non-negative")
+    if isinstance(gate_quantile, bool) or not isinstance(gate_quantile, (int, float)) or not 0 < gate_quantile < 1:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: radar_lidar_gate_quantile must be in (0, 1)")
+    if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
+        raise ValueError(f"configs/sessions/{session_name}.yaml: radar_lidar_gate_chunk_size must be positive")
+    seed_directory = radar_config.get("radar_inputs_dir")
+    if seed_directory is not None and not isinstance(seed_directory, str):
+        raise ValueError(f"configs/sessions/{session_name}.yaml: radar_inputs_dir must be a string or null")
+    if method == "splatad-radar-lidar" and loss_weight > 0 and not seed_directory:
+        raise ValueError("radar LiDAR loss requires splatad.radar_inputs_dir")
+    return {
+        "method": method,
+        "loss_weight": float(loss_weight),
+        "gate_quantile": float(gate_quantile),
+        "chunk_size": chunk_size,
+        "inputs_dir": seed_directory,
+    }
+
+
+def profile_radar_lidar_options(profile_settings: Dict[str, Any], baseline_options: Dict[str, Any],
+                                 stage_root: str, session: str, profile: str, git_sha: str) -> Dict[str, Any]:
+    """Resolve a loss-only profile without editing the published session or baseline config.
+
+    Args:
+        profile_settings, baseline_options: Existing validated profile/session settings.
+        stage_root, session, profile, git_sha: Immutable remote artifact identity.
+
+    Returns:
+        Independent options; enabled L requires LiDAR-only optimization and auto weighting.
+    """
+    enabled = profile_settings.get("radar_loss_only", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("profile radar_loss_only must be boolean")
+    options = dict(baseline_options)
+    if enabled:
+        if profile_settings.get("train_lidar_only") is not True:
+            raise ValueError("loss-only core profiles require train_lidar_only")
+        anchor_profile = profile_settings.get("radar_anchor_profile", profile)
+        if not isinstance(anchor_profile, str) or RUN_ID_PATTERN.fullmatch(anchor_profile) is None:
+            raise ValueError("radar_anchor_profile must be a safe profile identifier")
+        options.update(method="splatad-radar-lidar", loss_weight=0.0, auto_weight=True,
+                       inputs_dir=f"{stage_root}/radar-inputs/{session}/{anchor_profile}/{git_sha}")
+    return options
 
 
 def dataset_train_fraction(session: str, intermediate_root: Path = INTERMEDIATE_DATA_ROOT) -> float:
@@ -903,9 +943,7 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
                           test_render_fraction: Optional[float] = None,
                           minimum_eval_points: Optional[int] = None,
                           steps_per_eval_all_images: Optional[int] = None,
-                          train_method: Optional[str] = None,
-                          radar_inputs_dir: Optional[str] = None,
-                          radar_seed_opacity: Optional[float] = None) -> Dict[str, str]:
+                          radar_lidar_options: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     """Build the variables exported to splatad_run.sbatch (insertion order is kept).
 
     Args:
@@ -935,9 +973,7 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
             MINIMUM_EVAL_POINTS. Same rule as ``add_missing_points``: None leaves it out.
         steps_per_eval_all_images: The derived eval interval (``profile_eval_cadence``), exported as
             STEPS_PER_EVAL_ALL_IMAGES. Same rule: None leaves it out.
-        train_method: ``splatad`` or ``splatad-radar-init``, exported as TRAIN_METHOD.
-        radar_inputs_dir: Session-relative artifact directory, exported only for radar init.
-        radar_seed_opacity: Seed opacity probability, exported only for radar init.
+        radar_lidar_options: Optional validated output of ``session_radar_lidar_options``.
 
     Returns:
         Mapping variable name -> string value.
@@ -989,12 +1025,20 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         job_environment["MINIMUM_EVAL_POINTS"] = str(int(minimum_eval_points))
     if steps_per_eval_all_images is not None:
         job_environment["STEPS_PER_EVAL_ALL_IMAGES"] = str(int(steps_per_eval_all_images))
-    if train_method is not None:
-        job_environment["TRAIN_METHOD"] = train_method
-    if radar_inputs_dir is not None:
-        job_environment["RADAR_INPUTS_DIR"] = radar_inputs_dir
-    if radar_seed_opacity is not None:
-        job_environment["RADAR_SEED_OPACITY"] = repr(float(radar_seed_opacity))
+    if radar_lidar_options is not None:
+        job_environment["TRAIN_METHOD"] = str(radar_lidar_options["method"])
+        job_environment["RADAR_LIDAR_LOSS_WEIGHT"] = repr(float(radar_lidar_options["loss_weight"]))
+        job_environment["RADAR_LIDAR_GATE_QUANTILE"] = repr(float(radar_lidar_options["gate_quantile"]))
+        job_environment["RADAR_LIDAR_GATE_CHUNK_SIZE"] = str(int(radar_lidar_options["chunk_size"]))
+        job_environment["RADAR_LIDAR_AUTO_WEIGHT"] = str(radar_lidar_options.get("auto_weight", False))
+        if radar_lidar_options["method"] == "splatad-radar-lidar":
+            job_environment["RADAR_DIAGNOSTICS_PATH"] = f"{absolute_stage_root}/runs/{run_id}/radar_diagnostics.jsonl"
+        if radar_lidar_options["inputs_dir"] is not None:
+            job_environment["RADAR_INPUTS_DIR"] = str(radar_lidar_options["inputs_dir"])
+    if "train_lidar_only" in profile_settings:
+        if not isinstance(profile_settings["train_lidar_only"], bool):
+            raise ValueError("profile train_lidar_only must be a boolean")
+        job_environment["TRAIN_LIDAR_ONLY"] = str(profile_settings["train_lidar_only"])
     return job_environment
 
 
@@ -1051,7 +1095,7 @@ def write_remote_file(ssh_target: str, remote_path: str, file_text: str) -> None
                 f"write {remote_path}", input_text=file_text)
 
 
-def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, time_limit: str,
+def build_sbatch_command(partition: str, gres: Optional[str], cpus: int, memory_gb: int, time_limit: str,
                          job_name: str, output_path: str, job_script_path: str,
                          excluded_nodes: Sequence[str] = (),
                          nodelist: Sequence[str] = ()) -> List[str]:
@@ -1063,7 +1107,7 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
 
     Args:
         partition: Slurm partition.
-        gres: Generic resource spec, e.g. ``gpu:rtx_a6000:1``.
+        gres: Generic resource spec, e.g. ``gpu:rtx_a6000:1``; None for CPU validation.
         cpus: CPUs per task (-c).
         memory_gb: Memory in GiB (--mem=<n>G).
         time_limit: ``D-HH:MM:SS``; must be at most 5 days.
@@ -1091,7 +1135,7 @@ def build_sbatch_command(partition: str, gres: str, cpus: int, memory_gb: int, t
     return [
         "sbatch",
         f"--partition={partition}",
-        f"--gres={gres}",
+        *([f"--gres={gres}"] if gres else []),
         "-c", str(cpus),
         f"--mem={memory_gb}G",
         "-t", time_limit,
@@ -1236,7 +1280,7 @@ def build_render_job_environment(run_id: str, rerender_label: str, absolute_stag
     Raises:
         KeyError: If the run's job_info.txt lacks SESSION, GIT_SHA or RENDER_DOWNSCALE_FACTOR.
     """
-    return {
+    job_environment = {
         "RUN_ID": run_id,
         "RERENDER_LABEL": rerender_label,
         "STAGE_ROOT": absolute_stage_root,
@@ -1250,6 +1294,10 @@ def build_render_job_environment(run_id: str, rerender_label: str, absolute_stag
         "RENDER_DOWNSCALE_FACTOR": run_job_info["RENDER_DOWNSCALE_FACTOR"],
         "TRAIN_METHOD": run_job_info.get("TRAIN_METHOD", "splatad"),
     }
+    # Preserve the output directory of registered methods while retaining legacy exports.
+    if "TRAIN_METHOD" in run_job_info:
+        job_environment["TRAIN_METHOD"] = run_job_info["TRAIN_METHOD"]
+    return job_environment
 
 
 def build_render_selection_record(camera_frame_indices: Sequence[int], lidar_frame_indices: Sequence[int],
@@ -1336,10 +1384,6 @@ def run_gates(session: str) -> None:
     dataset_dir = PROJECT_ROOT / "data" / "intermediate" / session
     contract_command = ["uv", "run", "python", "scripts/06_validate_contract.py",
                         "--dataset", str(dataset_dir)]
-    train_method, radar_inputs_dir, _ = session_radar_initialization(session)
-    if train_method == "splatad-radar-init":
-        radar_artifact_path = dataset_dir / radar_inputs_dir
-        contract_command += ["--radar-inputs-dir", str(radar_artifact_path), "--session", session]
     if run_command(contract_command, capture_output=False).returncode != 0:
         raise GateFailure(f"contract validation failed for {dataset_dir}")
     # Step 4: when the session has a committed reference split record, the dataset must reproduce it
@@ -1463,6 +1507,10 @@ def stage_code(ssh_target: str, absolute_stage_root: str, git_sha: str) -> str:
         snapshot_dir = Path(export_dir) / "snapshot"
         snapshot_dir.mkdir()
         run_checked(["tar", "-xf", str(archive_path), "-C", str(snapshot_dir)], "tar extract")
+        # A fresh, identity-free index lets privacy tests scan precisely the staged
+        # committed sources. Never copy the user's .git/config or credentials.
+        run_checked(["git", "init", "-q", str(snapshot_dir)], "snapshot git init")
+        run_checked(["git", "-C", str(snapshot_dir), "add", "."], "snapshot git index")
         # Step 2: mirror it (--delete keeps the directory identical to the commit).
         run_checked(["rsync", "-a", "--delete", f"{snapshot_dir}/", f"{ssh_target}:{remote_code_dir}/"],
                     "code rsync", capture_output=False)
@@ -1491,15 +1539,6 @@ def stage_session(config: Dict[str, Any], session: str) -> str:
     if not dataset_dir.is_dir():
         raise FileNotFoundError(f"dataset {dataset_dir} not found")
     require_no_return_sidecar(dataset_dir, session_add_missing_points(session))
-    train_method, radar_inputs_dir, _ = session_radar_initialization(session)
-    if train_method == "splatad-radar-init":
-        from viking_splatad.contract.splatad_contract import validate_radar_inputs
-
-        radar_report = validate_radar_inputs(
-            dataset_dir / radar_inputs_dir, session, dataset_dir
-        )
-        if not radar_report.passed:
-            raise ValueError(radar_report.to_markdown())
     git_sha = get_head_sha()
     # Step 2: create remote directories (rsync creates only the last path component).
     run_checked(ssh_command(ssh_target, ["mkdir", "-p", f"{absolute_stage_root}/data/{session}",
@@ -1701,6 +1740,240 @@ def build_environment(config: Dict[str, Any]) -> Optional[str]:
     return job_id
 
 
+def validation_settings(config: Dict[str, Any], resource_key: Optional[str]) -> Dict[str, Any]:
+    """Return a configured validation allocation; reject arbitrary resource-key overrides."""
+    selected_key = resource_key or "render_only"
+    if selected_key not in {"render_only", "validation_gpu", "validation_cpu"}:
+        raise ValueError("validation resources must be render_only, validation_gpu, or validation_cpu")
+    return config[selected_key]
+
+
+def query_validation_allocation(config: Dict[str, Any], ssh_target: str,
+                                settings: Dict[str, Any]) -> Tuple[str, Optional[str], int, int]:
+    """Return partition, optional GPU spec, CPUs and GiB for a configured validation allocation.
+
+    CPU validation reuses the measured render allocation, clamped to live CPU
+    node capacity. GPU validation uses its own GPU type's sinfo rows as usual.
+    """
+    if "resource_source" not in settings:
+        gres = resolve_job_gres(config, settings)
+        cpus, memory_gb = query_node_resources(config, ssh_target, gres)
+        return config["partition"], gres, cpus, memory_gb
+    if settings["resource_source"] != "render_only" or settings.get("gres"):
+        raise ValueError("CPU validation must use render_only's CPU/RAM budget without a GPU")
+    source_gres = resolve_job_gres(config, config["render_only"])
+    source_cpus, source_memory = query_node_resources(config, ssh_target, source_gres)
+    partition = settings["partition"]
+    table = run_checked(ssh_command(ssh_target, [
+        "sinfo", "-p", partition, "-O", "NodeHost,Memory,CPUs",
+    ]), "CPU validation node sizes").stdout.splitlines()
+    header = table[0].upper().split() if table else []
+    if "MEMORY" not in header or "CPUS" not in header:
+        raise ValueError("CPU sinfo table lacks MEMORY/CPUS")
+    node_sizes = []
+    for row in table[1:]:
+        fields = row.split()
+        if len(fields) < len(header):
+            continue
+        node_memory = int(fields[header.index("MEMORY")])
+        node_cpus = int(fields[header.index("CPUS")])
+        if node_memory > 0 and node_cpus > 0:
+            node_sizes.append((node_cpus, node_memory))
+    if not node_sizes:
+        raise ValueError("no CPU validation nodes reported")
+    cpu_capacity = min(node_cpus for node_cpus, _ in node_sizes)
+    memory_capacity = math.floor(float(config["mem_fraction"]) * min(memory for _, memory in node_sizes)
+                                 / MEGABYTES_PER_GIGABYTE)
+    return partition, None, min(source_cpus, cpu_capacity), min(source_memory, memory_capacity)
+
+
+def verify_environment(config: Dict[str, Any], resource_key: Optional[str] = None) -> str:
+    """Submit full native validation of an existing compiled env; return the verification job id.
+
+    Args:
+        config: Slurm settings. Verification defaults to render_only's allocation.
+        resource_key: Optional configured validation-only allocation, e.g. validation_gpu.
+    Returns:
+        The submitted job id. No environment marker is written by the submit host.
+    """
+    check_clean_tree()
+    ssh_target = resolve_ssh_target(config["ssh_host"])
+    stage_root = resolve_remote_stage_root(config, ssh_target)
+    git_sha = get_head_sha()
+    env_name = environment_name(config, git_sha)
+    # Never race a rebuild that could remove the prefix being verified.
+    queue = run_checked(ssh_command(ssh_target, [
+        "sh", "-c", 'squeue -h -u "$USER" -o "%j"',
+    ]), "environment verification queue check").stdout.splitlines()
+    if any(name.strip() in {"splatad-build-env", "splatad-verify-env"} for name in queue):
+        raise RuntimeError("an environment build/verification is already queued or running")
+    run_checked(ssh_command(ssh_target, [
+        "test", "-f", f"{stage_root}/envs/{env_name}/viking-activate.sh",
+    ]), "compiled environment activation script")
+    code_dir = stage_code(ssh_target, stage_root, git_sha)
+    settings = validation_settings(config, resource_key)
+    partition, gres, cpus, memory_gb = query_validation_allocation(config, ssh_target, settings)
+    batch_script = "verify_env.sbatch"
+    if gres is None:
+        # CPU tests can verify new source only after this exact recipe environment
+        # has already passed native GPU verification. They never create readiness markers.
+        require_built_environment(config, ssh_target, stage_root, git_sha)
+        batch_script = "test_cpu.sbatch"
+    log_dir = f"{stage_root}/envs/logs"
+    run_checked(ssh_command(ssh_target, ["mkdir", "-p", log_dir]), "verification log directory")
+    script_path = f"{log_dir}/{env_name}-verify-{git_sha[:SHORT_SHA_LENGTH]}.sbatch"
+    write_remote_file(ssh_target, script_path, build_job_script({
+        "STAGE_ROOT": stage_root, "CODE_DIR": code_dir, "ENV_NAME": env_name,
+        "GIT_SHA": git_sha, "MICROMAMBA_VERSION": config["micromamba_version"],
+    }, f"{code_dir}/scripts/slurm/{batch_script}"))
+    job_id = submit_sbatch(ssh_target, build_sbatch_command(
+        partition=partition, gres=gres, cpus=cpus, memory_gb=memory_gb,
+        time_limit=settings["time_limit"], job_name="splatad-verify-env",
+        output_path=f"{log_dir}/{env_name}-verify-%j.out", job_script_path=script_path,
+        excluded_nodes=config.get("excluded_nodes", ()),
+    ))
+    print(f"submitted verification job {job_id}; log {log_dir}/{env_name}-verify-{job_id}.out")
+    return job_id
+
+
+def submit_radar_preparation(config: Dict[str, Any], session: str, profile: str,
+                              afterok: Optional[str] = None) -> str:
+    """Submit immutable train-only radar anchor construction on CPU; return its job ID.
+
+    Args:
+        config: Slurm config; session/profile: existing canonical identifiers.
+        afterok: Optional numeric dependency on successful source validation.
+
+    Returns:
+        Slurm job ID. No downloads, calibration or numerical work run on the login node.
+    """
+    check_clean_tree()
+    if RUN_ID_PATTERN.fullmatch(session) is None or profile not in config["profiles"]:
+        raise ValueError("invalid radar preparation session/profile")
+    if config["profiles"][profile].get("radar_loss_only") is not True:
+        raise ValueError("prepare-radar requires an explicit loss-only profile")
+    profile = config["profiles"][profile].get("radar_anchor_profile", profile)
+    if profile not in config["profiles"] or config["profiles"][profile].get("radar_loss_only") is not True:
+        raise ValueError("radar anchor profile must name an existing loss-only profile")
+    if afterok is not None and not re.fullmatch(r"[0-9]+", afterok):
+        raise ValueError("--afterok accepts one numeric job id")
+    target = resolve_ssh_target(config["ssh_host"])
+    stage_root = resolve_remote_stage_root(config, target)
+    git_sha = get_head_sha()
+    marker = require_built_environment(config, target, stage_root, git_sha)
+    code_dir = f"{stage_root}/code/{git_sha}"
+    if run_command(ssh_command(target, ["test", "-f", f"{code_dir}/scripts/07_build_radar_seeds.py"])).returncode:
+        stage_code(target, stage_root, git_sha)
+    partition, gres, cpus, memory_gb = query_validation_allocation(config, target, config["validation_cpu"])
+    log_dir = f"{stage_root}/radar-inputs/logs"
+    run_checked(ssh_command(target, ["mkdir", "-p", log_dir]), "radar artifact log directory")
+    script_path = f"{log_dir}/{session}-{profile}-{git_sha}-job.sbatch"
+    write_remote_file(target, script_path, build_job_script({"STAGE_ROOT": stage_root, "CODE_DIR": code_dir,
+        "ENV_PREFIX": marker["env_prefix"], "SESSION": session, "PROFILE": profile},
+        f"{code_dir}/scripts/slurm/prepare_radar.sbatch"))
+    arguments = build_sbatch_command(partition, gres, cpus, memory_gb, config["render_only"]["time_limit"],
+        "splatad-radar-anchors", f"{log_dir}/{session}-{profile}-%j.out", script_path,
+        excluded_nodes=config.get("excluded_nodes", ()))
+    if afterok is not None:
+        arguments.insert(-1, f"--dependency=afterok:{afterok}")
+    job_id = submit_sbatch(target, arguments)
+    print(f"submitted radar anchor job {job_id}; artifact {stage_root}/radar-inputs/{session}/{profile}/{git_sha}")
+    return job_id
+
+
+def submit_remote_run(config: Dict[str, Any], session: str, profile: str,
+                      preflight_only: bool, reviewed_preflight: bool = False,
+                      afterok: Optional[str] = None, resource_key: Optional[str] = None,
+                      hold_for_budget: bool = False) -> str:
+    """Submit validation or training against remote data; return the job id.
+
+    Args:
+        config: Slurm settings; resources are sized from the selected profile's GPU.
+        session: Workdisk dataset name, restricted to a safe path component.
+        profile: Committed training profile name.
+        preflight_only: Run native tests, data gates, and overlays without training.
+        reviewed_preflight: Explicit acknowledgement that matching overlays were inspected.
+        afterok: Optional numeric success dependency, e.g. data prep before preflight or smoke before full training.
+        resource_key: Optional configured validation allocation; forbidden for optimization.
+        hold_for_budget: Submit training held until the measured-budget release job succeeds.
+    """
+    check_clean_tree()
+    if not preflight_only and not reviewed_preflight:
+        raise ValueError("inspect the completed remote-preflight overlays, then pass --reviewed-preflight")
+    if not preflight_only and resource_key is not None:
+        raise ValueError("validation resource overrides cannot be used for training")
+    if preflight_only and hold_for_budget:
+        raise ValueError("budget holds apply to training only")
+    if afterok is not None and not re.fullmatch(r"[0-9]+", afterok):
+        raise ValueError("--afterok accepts one numeric job id")
+    if RUN_ID_PATTERN.fullmatch(session) is None or profile not in config["profiles"]:
+        raise ValueError("invalid remote session/profile")
+    profile_settings = config["profiles"][profile]
+    if profile_settings.get("radar_loss_only"):
+        # Resolve its structural invariants before allocating any GPU/preflight job.
+        profile_radar_lidar_options(profile_settings, {}, "stage", session, profile, "revision")
+    profile_eval_cadence(profile_settings)
+    ssh_target = resolve_ssh_target(config["ssh_host"])
+    stage_root = resolve_remote_stage_root(config, ssh_target)
+    git_sha = get_head_sha()
+    try:
+        env_marker = require_built_environment(config, ssh_target, stage_root, git_sha)
+    except RuntimeError:
+        if afterok is None or not preflight_only:
+            raise
+        # A dependent preflight may queue before recovery finishes. The batch
+        # script still requires the completion marker when it actually starts.
+        env_marker = {"env_prefix": f"{stage_root}/envs/{environment_name(config, git_sha)}"}
+    code_dir = f"{stage_root}/code/{git_sha}"
+    # Snapshots are immutable; do not rsync-delete test inputs of a running preflight.
+    if run_command(ssh_command(ssh_target, ["test", "-f", f"{code_dir}/scripts/slurm/remote_run.py"])).returncode:
+        stage_code(ssh_target, stage_root, git_sha)
+    preflight_dir = f"{stage_root}/preflights/{session}/{profile}/{git_sha}"
+    if not preflight_only:
+        run_checked(ssh_command(ssh_target, ["test", "-f", f"{preflight_dir}/validation.json"]),
+                    "completed preflight receipt (run remote-preflight first)")
+    run_id = build_run_id(session, profile, git_sha, datetime.datetime.now(datetime.timezone.utc))
+    output_dir = preflight_dir if preflight_only else f"{stage_root}/runs/{run_id}"
+    run_checked(ssh_command(ssh_target, ["mkdir", "-p", output_dir]), "remote job directory")
+    script_path = f"{output_dir}/job.sbatch"
+    write_remote_file(ssh_target, script_path, build_job_script({
+        "STAGE_ROOT": stage_root, "CODE_DIR": code_dir, "ENV_PREFIX": env_marker["env_prefix"],
+        "SESSION": session, "PROFILE": profile, "GIT_SHA": git_sha, "RUN_ID": run_id,
+        "PREFLIGHT_ONLY": str(preflight_only),
+    }, f"{code_dir}/scripts/slurm/remote_run.sbatch"))
+    # Validation does not cache training images or run optimization; use the
+    # configured render GPU so full-scene checks do not queue behind A6000 training.
+    resource_settings = validation_settings(config, resource_key) if preflight_only else profile_settings
+    if preflight_only:
+        partition, gres, cpus, memory_gb = query_validation_allocation(config, ssh_target, resource_settings)
+    else:
+        partition = config["partition"]
+        gres = resolve_job_gres(config, resource_settings)
+        cpus, memory_gb = query_node_resources(config, ssh_target, gres)
+    time_limit = resource_settings["time_limit"]
+    sbatch_arguments = build_sbatch_command(
+        partition=partition, gres=gres, cpus=cpus, memory_gb=memory_gb,
+        time_limit=time_limit, job_name="splatad-preflight" if preflight_only else f"splatad-{session}",
+        output_path=f"{output_dir}/slurm-%j.out", job_script_path=script_path,
+        excluded_nodes=config.get("excluded_nodes", ()),
+    )
+    if afterok is not None:
+        sbatch_arguments.insert(-1, f"--dependency=afterok:{afterok}")
+    if hold_for_budget:
+        sbatch_arguments.insert(-1, "--hold")
+    job_id = submit_sbatch(ssh_target, sbatch_arguments)
+    if not preflight_only:
+        SUBMITTED_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        needs_header = not SUBMITTED_LEDGER_PATH.exists()
+        with SUBMITTED_LEDGER_PATH.open("a") as ledger:
+            if needs_header:
+                ledger.write("\t".join(LEDGER_COLUMNS) + "\n")
+            ledger.write("\t".join([run_id, job_id, git_sha, session, profile,
+                                    datetime.datetime.now(datetime.timezone.utc).strftime(RUN_TIMESTAMP_FORMAT)]) + "\n")
+    print(f"submitted remote job {job_id}; outputs {output_dir}")
+    return job_id
+
+
 def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: bool,
                now_utc: Optional[datetime.datetime] = None,
                allow_split_change_reason: Optional[str] = None) -> Tuple[str, str]:
@@ -1732,13 +2005,15 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
     if profile not in config["profiles"]:
         raise KeyError(f"unknown profile {profile!r}; known: {sorted(config['profiles'])}")
     profile_settings = config["profiles"][profile]
-    train_method, radar_inputs_dir, radar_seed_opacity = session_radar_initialization(session)
+    if profile_settings.get("radar_loss_only"):
+        raise ValueError("loss-only workdisk profiles require submit-remote with a verified radar artifact")
     # The eval cadence is checked before any ssh/sbatch, so a profile too short for its minimum fails early.
     minimum_eval_points, steps_per_eval_all_images = profile_eval_cadence(profile_settings)
     # The split fractions too (profile overrides, else the dataset's), so a bad value fails early.
     train_fraction, train_fraction_override, core_fraction = profile_split_fractions(profile_settings, session)
     test_split_method = session_test_split_method(session)
     render_fraction = profile_test_render_fraction(profile_settings, session)
+    radar_lidar_options = session_radar_lidar_options(session)
     # And the GPU type (the profile's gres, else the default).
     job_gres = resolve_job_gres(config, profile_settings)
     ssh_target = resolve_ssh_target(config["ssh_host"])
@@ -1780,10 +2055,7 @@ def submit_run(config: Dict[str, Any], session: str, profile: str, skip_gates: b
                               test_render_fraction=render_fraction,
                               minimum_eval_points=minimum_eval_points,
                               steps_per_eval_all_images=steps_per_eval_all_images,
-                              train_method=train_method,
-                              radar_inputs_dir=radar_inputs_dir,
-                              radar_seed_opacity=(radar_seed_opacity
-                                                  if train_method == "splatad-radar-init" else None)),
+                              radar_lidar_options=radar_lidar_options),
         f"{absolute_stage_root}/code/{git_sha}/{RUN_SCRIPT_RELATIVE_PATH}"))
     sbatch_arguments = build_sbatch_command(
         partition=config["partition"], gres=job_gres, cpus=cpus, memory_gb=memory_gb,
@@ -2036,8 +2308,9 @@ def resume_run(config: Dict[str, Any], run_id: str, skip_gates: bool) -> str:
         raise ValueError(f"run {run_id} has a queued or running job; wait for it or scancel it first")
     # Step 4: the final checkpoint (step max_num_iterations - 1, nerfstudio's step-%09d name) must exist.
     final_step = int(run_exports["MAX_NUM_ITERATIONS"]) - 1
-    train_method = run_exports.get("TRAIN_METHOD", "splatad")
-    checkpoint_path = (f"{remote_run_dir}/train/{run_exports['SESSION']}/{train_method}/{run_id}/nerfstudio_models/"
+    # Older stock runs predate TRAIN_METHOD; registered extensions use their method name.
+    training_method = run_exports.get("TRAIN_METHOD", "splatad")
+    checkpoint_path = (f"{remote_run_dir}/train/{run_exports['SESSION']}/{training_method}/{run_id}/nerfstudio_models/"
                        f"step-{final_step:09d}.ckpt")
     if run_command(ssh_command(ssh_target, ["test", "-f", checkpoint_path])).returncode != 0:
         raise RuntimeError(f"final checkpoint {checkpoint_path} is missing; resubmit the run instead")
@@ -2397,10 +2670,15 @@ def job_script_owner(script_path_text: str) -> Optional[Tuple[str, str]]:
         return None
     # Check the nested layouts first: their run folder sits one or two levels higher.
     if script_path.parent.parent.name == RERENDERS_DIRECTORY_NAME:
-        return script_path.parent.parent.parent.name, "render"
-    if script_path.parent.name == RESUME_DIRECTORY_NAME:
-        return script_path.parent.parent.name, "resume"
-    return script_path.parent.name, "train"
+        run_directory, kind = script_path.parent.parent.parent, "render"
+    elif script_path.parent.name == RESUME_DIRECTORY_NAME:
+        run_directory, kind = script_path.parent.parent, "resume"
+    else:
+        run_directory, kind = script_path.parent, "train"
+    # Preflights also use job.sbatch; only children of runs are training records.
+    if run_directory.parent.name != "runs":
+        return None
+    return run_directory.name, kind
 
 
 def parse_tracked_jobs(squeue_text: str) -> List[Dict[str, str]]:
@@ -2568,6 +2846,20 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     gates_parser = subparsers.add_parser("gates", help="tests + contract + clean tree")
     gates_parser.add_argument("--session", required=True)
     subparsers.add_parser("build-env", help="build the native environment (once per recipe)")
+    verification_parser = subparsers.add_parser("verify-env", help="recover full validation of an already compiled native env")
+    verification_parser.add_argument("--resources", choices=("render_only", "validation_gpu", "validation_cpu"))
+    radar_parser = subparsers.add_parser("prepare-radar", help="build calibrated train-only loss anchors on CPU")
+    radar_parser.add_argument("--session", required=True)
+    radar_parser.add_argument("--profile", required=True)
+    radar_parser.add_argument("--afterok")
+    for remote_command in ("remote-preflight", "submit-remote"):
+        remote_parser = subparsers.add_parser(remote_command, help="use workdisk data and native cluster validation")
+        remote_parser.add_argument("--session", required=True)
+        remote_parser.add_argument("--profile", required=True)
+        remote_parser.add_argument("--reviewed-preflight", action="store_true")
+        remote_parser.add_argument("--afterok", help="start only after the specified job succeeds")
+        remote_parser.add_argument("--resources", choices=("render_only", "validation_gpu", "validation_cpu"))
+        remote_parser.add_argument("--hold-for-budget", action="store_true")
     stage_parser = subparsers.add_parser("stage", help="copy data and code to the cluster")
     stage_parser.add_argument("--session", required=True)
     submit_parser = subparsers.add_parser("submit", help="sbatch a run")
@@ -2608,6 +2900,15 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         config = load_slurm_config(arguments.config)
         if arguments.command == "build-env":
             build_environment(config)
+        elif arguments.command == "verify-env":
+            verify_environment(config, arguments.resources)
+        elif arguments.command == "prepare-radar":
+            submit_radar_preparation(config, arguments.session, arguments.profile, arguments.afterok)
+        elif arguments.command in {"remote-preflight", "submit-remote"}:
+            submit_remote_run(config, arguments.session, arguments.profile,
+                              arguments.command == "remote-preflight", arguments.reviewed_preflight,
+                              arguments.afterok, arguments.resources,
+                              **({"hold_for_budget": True} if arguments.hold_for_budget else {}))
         elif arguments.command == "stage":
             stage_session(config, arguments.session)
         elif arguments.command == "submit":

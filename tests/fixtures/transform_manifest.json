@@ -30,12 +30,16 @@
     "T34",
     "T35",
     "T36",
+    "T37",
     "T39",
     "T4",
     "T40",
     "T41",
+    "T42",
+    "T43",
     "T45",
     "T46",
+    "T47",
     "T49",
     "T5",
     "T50",
@@ -45,6 +49,7 @@
     "T54",
     "T55",
     "T56",
+    "T57",
     "T58",
     "T59",
     "T6",
@@ -61,6 +66,12 @@
     "T70",
     "T71",
     "T72",
+    "T73",
+    "T74",
+    "T75",
+    "T76",
+    "T77",
+    "T78",
     "T7a",
     "T7b",
     "T7c",
@@ -179,19 +190,19 @@
     },
     {
       "id": "T34",
-      "qualified_name": "viking_splatad.radar_init.accumulate.accumulate_radar_points"
+      "qualified_name": "viking_splatad.radar_init.anchors.accumulate_radar"
     },
     {
       "id": "T35",
-      "qualified_name": "viking_splatad.radar_init.select.select_radar_candidates"
+      "qualified_name": "viking_splatad.radar_init.anchors.persistent_anchors"
     },
     {
       "id": "T36",
-      "qualified_name": "viking_splatad.radar_init.seeds.build_seed_gaussians"
+      "qualified_name": "viking_splatad.radar_init.anchors.resolution_covariances"
     },
     {
       "id": "T39",
-      "qualified_name": "viking_splatad.splatad.viking_conversions.transform_radar_seeds_to_dataparser"
+      "qualified_name": "viking_splatad.radar_init.artifact.transform_anchor_arrays"
     },
     {
       "id": "T4",
@@ -199,11 +210,19 @@
     },
     {
       "id": "T40",
-      "qualified_name": "viking_splatad.splatad.viking_conversions.crop_radar_seeds_to_scene_and_time"
+      "qualified_name": "viking_splatad.radar_init.artifact.crop_anchor_arrays"
     },
     {
       "id": "T41",
       "qualified_name": "viking_splatad.splatad.radar_init_model.covariance_to_log_scales_and_quaternions"
+    },
+    {
+      "id": "T42",
+      "qualified_name": "viking_splatad.splatad.radar_lidar_loss.radar_support_gate"
+    },
+    {
+      "id": "T43",
+      "qualified_name": "viking_splatad.splatad.radar_lidar_loss.compute_radar_lidar_loss"
     },
     {
       "id": "T45",
@@ -212,6 +231,10 @@
     {
       "id": "T46",
       "qualified_name": "viking_splatad.eval.detection.neighbourhood_point_precision"
+    },
+    {
+      "id": "T47",
+      "qualified_name": "viking_splatad.viz.radar_bev.bev_pixels"
     },
     {
       "id": "T49",
@@ -248,6 +271,10 @@
     {
       "id": "T56",
       "qualified_name": "viking_splatad.eval.gaussian_occupancy.checkpoint_gaussians_to_map_frame"
+    },
+    {
+      "id": "T57",
+      "qualified_name": "viking_splatad.eval.hidden_geometry.gaussian_occupancy_at_centres"
     },
     {
       "id": "T58",
@@ -312,6 +339,30 @@
     {
       "id": "T72",
       "qualified_name": "viking_splatad.dataset.run_split.restrict_test_to_render_subset"
+    },
+    {
+      "id": "T73",
+      "qualified_name": "viking_splatad.radar_init.clock.doppler_ego_velocity"
+    },
+    {
+      "id": "T74",
+      "qualified_name": "viking_splatad.radar_init.clock.fit_affine_clock"
+    },
+    {
+      "id": "T75",
+      "qualified_name": "viking_splatad.radar_init.clock.safe_clock_fit_mask"
+    },
+    {
+      "id": "T76",
+      "qualified_name": "viking_splatad.radar_init.clock.regularize_velocity_noise"
+    },
+    {
+      "id": "T77",
+      "qualified_name": "viking_splatad.radar_init.clock.clock_search_domain"
+    },
+    {
+      "id": "T78",
+      "qualified_name": "viking_splatad.eval.hidden_geometry.recorded_ray_evidence"
     },
     {
       "id": "T7a",

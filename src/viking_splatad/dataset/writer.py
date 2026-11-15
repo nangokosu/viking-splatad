@@ -16,6 +16,7 @@ Layout under ``root``::
 
 import json
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -219,11 +220,43 @@ def write_dataset(root: Path, dataset: IntermediateDataset) -> None:
             write_frame_file(root, NO_RETURN_DIRECTORY, name, frame_index, timestamp_ns, rows)
 
 
-def read_dataset(root: Path) -> IntermediateDataset:
+class DiskFrameSequence(Sequence):
+    """Read-only frame sequence that decodes on access without retaining decoded frames."""
+
+    def __init__(self, paths: List[Path], kind: str) -> None:
+        """Store ordered frame paths and sensor kind; no frame content is loaded."""
+        self.paths = tuple(paths)
+        self.kind = kind
+
+    def __len__(self) -> int:
+        """Return the number of stored paths without opening files."""
+        return len(self.paths)
+
+    def __getitem__(self, frame_index):
+        """Decode one indexed frame, or the requested slice; return arrays without caching.
+
+        Integer access uses O(one frame) memory. Slice access materializes only
+        the requested slice. A missing/unreadable image raises ValueError so
+        validation records the same dataset-load failure as unreadable arrays.
+        """
+        if isinstance(frame_index, slice):
+            return [self[item_index] for item_index in range(*frame_index.indices(len(self)))]
+        frame_path = self.paths[frame_index]
+        if self.kind != "camera":
+            return np.load(frame_path)
+        image = cv2.imread(str(frame_path))
+        if image is None:
+            raise ValueError(f"cannot decode image: {frame_path}")
+        return image
+
+
+def read_dataset(root: Path, lazy_frames: bool = False) -> IntermediateDataset:
     """Read a dataset written by ``write_dataset``, rebuilding the same dataclasses.
 
     Args:
         root: Dataset directory.
+        lazy_frames: Decode frames only when accessed, retaining no decoded-frame
+            cache. False preserves the original eager mutable-list API.
 
     Returns:
         The reconstructed ``IntermediateDataset``.
@@ -245,10 +278,13 @@ def read_dataset(root: Path) -> IntermediateDataset:
         name, kind = sensor["name"], sensor["kind"]
         frame_files = _list_frame_files(root / kind / name)
         # Load frame content in index order (cv2.imread yields BGR, matching what was written).
-        frames = [
-            cv2.imread(str(path)) if kind == "camera" else np.load(path)
-            for _, _, path in frame_files
-        ]
+        if lazy_frames:
+            frames = DiskFrameSequence([path for _, _, path in frame_files], kind)
+        else:
+            frames = [
+                cv2.imread(str(path)) if kind == "camera" else np.load(path)
+                for _, _, path in frame_files
+            ]
         streams[name] = SensorStream(
             sensor_name=name,
             kind=kind,
@@ -273,7 +309,8 @@ def read_dataset(root: Path) -> IntermediateDataset:
         no_return_streams[sensor["name"]] = NoReturnStream(
             frame_indices=np.array([record[0] for record in no_return_files], dtype=np.int64),
             frame_timestamps_ns=np.array([record[1] for record in no_return_files], dtype=np.int64),
-            frames=[np.load(path) for _, _, path in no_return_files],
+            frames=(DiskFrameSequence([path for _, _, path in no_return_files], "lidar") if lazy_frames
+                    else [np.load(path) for _, _, path in no_return_files]),
         )
     lidar = manifest["lidar"]
     # JSON stores tuples/arrays as lists and int keys as strings; restore dtypes and key types.

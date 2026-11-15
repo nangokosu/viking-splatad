@@ -1,4 +1,6 @@
-# Plan: June Scene A, SplatAD (B) vs SplatAD + radar (R)
+# Original plan: June Scene A, SplatAD (B) vs initialization + radar loss (R)
+
+Current scope (user decision 2026-11-11): **B versus loss-only L, no additional radar Gaussians**. See [the current implementation plan](research/proposal_implementation_plan.md). Initialization and optional extensions below are historical plans, not authorization to enable them.
 
 > **Ground rules**
 > - **No May ↔ June mapping.** No ICP and no cross-run registration. Poses and labels are never transferred between runs. Each run is processed and evaluated in its own frame.

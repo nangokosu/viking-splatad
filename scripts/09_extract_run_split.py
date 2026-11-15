@@ -318,7 +318,9 @@ def build_split_record(run_dir: Path, dataset_dir_argument: Optional[Path]) -> T
     if RENDERS_COMPLETE_JOB_INFO_KEY not in job_info:
         raise RunNotDocumented(f"run did not finish rendering (no {RENDERS_COMPLETE_JOB_INFO_KEY})", EXIT_INCOMPLETE)
     session = job_info["SESSION"]
-    config_path = run_dir / "train" / session / "splatad" / job_info["RUN_ID"] / "config.yml"
+    # Registered radar methods have their own output directory; legacy runs are stock.
+    training_method = job_info.get("TRAIN_METHOD", "splatad")
+    config_path = run_dir / "train" / session / training_method / job_info["RUN_ID"] / "config.yml"
     if not config_path.is_file():
         raise RunNotDocumented(f"{config_path} is missing", EXIT_INCOMPLETE)
     # Step 2: every rendered split must have camera and lidar outputs.

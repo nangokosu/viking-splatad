@@ -1,40 +1,8 @@
-"""Turn selected radar voxels into colored anisotropic Gaussian seeds (T36)."""
-
-from dataclasses import dataclass
+"""Paint radar seed colours from undistorted train camera frames (camera projection and occlusion)."""
 
 import numpy as np
 
-from viking_splatad.radar_init.select import RadarCandidateVoxels
-from viking_splatad.registry import transform
-
-# Neutral mid-grey is used only when no unobstructed train-camera sample exists.
 NEUTRAL_GREY_RGB = np.array([127, 127, 127], dtype=np.uint8)
-
-
-@dataclass(frozen=True)
-class RadarSeedGaussians:
-    """Complete map-frame radar seed artifact arrays."""
-
-    means: np.ndarray
-    covariances: np.ndarray
-    rgb: np.ndarray
-    sensor_origins: np.ndarray
-    support_count: np.ndarray
-    time_spans_s: np.ndarray
-
-
-def _ray_basis(unit_ray: np.ndarray) -> np.ndarray:
-    """Build a right-handed radial/azimuth/elevation basis for one unit ray."""
-    reference_axis = np.array([0.0, 0.0, 1.0])
-    if abs(float(unit_ray @ reference_axis)) > 1.0 - np.sqrt(np.finfo(np.float64).eps):
-        reference_axis = np.array([1.0, 0.0, 0.0])
-    azimuth_axis = np.cross(reference_axis, unit_ray)
-    azimuth_axis /= np.linalg.norm(azimuth_axis)
-    elevation_axis = np.cross(unit_ray, azimuth_axis)
-    basis = np.column_stack([unit_ray, azimuth_axis, elevation_axis])
-    if np.linalg.det(basis) < 0.0:
-        basis[:, -1] *= -1.0
-    return basis
 
 
 def project_map_points(
@@ -114,65 +82,3 @@ def paint_visible_seed_colors(
         colors[seed_index] = image_rgb[row_index, column_index]
         painted[seed_index] = True
     return colors, painted
-
-
-@transform(
-    "T36",
-    "Radar candidate voxels -> colored anisotropic Gaussian seeds from sensor resolution",
-)
-def build_seed_gaussians(
-    candidates: RadarCandidateVoxels,
-    rgb: np.ndarray,
-    range_resolution_m: float,
-    azimuth_resolution_rad: float,
-    elevation_resolution_rad: float,
-) -> RadarSeedGaussians:
-    """Build one Gaussian per radar candidate with covariance in the ray basis.
-
-    ``Sigma = R_ray diag(sigma_r^2, (r*delta_az)^2, (r*delta_el)^2) R_ray^T``.
-
-    Args:
-        candidates: T35 output in the map frame.
-        rgb: uint8 or numeric colors ``[N,3]`` already painted/neutral-filled.
-        range_resolution_m: Radar range resolution (used as radial sigma), metres.
-        azimuth_resolution_rad: Radar azimuth resolution, radians.
-        elevation_resolution_rad: Radar elevation resolution, radians.
-
-    Returns:
-        Complete ``RadarSeedGaussians`` arrays in the map frame.
-    """
-    means = np.asarray(candidates.means_map, dtype=np.float64)
-    origins = np.asarray(candidates.sensor_origins_map, dtype=np.float64)
-    colors = np.asarray(rgb)
-    if means.ndim != 2 or means.shape[1] != 3 or origins.shape != means.shape:
-        raise ValueError("candidate means and origins must both have shape [N,3]")
-    if colors.shape != means.shape or not np.isfinite(colors).all():
-        raise ValueError("rgb must be finite with shape [N,3]")
-    if np.any((colors < 0) | (colors > 255)):
-        raise ValueError("rgb values must lie in [0,255]")
-    if min(range_resolution_m, azimuth_resolution_rad, elevation_resolution_rad) <= 0.0:
-        raise ValueError("radar resolutions must be positive")
-    ray_vectors = means - origins
-    ranges_m = np.linalg.norm(ray_vectors, axis=1)
-    if np.any(ranges_m <= 0.0):
-        raise ValueError("every radar candidate must have positive range")
-    covariances = np.empty((len(means), 3, 3), dtype=np.float64)
-    for seed_index, (ray_vector, range_m) in enumerate(zip(ray_vectors, ranges_m)):
-        unit_ray = ray_vector / range_m
-        ray_basis = _ray_basis(unit_ray)
-        standard_deviations = np.array([
-            range_resolution_m,
-            range_m * np.tan(azimuth_resolution_rad),
-            range_m * np.tan(elevation_resolution_rad),
-        ])
-        covariances[seed_index] = (
-            ray_basis @ np.diag(standard_deviations**2) @ ray_basis.T
-        )
-    return RadarSeedGaussians(
-        means=means,
-        covariances=covariances,
-        rgb=np.rint(colors).astype(np.uint8),
-        sensor_origins=origins,
-        support_count=np.asarray(candidates.support_counts, dtype=np.int64),
-        time_spans_s=np.asarray(candidates.time_spans_s, dtype=np.float64),
-    )

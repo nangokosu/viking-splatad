@@ -19,9 +19,17 @@ PLANNED_TRANSFORM_IDS = frozenset(
         "T11", "T12", "T13", "T14", "T15", "T16", "T17", "T18", "T19",
         "T20", "T21", "T22", "T23", "T24", "T25", "T26", "T27", "T28",
         "T29", "T30", "T31", "T32", "T33",
-        # Radar-guided Gaussian initialization: train-only accumulation, label-free
-        # selection, seed construction, dataparser conversion/cropping and model append.
-        "T34", "T35", "T36", "T39", "T40", "T41",
+        # Radar anchors (one artifact feeds both radar uses): train-only accumulation,
+        # resolution covariances, persistence, dataparser frame transform and crop.
+        "T34", "T35", "T36", "T39", "T40",
+        # Radar seed colours painted from the nearest unobstructed train camera frame.
+        "T37",
+        # Radar-initialized Gaussians: anchor covariance -> SplatAD scales and quaternions.
+        "T41",
+        # Radar opacity loss: Mahalanobis support gate and opacity supervision.
+        "T42", "T43",
+        # Train-safe radar clock calibration primitives, independent of labels.
+        "T73", "T74", "T75", "T76", "T77",
         # Sweep period covering every extracted sweep (fix for the June 20-22 contract failure).
         "T49",
         # Rendered lidar scans: dataparser-frame pose -> map-frame pose (scripts/08_*).
@@ -30,7 +38,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # their 2000 m placeholders in the dataparser (splatad/viking_conversions.py).
         "T51", "T52", "T53", "T54", "T55",
         # P2: a run's checkpoint Gaussians in the map frame (eval/gaussian_occupancy.py).
-        "T56",
+        "T56", "T57",
+        # Evaluation-only recorded-beam evidence for matched hidden-trunk cells.
+        "T78",
         # A run's exact train/test frames rebuilt without torch (dataset/run_split.py,
         # scripts/09_extract_run_split.py): neurad's time window and per-sensor LINSPACE split.
         "T58", "T59",
@@ -55,7 +65,7 @@ PLANNED_TRANSFORM_IDS = frozenset(
         "T66",
         # P1 semantic occupancy of rendered test lidar vs GT cuboids (eval/detection.py):
         # per-class cuboid detection rate and neighbourhood point precision (PLAN §5, T46 part a).
-        "T45", "T46",
+        "T45", "T46", "T47",
         # Rendered lidar npz -> points (eval/rendered_pointcloud.py): ungated (accumulation) points
         # rebuilt from the ray raster, and lidar-frame points -> map frame -> GT voxel grid.
         "T67", "T68",

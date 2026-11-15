@@ -1,4 +1,4 @@
-"""Artifact, dataparser conversion and model parameter tests (T39-T41)."""
+"""Radar-initialization model parameter, ground-truth isolation and dataparser tests (T41)."""
 
 from pathlib import Path
 
@@ -6,17 +6,7 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 
-from viking_splatad.radar_init.artifact import (
-    RADAR_ARRAYS_FILENAME,
-    load_radar_seed_artifact,
-    write_radar_seed_artifact,
-)
-from viking_splatad.radar_init.seeds import RadarSeedGaussians
 from viking_splatad.splatad.radar_init_model import covariance_to_log_scales_and_quaternions
-from viking_splatad.splatad.viking_conversions import (
-    crop_radar_seeds_to_scene_and_time,
-    transform_radar_seeds_to_dataparser,
-)
 
 
 def _neurad_ready() -> bool:
@@ -26,62 +16,6 @@ def _neurad_ready() -> bool:
     except ImportError:
         return False
     return hasattr(LidarType, "OUSTER_OS0_32")
-
-
-def _seed_arrays() -> RadarSeedGaussians:
-    """Return two small positive-definite seeds for artifact tests."""
-    return RadarSeedGaussians(
-        means=np.array([[1.0, 2.0, 3.0], [20.0, 0.0, 0.0]]),
-        covariances=np.array([np.diag([1.0, 4.0, 9.0]), np.eye(3)]),
-        rgb=np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint8),
-        sensor_origins=np.zeros((2, 3)),
-        support_count=np.array([2, 1], dtype=np.int64),
-        time_spans_s=np.array([[10.0, 12.0], [30.0, 31.0]]),
-    )
-
-
-def test_artifact_round_trip_and_hash_corruption_failure(tmp_path):
-    """Every file is hashed and one changed archive byte is rejected before loading."""
-    artifact_directory = tmp_path / "radar_inputs"
-    write_radar_seed_artifact(
-        artifact_directory, _seed_arrays(), "june_tall_grass",
-        {"split_digest": "known"}, {"range_resolution_m": 0.1},
-    )
-    arrays, metadata = load_radar_seed_artifact(artifact_directory, "june_tall_grass")
-    np.testing.assert_array_equal(arrays["rgb"], _seed_arrays().rgb)
-    assert metadata["seed_count"] == 2
-    array_path = artifact_directory / RADAR_ARRAYS_FILENAME
-    array_path.write_bytes(array_path.read_bytes() + b"corruption")
-    with pytest.raises(ValueError, match="hash mismatch"):
-        load_radar_seed_artifact(artifact_directory, "june_tall_grass")
-
-
-@pytest.mark.covers("T39")
-def test_radar_seed_similarity_transform_rotates_covariance():
-    """T39 applies translation/scale to points and scale-squared rotation to covariance."""
-    rotation = Rotation.from_euler("z", 90.0, degrees=True).as_matrix()
-    transform = np.column_stack([rotation, [10.0, 0.0, 0.0]])
-    arrays = {field_name: np.asarray(getattr(_seed_arrays(), field_name))
-              for field_name in _seed_arrays().__dataclass_fields__}
-    transformed = transform_radar_seeds_to_dataparser(arrays, transform, 2.0)
-    np.testing.assert_allclose(transformed["means"][0], [16.0, 2.0, 6.0], atol=1e-12)
-    expected_covariance = 4.0 * rotation @ arrays["covariances"][0] @ rotation.T
-    np.testing.assert_allclose(transformed["covariances"][0], expected_covariance, atol=1e-12)
-
-
-@pytest.mark.covers("T40")
-def test_crop_prevents_time_and_scene_leakage_and_makes_times_relative():
-    """Only a seed overlapping the train sensor window and AABB reaches metadata."""
-    arrays = {field_name: np.asarray(getattr(_seed_arrays(), field_name))
-              for field_name in _seed_arrays().__dataclass_fields__}
-    cropped, counts = crop_radar_seeds_to_scene_and_time(
-        arrays, 11.0, 4.0, np.array([[0.0, 0.0, 0.0], [5.0, 5.0, 5.0]])
-    )
-    assert counts == {
-        "input": 2, "outside_scene": 1, "outside_time": 1,
-        "retained": 1, "retained_fraction": 0.5,
-    }
-    np.testing.assert_allclose(cropped["time_spans_s"], [[0.0, 1.0]])
 
 
 @pytest.mark.covers("T41")

@@ -1,0 +1,17 @@
+# Hardware values: Viking Hill paper, section 3.1 (Hugin A3 short-range profile).
+# https://arxiv.org/html/2606.19154v1#S3.SS1
+# A uniform full-resolution-cell model is an explicit modeling assumption,
+# not a manufacturer claim that resolution equals standard deviation/FWHM.
+range_cell_m: 0.1
+azimuth_cell_degrees: 1.25
+elevation_cell_degrees: 1.7
+max_range_m: 42.0
+# Conventional statistical operating point, shared by static filtering/clock CI.
+confidence_quantile: 0.95
+# Median distinct-sweep support; two distinct sweeps remain the semantic minimum.
+persistence_quantile: 0.5
+# Derive clock search bounds from actual contiguous training-time corridors,
+# targeting their median available timing margin, independently of Doppler fits.
+# Every selected fit observation must remain train across the entire search box.
+# Boundary/uncertain fits still fail; no clock is assumed synchronized.
+clock_fit_retained_fraction: 0.5

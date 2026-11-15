@@ -591,40 +591,51 @@ def validate_dataset(root: Path) -> ContractReport:
         ``dataset_loadable`` check rather than an exception.
     """
     try:
-        dataset = read_dataset(root)
+        # Checks iterate frames; eager image loading costs ~20 GB on June before
+        # lidar and temporary buffers. Keep only the currently checked frame resident.
+        dataset = read_dataset(root, lazy_frames=True)
+        results = [check(dataset) for check in CONTRACT_CHECKS]
     except (SchemaVersionError, OSError, KeyError, ValueError, zipfile.BadZipFile) as load_error:
         return ContractReport([CheckResult("dataset_loadable", False, str(load_error))])
-    return ContractReport([check(dataset) for check in CONTRACT_CHECKS])
+    return ContractReport(results)
 
 
 def validate_radar_inputs(
-    root: Path, session_name: str, dataset_root: Optional[Path] = None
+    root: Path,
+    session_name: str,
+    dataset_root: Path,
+    expected_split_settings: dict,
+    require_seed_colours: bool,
 ) -> ContractReport:
-    """Validate a versioned radar seed artifact for GPU hand-off.
+    """Validate a radar anchor artifact for GPU hand-off.
+
+    Wraps ``load_verified_anchors``, which checks the artifact's own checksum, its tags, the
+    dataset manifest/poses hashes, the exact profile split, the clock report, the source
+    radar files and every anchor array.
 
     Args:
-        root: Radar artifact directory.
+        root: Radar artifact directory (``<dataset>/radar_inputs/<anchor_profile>``).
         session_name: Session tag the artifact must match.
-        dataset_root: Optional current dataset whose manifest and poses hashes must match.
+        dataset_root: Current intermediate dataset the artifact was built from.
+        expected_split_settings: Split settings of the profile that will consume the artifact.
+        require_seed_colours: True for radar-initialization variants, whose seed Gaussians
+            need a painted ``rgb`` array.
 
     Returns:
-        One-check report covering hashes, tags, arrays and covariance definiteness.
+        One-check report named ``radar_anchor_artifact``.
     """
-    from viking_splatad.radar_init.artifact import load_radar_seed_artifact, sha256_file
+    from viking_splatad.radar_init.artifact import load_verified_anchors
 
     try:
-        arrays, metadata = load_radar_seed_artifact(root, session_name)
-        if dataset_root is not None:
-            provenance = metadata["provenance"]
-            for filename, provenance_name in (
-                ("manifest.json", "manifest_sha256"), ("poses.npz", "poses_sha256")
-            ):
-                if provenance.get(provenance_name) != sha256_file(Path(dataset_root) / filename):
-                    raise ValueError(f"radar artifact {provenance_name} does not match the dataset")
+        # Step 1: full provenance and array verification (raises on any mismatch).
+        arrays, _ = load_verified_anchors(root, dataset_root, session_name, expected_split_settings)
+        # Step 2: radar-initialization variants cannot start without seed colours.
+        if require_seed_colours and "rgb" not in arrays:
+            raise ValueError("radar initialization needs a painted artifact (no rgb array)")
     except (OSError, KeyError, TypeError, ValueError) as validation_error:
         return ContractReport([
-            CheckResult("radar_seed_artifact", False, str(validation_error))
+            CheckResult("radar_anchor_artifact", False, str(validation_error))
         ])
     return ContractReport([
-        CheckResult("radar_seed_artifact", True, f"ok ({len(arrays['means'])} seeds)")
+        CheckResult("radar_anchor_artifact", True, f"ok ({len(arrays['means'])} anchors)")
     ])

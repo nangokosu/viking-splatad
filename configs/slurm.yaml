@@ -65,6 +65,28 @@ env_build:
   # well under that. Refine from sacct Elapsed of the first build.
   time_limit: "0-06:00:00"
 
+validation_gpu:
+  # Validation-only alternative when A4500s are booked. NVIDIA lists RTX A2000
+  # as compute capability 8.6, matching the compiled environment. Never used for
+  # optimization; training profiles and their GPU policy remain unchanged.
+  gres: gpu:rtx_a2000:1
+  # Cached-input full suites measured ~2 min; 15 min leaves room for data checks,
+  # GPU initialization and overlay generation without a two-hour queue request.
+  time_limit: "0-00:15:00"
+
+validation_cpu:
+  # Tests and dataparser overlays do not optimize SplatAD and need no GPU.
+  # Reuse the CPU/RAM budget already exercised on render_only nodes, bounded
+  # by live CPU-node capacity rather than inventing new resource sizes.
+  partition: cpunodes
+  resource_source: render_only
+  time_limit: "0-00:15:00"
+
+radar_runtime_budget:
+  # Allocation headroom only, not a model/loss hyperparameter. The stock full
+  # allocation likewise used roughly twice measured training/rendering time.
+  headroom_factor: 2.0
+
 # Render-only jobs (submit_run.py render, scripts/slurm/render_only.sbatch): guard frames of a finished
 # run, rendered from its checkpoint without training.
 render_only:
@@ -109,19 +131,19 @@ profiles:
     test_block_core_fraction: 0.2
     # ~120 training frames (80% of ~150) x ~25 visits each = 3000 iterations (one image per iteration):
     # enough for a recognisable fit, a tenth of SplatAD's stock 30001.
-    max_num_iterations: 3000
+    max_num_iterations: &smoke_iterations 3000
     # At least 50 whole-stretch evals per run (the user's minimum, 2026-10-26). submit_run.py derives
     # the eval interval k = (N-1)//50 = 59 (T63) and exports it as --steps-per-eval-all-images.
     minimum_eval_points: 50
     # 3000 / 1000 = 3 checkpoints, so a kill mid-run still leaves something to render.
-    steps_per_save: 1000
+    steps_per_save: &smoke_save_interval 1000
     # ns-train --machine.seed (python/numpy/torch RNGs). 42 = nerfstudio's MachineConfig default,
     # so earlier smoke runs used the same value; set here so every run records it. It does not
     # make training bit-exact (float-atomic gradient sums in gsplat/SplatAD and tcnn backward).
     seed: 42
     # Conservative cap, far under the 5-day limit, for 3k iterations plus loading and the render.
     # Refine from the measured train/render timings in job_info.txt and `sacct` Elapsed.
-    time_limit: "0-02:00:00"
+    time_limit: &smoke_time_limit "0-02:00:00"
     # Render only the held-out views (the T72 render subset of the held-out instants): they expose wrong geometry
     # that training views can hide by memorising, and training views are not re-rendered, which
     # keeps the data copied back to the Mac small (user's choice 2026-10-26).
@@ -186,11 +208,11 @@ profiles:
     render_pose_source: test
     # Full resolution, as the smoke: pixel-level misalignment and trunk detail are what we look at.
     render_downscale_factor: 1
-  june_scene_a:
-    # Goal: June Scene A (chunks 20-22 of june_tall_grass, high grass) trained exactly like
-    # may_scene_a: stock SplatAD with lidar + camera (photometric) loss = PLAN §4.3's B+cam, run first
-    # by the user's choice (2026-10-26). Lidar-only core B needs a train-lidar-only switch, not yet here.
-    # Every value below equals may_scene_a's so the two runs differ only in their data.
+  june_scene_a: &june_core_profile
+    train_lidar_only: true
+    # June Scene A core B: lidar-only training with camera-painted initialization.
+    # Older runs of this profile used photometric loss and are B+cam, not this core B.
+    # The iteration budget below still matches May; the reference split is unchanged.
     # Whole extracted recording (~216 s): the session config already cuts it to Scene A.
     # As May: 20001 iterations (the May curves converge by step 20000; schedules unchanged);
     # ~1940 training camera frames x ~10 visits each.
@@ -204,8 +226,33 @@ profiles:
     seed: 42
     # As May: same iteration count on a slightly smaller recording (2153 vs 2401 camera frames),
     # so May's ~2.7 h (measured, scaled to 20001) is an upper bound; 6 h leaves ~2x headroom.
-    time_limit: "0-06:00:00"
+    time_limit: &june_core_time_limit "0-06:00:00"
     # As May: render only the T72 render subset (~22 of June's ~216 held-out sweeps, and the camera frames nearest them).
     render_pose_source: test
     # As May: full resolution.
     render_downscale_factor: 1
+  smoke_a4500_june: &june_smoke_profile
+    # Same short window as the existing smoke, with the June core's lidar-only
+    # objective and session split. A4500 is already approved for smoke runs.
+    <<: *smoke_profile
+    gres: gpu:rtx_a4500:1
+    train_lidar_only: true
+    train_fraction: 0.9
+    test_render_fraction: 0.1
+  june_loss_only:
+    <<: *june_core_profile
+    radar_loss_only: true
+  smoke_a4500_june_loss_only:
+    <<: *june_smoke_profile
+    radar_loss_only: true
+  june_loss_only_smoke:
+    # Full canonical June window: its longer motion trace permits clock calibration.
+    # Shorten optimization only. Full-data caches require the default A6000 allocation.
+    <<: *june_core_profile
+    max_num_iterations: *smoke_iterations
+    steps_per_save: *smoke_save_interval
+    # The measured full B run took 3 h 4 min including its 50 full-scene evals.
+    # This smoke keeps those evals, so reuse the full allocation's time budget.
+    time_limit: *june_core_time_limit
+    radar_loss_only: true
+    radar_anchor_profile: june_loss_only

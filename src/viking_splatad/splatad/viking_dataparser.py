@@ -34,8 +34,6 @@ from viking_splatad.dataset.run_split import (
     restrict_test_to_render_subset,
     select_guard_frames_for_render,
     shared_interleaved_train_test_indices,
-    build_run_split_with_cores,
-    split_digest,
 )
 from viking_splatad.splatad.determinism import (
     deterministic_mode_requested,
@@ -50,10 +48,10 @@ from viking_splatad.splatad.viking_conversions import (
     no_return_placeholder_points,
     open_dataset_view,
     resolve_train_fraction,
-    crop_radar_seeds_to_scene_and_time,
-    transform_radar_seeds_to_dataparser,
 )
-from viking_splatad.radar_init.artifact import load_radar_seed_artifact, sha256_file
+from viking_splatad.radar_init.artifact import (
+    anchor_split, crop_anchor_arrays, load_verified_anchors, parser_split_settings, transform_anchor_arrays,
+)
 
 try:
     import torch
@@ -133,7 +131,7 @@ if NERFSTUDIO_AVAILABLE:
         vertical_beam_divergence: float = 1.5e-3
         """Radians at 1 m; same public default as the PandaSet/py123d parsers (OS0 value unmeasured)."""
         radar_inputs_dir: Optional[Path] = None
-        """Versioned T36 artifact directory, relative to the session root when not absolute.
+        """Map-frame radar anchor artifact directory, relative to the session root when not absolute.
 
         Radar remains metadata rather than a neurad sensor. ``None`` preserves the stock
         dataparser path byte-for-byte; configured artifacts are attached to train only.
@@ -213,78 +211,49 @@ if NERFSTUDIO_AVAILABLE:
                     **(self.config.skip_elevation_channels or {}), lidar_name: ()}
             outputs = super()._generate_dataparser_outputs(split)
             if split == "train" and self.config.radar_inputs_dir is not None:
-                self._attach_train_radar_seeds(outputs, session_root)
+                self._attach_train_radar_anchors(outputs, session_root)
             return outputs
 
-        def _attach_train_radar_seeds(self, outputs, session_root: Path) -> None:
-            """Validate, transform, crop and attach radar seeds to train metadata.
+        def _attach_train_radar_anchors(self, outputs, session_root: Path) -> None:
+            """Verify, transform, crop and attach radar anchors to the train metadata.
+
+            The same artifact feeds both radar uses: seed Gaussians (``rgb`` present) and the
+            opacity-loss anchors. Float geometry is handed over as float32; ``rgb`` stays an
+            integer dtype because the radar-init model divides it by its dtype maximum.
 
             Args:
                 outputs: Train ``DataparserOutputs`` produced by the stock base class.
                 session_root: Intermediate dataset session directory.
 
             Returns:
-                None; ``outputs.metadata`` is updated in place.
+                None; ``outputs.metadata["radar_seeds"]`` is set in place.
             """
+            # Step 1: a relative artifact path lives inside the session directory (so stage rsyncs it).
             radar_inputs_directory = Path(self.config.radar_inputs_dir)
             if not radar_inputs_directory.is_absolute():
                 radar_inputs_directory = session_root / radar_inputs_directory
-            map_arrays, artifact_metadata = load_radar_seed_artifact(
-                radar_inputs_directory, self.config.session_name
-            )
-            provenance = artifact_metadata["provenance"]
-            current_hashes = {
-                "manifest_sha256": sha256_file(session_root / "manifest.json"),
-                "poses_sha256": sha256_file(session_root / "poses.npz"),
-            }
-            for provenance_name, current_digest in current_hashes.items():
-                if provenance.get(provenance_name) != current_digest:
-                    raise ValueError(
-                        f"radar artifact {provenance_name} does not match the current dataset"
-                    )
-            split_frames, _, _, _ = build_run_split_with_cores(
-                self._view,
-                self.config.dataset_start_fraction,
-                self.config.dataset_end_fraction,
-                self.config.train_split_fraction,
-                self.config.max_eval_frames,
-                self.config.test_block_count,
-                self.config.test_block_core_fraction,
-                self.config.test_split_method,
-                self.config.test_render_fraction,
-            )
-            if provenance.get("split_digest") != split_digest(split_frames):
-                raise ValueError("radar artifact split_digest does not match the requested train split")
-            transformed_arrays = transform_radar_seeds_to_dataparser(
-                map_arrays,
-                outputs.dataparser_transform.detach().cpu().numpy(),
-                float(outputs.dataparser_scale),
-            )
-            all_sensor_times = np.concatenate([
-                sensor_times
-                for sensor_times in self._view.sensor_times.values()
-                if len(sensor_times) > 0
-            ])
-            full_start_s = float(all_sensor_times.min())
-            full_duration_s = float(all_sensor_times.max() - full_start_s)
-            window_start_s = full_start_s + self.config.dataset_start_fraction * full_duration_s
-            window_duration_s = (
-                self.config.dataset_end_fraction - self.config.dataset_start_fraction
-            ) * full_duration_s
-            cropped_arrays, crop_counts = crop_radar_seeds_to_scene_and_time(
-                transformed_arrays,
-                window_start_s,
-                window_duration_s,
-                outputs.scene_box.aabb.detach().cpu().numpy(),
-            )
-            if crop_counts["retained"] == 0:
-                raise ValueError("configured radar artifact has no seeds in the train scene/time window")
+            # Step 2: full provenance check against this parser's own split settings.
+            settings = parser_split_settings(self.config)
+            anchors, _ = load_verified_anchors(radar_inputs_directory, session_root,
+                                                self.config.session_name, settings)
+            _, _, time_bounds = anchor_split(self._view, settings)
+            # Step 3: map frame -> dataparser frame (rigid, unit scale), then crop to scene and window.
+            dataparser_transform = outputs.dataparser_transform
+            if hasattr(dataparser_transform, "detach"):
+                dataparser_transform = dataparser_transform.detach().cpu().numpy()
+            anchors = transform_anchor_arrays(anchors, np.asarray(dataparser_transform), outputs.dataparser_scale)
+            anchors = crop_anchor_arrays(anchors, time_bounds, outputs.scene_box.aabb.cpu().numpy(),
+                                          float(outputs.time_offset))
+            if not len(anchors["means"]):
+                raise ValueError("no verified radar anchors remain inside this profile's scene/window")
+            print(f"radar anchors retained: {len(anchors['means'])}; dropped: {int(anchors['dropped_count'])}")
+            # Step 4: geometry as float32 tensors; every other array (rgb, counts, spans) keeps its dtype.
+            float_geometry_keys = {"means", "covariances", "sensor_origins"}
             outputs.metadata["radar_seeds"] = {
-                array_name: torch.from_numpy(np.ascontiguousarray(values))
-                for array_name, values in cropped_arrays.items()
+                key: torch.from_numpy(np.asarray(value, dtype=np.float32) if key in float_geometry_keys
+                                      else np.asarray(value))
+                for key, value in anchors.items()
             }
-            outputs.metadata["radar_seeds"]["artifact_metadata"] = artifact_metadata
-            outputs.metadata["radar_seeds"]["crop_counts"] = crop_counts
 
         def _filter_based_on_time(self, cameras, img_filenames, lidars, pc_filenames, trajectories):
             """Base time window, then the T60 block split (T62 cores) or the T71 shared interleaved split
