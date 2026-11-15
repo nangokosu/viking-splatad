@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation
 
 from viking_splatad.dataset.run_split import file_sha256, split_digest
 from viking_splatad.dataset.writer import FRAME_FILE_PATTERN
+from viking_splatad.extract.timebase import NANOSECONDS_PER_SECOND
 from viking_splatad.extract.pose import Trajectory, interpolate_pose_se3
 from viking_splatad.radar_init.anchors import accumulate_radar, persistent_anchors, resolution_covariances, static_doppler_mask
 from viking_splatad.radar_init.artifact import (
@@ -21,8 +22,12 @@ from viking_splatad.radar_init.artifact import (
 from viking_splatad.radar_init.clock import (
     clock_search_domain, doppler_ego_velocity, fit_affine_clock, regularize_velocity_noise, safe_clock_fit_mask,
 )
-from viking_splatad.radar_init.seeds import paint_anchors_from_train_cameras
+from viking_splatad.radar_init.seeds import DEFAULT_PAINT_FRAMES_PER_CAMERA, paint_anchors_from_train_cameras
 from viking_splatad.splatad.viking_conversions import open_dataset_view
+
+# A uniform distribution over a cell of full width w has standard deviation w / sqrt(12); the
+# reciprocal (w = sqrt(12) * std) recovers a full width from a standard deviation.
+UNIFORM_CELL_STD_DIVISOR = np.sqrt(12)
 
 
 def radar_records(dataset_directory: Path):
@@ -95,7 +100,7 @@ def measure_clock(records, fields, view, lidar_frames, motion, options):
     """
     reference_ns = int(view.manifest["pipeline"]["reference_ns"])
     stamps = np.array([stamp for stamp, _ in records], dtype=np.int64)
-    raw_times = (stamps - reference_ns).astype(np.float64) / 1_000_000_000
+    raw_times = (stamps - reference_ns).astype(np.float64) / NANOSECONDS_PER_SECOND
     centre, offset_limit, drift_limit = clock_search_domain(
         raw_times, lidar_frames, options["clock_fit_retained_fraction"],
     )
@@ -122,7 +127,7 @@ def measure_clock(records, fields, view, lidar_frames, motion, options):
         raise ValueError("insufficient conservatively training-only Doppler observations for clock fitting")
     common_noise, velocity_noise = regularize_velocity_noise(radial_noise, velocity_noise, observed_cell_widths)
     fit_stamps = np.array([stamp for stamp, _ in fit_records], dtype=np.int64)
-    fit_times = (fit_stamps - reference_ns).astype(np.float64) / 1_000_000_000
+    fit_times = (fit_stamps - reference_ns).astype(np.float64) / NANOSECONDS_PER_SECOND
     _, _, reference_times, reference_velocity = motion
     candidates, failures = [], []
     for sign in (1, -1):
@@ -208,8 +213,8 @@ def build_radar_anchor_artifact(dataset_directory: Path, session_config: dict, s
     point_groups, covariance_groups, origin_groups, time_groups, stamp_groups = [], [], [], [], []
     accepted_records = []
     # The source paper reports range/angular resolution, not measurement sigma.
-    # This explicitly assumes uniform cells; range sigma = full bin width/sqrt(12).
-    radial_sigma = options["range_cell_m"] / np.sqrt(12)
+    # This explicitly assumes uniform cells; range sigma = full bin width/UNIFORM_CELL_STD_DIVISOR.
+    radial_sigma = options["range_cell_m"] / UNIFORM_CELL_STD_DIVISOR
     for record, kept, time in zip(records, training, corrected):
         if not kept:
             continue
@@ -221,7 +226,7 @@ def build_radar_anchor_artifact(dataset_directory: Path, session_config: dict, s
         points = points[static & (np.linalg.norm(points, axis=1) <= options["max_range_m"])]
         if not len(points):
             continue
-        raw_seconds = (record[0] - reference_ns) / 1_000_000_000
+        raw_seconds = (record[0] - reference_ns) / NANOSECONDS_PER_SECOND
         map_points, origins, times = accumulate_radar(points, np.full(len(points), raw_seconds), trajectory,
                                                        extrinsic, calibration["offset_seconds"],
                                                        calibration["drift_rate"], calibration["clock_reference_seconds"])
@@ -245,9 +250,12 @@ def build_radar_anchor_artifact(dataset_directory: Path, session_config: dict, s
         (point_groups, covariance_groups, origin_groups, time_groups, stamp_groups)]
     # World-aligned cells use the median full uncertainty width, derived before
     # persistence filtering. No GT, Gaussian support or target-size tuning enters.
-    voxel_size = np.median(np.sqrt(np.diagonal(covariance, axis1=-2, axis2=-1)), axis=0) * np.sqrt(12)
+    voxel_size = np.median(np.sqrt(np.diagonal(covariance, axis1=-2, axis2=-1)), axis=0) * UNIFORM_CELL_STD_DIVISOR
     arrays = persistent_anchors(points, covariance, origins, times, source_stamps, voxel_size,
                                  options["persistence_quantile"])
+    # Zero anchors would give a NaN painted fraction and an opaque JSON error later; stop here.
+    if len(arrays["means"]) == 0:
+        raise ValueError("no persistent radar anchors survived the persistence filter; no artifact published")
     metadata = {"schema": ARTIFACT_SCHEMA, "session": session, "frame": "map",
                 "time_base": "session_reference_seconds", "gaussian_initialization": False,
                 "dataset_manifest_sha256": file_sha256(dataset_directory / "manifest.json"),
@@ -267,17 +275,17 @@ def build_radar_anchor_artifact(dataset_directory: Path, session_config: dict, s
         elevation_cell_rad = np.deg2rad(options["elevation_cell_degrees"])
         camera_name = session_config["camera"]["name"]
         # Occlusion margin = one radar range cell: a LiDAR return within it is the anchor's own surface.
-        arrays["rgb"], painted_mask, camera_stamps_ns = paint_anchors_from_train_cameras(
+        painted_anchors = paint_anchors_from_train_cameras(
             arrays["means"], arrays["time_spans"], view, train_files, camera_name,
             session_config["lidar"]["name"], azimuth_cell_rad, elevation_cell_rad,
-            options["range_cell_m"])
-        # Footprint radius in pixels: f * tan(angular cell), larger of the two axes (as the painter).
-        intrinsics = view.manifest["cameras"][camera_name]
+            options["range_cell_m"],
+            paint_frames_per_camera=options.get("paint_frames_per_camera", DEFAULT_PAINT_FRAMES_PER_CAMERA))
+        arrays["rgb"], painted_mask, camera_stamps_ns = painted_anchors
+        # The painter reports the footprint radius it applied; record that, never a recomputation.
         metadata.update(
             schema=PAINTED_ARTIFACT_SCHEMA, gaussian_initialization=True,
             painting={"camera": camera_name,
-                      "footprint_radius_pixels": float(max(intrinsics["fx"] * np.tan(azimuth_cell_rad),
-                                                           intrinsics["fy"] * np.tan(elevation_cell_rad))),
+                      "footprint_radius_pixels": painted_anchors.footprint_radius_pixels,
                       "occlusion_margin_m": float(options["range_cell_m"]),
                       "painted_fraction": float(painted_mask.mean()),
                       "camera_stamps_ns": [int(stamp) for stamp in camera_stamps_ns]})

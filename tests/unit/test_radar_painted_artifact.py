@@ -12,6 +12,7 @@ from viking_splatad.radar_init.artifact import (
     anchor_split, crop_anchor_arrays, load_verified_anchors, validate_anchor_arrays,
 )
 from viking_splatad.radar_init.build import build_loss_only_artifact
+from viking_splatad.radar_init.seeds import NEUTRAL_GREY_RGB
 from viking_splatad.splatad.viking_conversions import open_dataset_view
 
 PAINTED_SCHEMA = "viking-radar-loss-anchors/2"
@@ -20,6 +21,9 @@ UNPAINTED_SCHEMA = "viking-radar-loss-anchors/1"
 RGB_CHANNELS = 3
 # Camera stamp meaning "this anchor was not painted" (contract of the /2 painting record).
 UNPAINTED_STAMP_NS = -1
+# The only camera stream of tests/unit/test_writer.py::build_synthetic_dataset; painting stamps
+# must be train frames of the camera the painting record names.
+FIXTURE_CAMERA_NAME = "cam_front"
 
 
 def build_unpainted(tmp_path):
@@ -60,7 +64,7 @@ def make_painted(directory, rgb, camera_stamps_ns):
     metadata = json.loads((directory / "radar_inputs.json").read_text())
     metadata["schema"] = PAINTED_SCHEMA
     metadata["gaussian_initialization"] = True
-    metadata["painting"] = {"camera": "synthetic_camera", "footprint_radius_pixels": 1.0,
+    metadata["painting"] = {"camera": FIXTURE_CAMERA_NAME, "footprint_radius_pixels": 1.0,
                             "occlusion_margin_m": 0.5, "painted_fraction": 1.0,
                             "camera_stamps_ns": [int(stamp) for stamp in camera_stamps_ns]}
     metadata["artifact_sha256"] = file_sha256(directory / "radar_seeds.npz")
@@ -221,7 +225,8 @@ def test_unpainted_marker_stamp_is_allowed(tmp_path):
     """Stamp -1 (unpainted anchor) is not a held-out reference and passes."""
     root, settings, output, session = build_unpainted(tmp_path)
     anchor_count = len(load_verified_anchors(output, root, session, settings)[0]["means"])
-    make_painted(output, np.zeros((anchor_count, RGB_CHANNELS), dtype=np.uint8),
+    # An unpainted anchor carries exactly the neutral grey seed colour.
+    make_painted(output, np.repeat(NEUTRAL_GREY_RGB[None, :], anchor_count, axis=0),
                  [UNPAINTED_STAMP_NS] * anchor_count)
     load_verified_anchors(output, root, session, settings)
 

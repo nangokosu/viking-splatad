@@ -10,7 +10,9 @@ from viking_splatad.dataset.run_split import (
     build_run_split_with_cores, file_sha256, nearest_reference_positions, split_digest,
 )
 from viking_splatad.dataset.writer import FRAME_FILE_PATTERN
+from viking_splatad.extract.timebase import NANOSECONDS_PER_SECOND
 from viking_splatad.radar_init.anchors import require_rigid_transform
+from viking_splatad.radar_init.seeds import NEUTRAL_GREY_RGB, UNPAINTED_CAMERA_STAMP_NS
 from viking_splatad.registry import transform
 from viking_splatad.splatad.viking_conversions import open_dataset_view
 
@@ -19,8 +21,6 @@ ARTIFACT_SCHEMA = "viking-radar-loss-anchors/1"
 PAINTED_ARTIFACT_SCHEMA = "viking-radar-loss-anchors/2"
 # Colour channels per anchor (RGB): a property of the format, not a tunable.
 RGB_CHANNEL_COUNT = 3
-# Camera stamp recorded for an anchor that received no colour (contract of the /2 painting record).
-UNPAINTED_CAMERA_STAMP_NS = -1
 CLOCK_SCHEMA = "viking-radar-clock/1"
 
 
@@ -72,7 +72,7 @@ def corrected_radar_times(stamps_ns: np.ndarray, calibration: dict, reference_ns
     values = [calibration[key] for key in ("offset_seconds", "drift_rate", "clock_reference_seconds")]
     if not np.isfinite(values).all() or calibration["drift_rate"] <= -1:
         raise ValueError("clock model must be finite and monotonic")
-    seconds = (stamps_ns.astype(np.int64) - int(reference_ns)).astype(np.float64) / 1_000_000_000
+    seconds = (stamps_ns.astype(np.int64) - int(reference_ns)).astype(np.float64) / NANOSECONDS_PER_SECOND
     return seconds + calibration["offset_seconds"] + calibration["drift_rate"] * (
         seconds - calibration["clock_reference_seconds"])
 
@@ -161,30 +161,39 @@ def validate_anchor_arrays(arrays: dict) -> None:
             raise ValueError("duplicate sweep IDs inflate anchor persistence")
 
 
-def validate_painting_record(painting, anchor_count: int, frames) -> None:
-    """Require a /2 painting record whose camera stamps are train camera frames of this split.
+def validate_painting_record(painting, anchor_count: int, frames, rgb: np.ndarray) -> None:
+    """Require a /2 painting record whose stamps are train frames of its own camera and whose
+    unpainted rows are neutral grey.
 
     Args:
-        painting: The metadata `painting` record (or None); must hold `camera_stamps_ns`.
+        painting: The metadata `painting` record (or None); must hold `camera` and `camera_stamps_ns`.
         anchor_count: Number of anchors S; the stamp list must have exactly S entries.
-        frames: Split frames from `anchor_split`; only train camera frames are legal sources.
+        frames: Split frames from `anchor_split`; only train frames of `painting["camera"]` are legal.
+        rgb: uint8 [S,3] stored colours, row-aligned with the stamps.
 
     Raises:
-        ValueError: Missing record, wrong length, or a stamp that is not a train camera frame
-            (a held-out or unknown stamp would leak test/guard imagery into the seed colours).
+        ValueError: Missing record, wrong length, a stamp that is not a train frame of the recorded
+            camera (a held-out, unknown or other-camera stamp would leak imagery or misattribute
+            colours), or a stamp -1 row that is not exactly NEUTRAL_GREY_RGB.
     """
-    if not isinstance(painting, dict) or "camera_stamps_ns" not in painting:
-        raise ValueError("schema /2 radar artifact requires a painting record with camera_stamps_ns")
+    if (not isinstance(painting, dict) or "camera_stamps_ns" not in painting
+            or "camera" not in painting):
+        raise ValueError("schema /2 radar artifact requires a painting record with camera and camera_stamps_ns")
     stamps = painting["camera_stamps_ns"]
     if not isinstance(stamps, list) or len(stamps) != anchor_count:
         raise ValueError("painting camera_stamps_ns must have one entry per anchor")
-    # Legal stamps: the unpainted marker, or the timestamp of a train-split camera frame.
+    # Legal stamps: the unpainted marker, or the timestamp of a train frame of the recorded camera.
     train_camera_stamps = {frame.timestamp_ns for frame in frames
-                           if frame.kind == "camera" and frame.split == "train"}
+                           if frame.kind == "camera" and frame.split == "train"
+                           and frame.sensor == painting["camera"]}
     illegal = {stamp for stamp in stamps
                if stamp != UNPAINTED_CAMERA_STAMP_NS and stamp not in train_camera_stamps}
     if illegal:
         raise ValueError("painting references camera frames that are not train frames of this split")
+    # An unpainted anchor carries no image information: its colour must be exactly neutral grey.
+    unpainted_rows = np.asarray(stamps, dtype=np.int64) == UNPAINTED_CAMERA_STAMP_NS
+    if np.any(np.asarray(rgb)[unpainted_rows] != NEUTRAL_GREY_RGB):
+        raise ValueError("anchors with stamp -1 must hold exactly neutral grey rgb")
 
 
 def load_verified_anchors(directory: Path, dataset_directory: Path, session: str,
@@ -251,7 +260,7 @@ def load_verified_anchors(directory: Path, dataset_directory: Path, session: str
     if ("rgb" in arrays) != painted_schema:
         raise ValueError("radar artifact rgb presence contradicts its schema/gaussian_initialization flag")
     if painted_schema:
-        validate_painting_record(metadata.get("painting"), len(arrays["means"]), frames)
+        validate_painting_record(metadata.get("painting"), len(arrays["means"]), frames, arrays["rgb"])
     if not set(arrays["source_stamps_ns"].tolist()) <= set(metadata["training_source_stamps_ns"]):
         raise ValueError("anchor support IDs are absent from the pinned source observations")
     if not train_radar_mask(arrays["source_stamps_ns"], calibration, reference_ns, lidar_frames, bounds).all():

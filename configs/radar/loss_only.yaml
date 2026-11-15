@@ -15,3 +15,8 @@ persistence_quantile: 0.5
 # Every selected fit observation must remain train across the entire search box.
 # Boundary/uncertain fits still fail; no clock is assumed synchronized.
 clock_fit_retained_fraction: 0.5
+# Painting (schema /2 only): train camera frames tried per anchor, nearest in time first, for each
+# camera stream. Stock SplatAD default: paint_points_topk = 2 in
+# third_party/neurad-studio/nerfstudio/data/datamanagers/full_images_lidar_datamanager.py (L80);
+# it ranks by |camera_time - lidar_time|, as the painter here ranks by time to the anchor midpoint.
+paint_frames_per_camera: 2

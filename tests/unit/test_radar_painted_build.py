@@ -113,8 +113,9 @@ def test_painted_build_writes_schema_two_with_rgb_and_painting_record(tmp_path):
     intrinsics = view.manifest["cameras"][CAMERA_NAME]
     assert painting["camera"] == CAMERA_NAME
     assert painting["occlusion_margin_m"] == pytest.approx(options["range_cell_m"])
-    expected_radius = max(intrinsics["fx"] * np.tan(np.deg2rad(options["azimuth_cell_degrees"])),
-                          intrinsics["fy"] * np.tan(np.deg2rad(options["elevation_cell_degrees"])))
+    # One radar cell wide: the disc radius is the cell's half-width, f * tan(cell / 2).
+    expected_radius = max(intrinsics["fx"] * np.tan(np.deg2rad(options["azimuth_cell_degrees"]) / 2),
+                          intrinsics["fy"] * np.tan(np.deg2rad(options["elevation_cell_degrees"]) / 2))
     assert painting["footprint_radius_pixels"] == pytest.approx(expected_radius)
 
 
