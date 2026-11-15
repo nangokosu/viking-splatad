@@ -33,8 +33,15 @@
 #   STEPS_PER_EVAL_ALL_IMAGES  (the eval interval k = (N-1)//MINIMUM_EVAL_POINTS, T63, derived by
 #                               submit_run.py; ns-train --steps-per-eval-all-images)
 #   TRAIN_METHOD RADAR_LIDAR_LOSS_WEIGHT RADAR_LIDAR_GATE_QUANTILE RADAR_LIDAR_GATE_CHUNK_SIZE
-#   (the selected method and optional radar-supported LiDAR-loss settings)
+#   (the selected method and the radar opacity-loss settings; when TRAIN_METHOD is unset or splatad,
+#    all four default below, so older stock jobs still start)
 # Optional:
+#   RADAR_INPUTS_DIR  (required by every radar method: the anchor artifact; absolute, or relative to
+#                      $STAGE_ROOT/data/$SESSION)
+#   RADAR_SEED_OPACITY  (required by the seed methods splatad-radar-init and splatad-radar-init-lidar)
+#   RADAR_LIDAR_AUTO_WEIGHT RADAR_DIAGNOSTICS_PATH  (loss methods; default False and
+#                                                    <run dir>/radar_diagnostics.jsonl)
+#   TRAIN_LIDAR_ONLY  (True = lidar-only training, no photometric loss; default False)
 #   TRAIN_SPLIT_FRACTION_OVERRIDE  (set only when the profile has its own train_fraction; equal to
 #                                   TRAIN_SPLIT_FRACTION, passed as --train-split-fraction-override so
 #                                   the dataparser splits with it instead of the manifest's value, T27)
@@ -190,7 +197,7 @@ print('viking_splatad_from:', viking_splatad.__file__)" | tee -a "$JOB_INFO"
 # (deterministic cuBLAS workspaces; the value is torch's documented one) must be set before the
 # interpreter / CUDA start, so they are exported here, for the training step only.
 # --experiment-name and --timestamp make the output path deterministic:
-# $RUN_DIR/train/$SESSION/splatad/$RUN_ID/{config.yml,nerfstudio_models/step-*.ckpt}
+# $RUN_DIR/train/$SESSION/$TRAIN_METHOD/$RUN_ID/{config.yml,nerfstudio_models/step-*.ckpt}
 # --pipeline.calc-fid-steps 99999999 turns off SplatAD's novel-view FIDs (lane/vertical shift, actor
 # edits). The splatad method config computes them at step 30000, the last step of a 30001-iteration
 # run, whenever that step is also an all-images eval (it is for stock's 2500 and our 600). The
@@ -230,8 +237,9 @@ TRAIN_METHOD_SUFFIX="${TRAIN_METHOD#splatad}"
 RADAR_METHOD_REGISTRATION="splatad-radar-init=viking_splatad.splatad.radar_init_method:RADAR_INIT_METHOD_SPEC"
 RADAR_METHOD_REGISTRATION+=",splatad-radar-lidar=viking_splatad.splatad.radar_lidar_method:RADAR_LIDAR_METHOD_SPEC"
 RADAR_METHOD_REGISTRATION+=",splatad-radar-init-lidar=viking_splatad.splatad.radar_init_lidar_method:RADAR_INIT_LIDAR_METHOD_SPEC"
-# The two capabilities of a method, computed once and reused below: 1 = it appends radar seed
-# Gaussians (needs the seed opacity); 1 = it adds the radar opacity loss. Stock sets neither.
+# The two capabilities of a method, computed once and reused below: USES_RADAR_SEEDS=1 = it appends
+# radar seed Gaussians (needs the seed opacity); USES_RADAR_LOSS=1 = it adds the radar opacity loss.
+# Stock sets neither; an unknown method is refused here.
 USES_RADAR_SEEDS=0
 USES_RADAR_LOSS=0
 case "$TRAIN_METHOD" in

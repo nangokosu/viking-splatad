@@ -32,7 +32,16 @@ def load_submit_helpers(code_root: Path):
 
 
 def main(argument_list=None):
-    """Build an immutable artifact for one profile; return zero only after its full contract passes."""
+    """Build the radar anchor artifact of one profile's anchor profile and print its summary.
+
+    Args:
+        argument_list: Command-line arguments (default: sys.argv[1:]): --dataset, --session (the
+            dataset name), --profile, optional --out, --calibration and --radar-config.
+
+    Returns:
+        0 once ``build_radar_anchor_artifact`` returns (it raises on failure). This script does not
+        run ``validate_radar_inputs`` itself; scripts/06 and ``submit_run.py stage``/``gates`` do.
+    """
     code_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
@@ -52,11 +61,13 @@ def main(argument_list=None):
     # Step 2: split settings of the ANCHOR profile, as the consuming profiles verify them.
     session_config, settings = helpers.profile_radar_split_settings(
         code_root, arguments.dataset, arguments.session, anchor_profile)
+    # Step 3: build into the anchor's artifact directory, with the radar options and optional calibration.
     out_directory = arguments.out or arguments.dataset / "radar_inputs" / anchor_profile
     options = yaml.safe_load(arguments.radar_config.read_text())
     calibration = json.loads(arguments.calibration.read_text()) if arguments.calibration else None
     metadata = build_radar_anchor_artifact(arguments.dataset, session_config, settings, options,
                                            out_directory, calibration, paint_seed_colours=paint_seed_colours)
+    # Step 4: report the painted fraction (painted artifacts only) and the artifact's summary counts.
     if paint_seed_colours:
         print(f"painted_fraction: {metadata['painting']['painted_fraction']}", flush=True)
     print(json.dumps({key: metadata[key] for key in ("anchor_count", "training_radar_sweeps", "static_training_returns",

@@ -843,7 +843,7 @@ def profile_radar_variant_options(config: Dict[str, Any], session_config: Dict[s
     variant = profile_settings.get("radar_variant")
     if variant is None:
         return options
-    # Step 2: validate the variant and its exclusivity with Neel's loss-only profiles.
+    # Step 2: validate the variant and its exclusivity with the loss-only (radar_loss_only) profiles.
     if variant not in RADAR_VARIANT_METHODS:
         raise ValueError(f"profile {profile_name}: radar_variant must be one of "
                          f"{sorted(RADAR_VARIANT_METHODS)}, got {variant!r}")
@@ -869,7 +869,8 @@ def profile_radar_split_settings(code_root: Path, dataset: Path, session: str,
     Args:
         code_root: Repository (or committed snapshot) root holding ``configs/``.
         dataset: Intermediate dataset directory ``<root>/<session>``.
-        session: Session name.
+        session: Dataset name; must equal ``dataset.name``, because the manifest and session config
+            are looked up as ``dataset.parent / session`` while the time span is read from ``dataset``.
         profile: Profile name under ``profiles``.
 
     Returns:
@@ -877,7 +878,9 @@ def profile_radar_split_settings(code_root: Path, dataset: Path, session: str,
         test_block_count, test_block_core_fraction, test_split_method, test_render_fraction``.
 
     Raises:
-        ValueError: If the profile sets only one of ``window_start_seconds`` / ``window_seconds``.
+        KeyError: If ``profile`` is not under ``profiles``.
+        ValueError: If the profile sets only one of ``window_start_seconds`` / ``window_seconds``, or a
+            split value is invalid.
     """
     # Step 1: the profile and session config from the given code root.
     slurm_config = load_slurm_config(code_root / "configs" / "slurm.yaml")
@@ -909,14 +912,21 @@ def profile_radar_split_settings(code_root: Path, dataset: Path, session: str,
 
 def profile_radar_lidar_options(profile_settings: Dict[str, Any], baseline_options: Dict[str, Any],
                                  stage_root: str, session: str, profile: str, git_sha: str) -> Dict[str, Any]:
-    """Resolve a loss-only profile without editing the published session or baseline config.
+    """Resolve a loss-only (``radar_loss_only``) profile into training-method options.
 
     Args:
-        profile_settings, baseline_options: Existing validated profile/session settings.
-        stage_root, session, profile, git_sha: Immutable remote artifact identity.
+        profile_settings: The chosen ``profiles.<name>`` mapping.
+        baseline_options: ``session_radar_lidar_options`` output; copied, never modified.
+        stage_root, session, profile, git_sha: Identity of the remote artifact
+            ``<stage_root>/radar-inputs/<session>/<anchor profile>/<git_sha>``.
 
     Returns:
-        Independent options; enabled L requires LiDAR-only optimization and auto weighting.
+        A copy of ``baseline_options``; for a loss-only profile, with method ``splatad-radar-lidar``,
+        auto-weighting on (so ``loss_weight`` 0) and ``inputs_dir`` set to that remote artifact.
+
+    Raises:
+        ValueError: If ``radar_loss_only`` is not a boolean, a loss-only profile lacks
+            ``train_lidar_only: true``, or the anchor-profile name is unsafe.
     """
     enabled = profile_settings.get("radar_loss_only", False)
     if not isinstance(enabled, bool):
@@ -1103,13 +1113,19 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         steps_per_eval_all_images: The derived eval interval (``profile_eval_cadence``), exported as
             STEPS_PER_EVAL_ALL_IMAGES. Same rule: None leaves it out.
         radar_lidar_options: Optional validated resolver output (``session_radar_lidar_options``,
-            ``profile_radar_variant_options`` or ``profile_radar_lidar_options``).
+            ``profile_radar_variant_options`` or ``profile_radar_lidar_options``). When given, exports
+            TRAIN_METHOD, RADAR_LIDAR_LOSS_WEIGHT, RADAR_LIDAR_GATE_QUANTILE, RADAR_LIDAR_GATE_CHUNK_SIZE
+            and RADAR_LIDAR_AUTO_WEIGHT; plus RADAR_SEED_OPACITY for a SEED_METHODS method,
+            RADAR_DIAGNOSTICS_PATH for a LOSS_METHODS method, and RADAR_INPUTS_DIR when ``inputs_dir``
+            is set. None leaves them all out (splatad_run.sbatch then defaults to stock ``splatad``).
+        Also exports TRAIN_LIDAR_ONLY when the profile sets ``train_lidar_only``.
 
     Returns:
         Mapping variable name -> string value.
 
     Raises:
-        ValueError: If the profile has no integer ``seed`` (every run must record its seed).
+        ValueError: If the profile has no integer ``seed`` (every run must record its seed), or its
+            ``train_lidar_only`` is not a boolean.
     """
     # A run without an explicit seed would silently take nerfstudio's default; require it instead.
     train_seed = profile_settings.get("seed")
@@ -1155,12 +1171,14 @@ def build_job_environment(profile_settings: Dict[str, Any], session: str, run_id
         job_environment["MINIMUM_EVAL_POINTS"] = str(int(minimum_eval_points))
     if steps_per_eval_all_images is not None:
         job_environment["STEPS_PER_EVAL_ALL_IMAGES"] = str(int(steps_per_eval_all_images))
+    # Radar options: the shared method/gate settings always, then only what the method's family reads.
     if radar_lidar_options is not None:
         radar_method = str(radar_lidar_options["method"])
         job_environment["TRAIN_METHOD"] = radar_method
         job_environment["RADAR_LIDAR_LOSS_WEIGHT"] = repr(float(radar_lidar_options["loss_weight"]))
         job_environment["RADAR_LIDAR_GATE_QUANTILE"] = repr(float(radar_lidar_options["gate_quantile"]))
-        # The variant resolver names the key gate_chunk_size; Neel's resolvers name it chunk_size.
+        # profile_radar_variant_options names the key gate_chunk_size; session_radar_lidar_options (and
+        # profile_radar_lidar_options, which copies it) name it chunk_size.
         gate_chunk_size = radar_lidar_options.get("gate_chunk_size", radar_lidar_options.get("chunk_size"))
         job_environment["RADAR_LIDAR_GATE_CHUNK_SIZE"] = str(int(gate_chunk_size))
         job_environment["RADAR_LIDAR_AUTO_WEIGHT"] = str(radar_lidar_options.get("auto_weight", False))
@@ -1679,6 +1697,7 @@ def require_valid_radar_inputs(dataset_dir: Path, session: str) -> None:
 
     Raises:
         GateFailure: If an artifact fails ``validate_radar_inputs``.
+        KeyError: If an artifact directory is not named after a profile in configs/slurm.yaml.
     """
     from viking_splatad.contract.splatad_contract import validate_radar_inputs
 

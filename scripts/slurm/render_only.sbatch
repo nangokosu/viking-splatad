@@ -26,6 +26,8 @@
 #   GIT_SHA  (the render code, HEAD at submission)
 #   TRAIN_GIT_SHA  (the code that trained the checkpoint: the run's job_info.txt GIT_SHA)
 #   RENDER_DOWNSCALE_FACTOR  (the run's own camera resolution factor, from its job_info.txt)
+#   TRAIN_METHOD  (the run's method, from its job_info.txt, splatad for runs that predate the key;
+#                  names the train/<session>/<method>/ folder and selects the radar registration)
 #
 # Rerender layout: selection.json (written by submit_run.py), job.sbatch, job_info.txt, slurm-<job>.out,
 # config.yml (the run's, with the selection), dataparser_transforms.json (written by scripts/08),

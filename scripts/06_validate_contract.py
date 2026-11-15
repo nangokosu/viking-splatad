@@ -26,10 +26,12 @@ def load_split_settings(code_root: Path, dataset: Path, session: str, profile: s
     Args:
         code_root: Repository root holding scripts/slurm/submit_run.py.
         dataset: Intermediate dataset directory.
-        session: Session tag; profile: Slurm profile name.
+        session: Dataset name (must equal ``dataset.name``; see ``profile_radar_split_settings``).
+        profile: Slurm profile name (for a radar artifact, its anchor profile).
 
     Returns:
-        Split-settings kwargs identical to what the training job will use.
+        The split settings a training job of ``profile`` uses (start/end, train, block and render
+        fractions, block count, split method).
 
     Raises:
         RuntimeError: If submit_run.py lacks `profile_radar_split_settings`.
