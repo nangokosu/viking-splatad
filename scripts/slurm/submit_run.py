@@ -10,6 +10,7 @@ Usage:
     uv run python scripts/slurm/submit_run.py runs   [--all]
     uv run python scripts/slurm/submit_run.py fetch  <run_id>
     uv run python scripts/slurm/submit_run.py clean  [<run_id> ...] [--yes]
+    uv run python scripts/slurm/submit_run.py clean  --cluster-only <run_id> ... [--yes]
     uv run python scripts/slurm/submit_run.py render <run_id> --camera-frames 795,797-800 --lidar-sweeps 801 [--skip-gates]
     uv run python scripts/slurm/submit_run.py resume <run_id> [--skip-gates]
 
@@ -110,6 +111,17 @@ RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # job_info.txt's split_render_check value on success. Only a successful run has both that line and
 # end_utc (splatad_run.sbatch writes end_utc after it); a run without both was cancelled, failed or killed.
 SUCCESS_SPLIT_CHECK_VALUE = "match"
+# Stand-in pending entry for a named run with no entry in unfetched_files_by_run (comparison never
+# ran), so plan_cluster_only_cleanup refuses it instead of reading "no differences". A run with no
+# local folder is refused earlier, by its missing successful fetched job_info.txt.
+UNVERIFIED_FETCH_MARKER = "<no fetched folder to compare>"
+# bash script for `clean --cluster-only`'s delete; $1 = the run dir (never interpolated into the text).
+# squeue's output is captured first, so a failing squeue (timeout, controller down) exits 4 instead of
+# reading as "no jobs"; a job script under the run dir exits 3; only then rm -rf.
+CLUSTER_RUN_DELETE_GUARD_SCRIPT = (
+    'job_scripts=$(squeue -h -u "$(id -un)" -o "%o") || { echo "squeue failed" >&2; exit 4; }; '
+    'if printf "%s\\n" "$job_scripts" | grep -qF -- "$1/"; then '
+    'echo "job of this run is queued or running" >&2; exit 3; fi; rm -rf -- "$1"')
 # File name of the per-job batch script inside the run dir; squeue's %o names it, which maps an
 # active job back to its run id.
 JOB_SCRIPT_NAME = "job.sbatch"
@@ -2891,28 +2903,213 @@ def plan_cleanup(remote_runs: Dict[str, Optional[Dict[str, str]]], active_run_id
     return plan
 
 
+def plan_cluster_only_cleanup(remote_runs: Dict[str, Optional[Dict[str, str]]], active_run_ids: set,
+                              local_runs: Dict[str, Optional[Dict[str, str]]],
+                              unfetched_files_by_run: Dict[str, List[str]],
+                              named_run_ids: Sequence[str]) -> List[str]:
+    """Decide which named runs ``clean --cluster-only`` may drop from the cluster (pure: no I/O).
+
+    Frees workdisk space while the fetched copy and ledger row stay, so ``runs`` keeps reporting the
+    run as ``done`` from the fetched job_info.txt. Every named run must be safe to drop; one bad name
+    refuses the whole call, so a typo never leaves the Mac holding an incomplete only copy.
+
+    Args:
+        remote_runs: From ``list_remote_runs``.
+        active_run_ids: From ``list_remote_runs``.
+        local_runs: From ``list_local_runs``.
+        unfetched_files_by_run: From ``list_unfetched_files`` per named run: files a re-fetch would still
+            copy (an empty list = the Mac copy matches what ``fetch`` keeps).
+        named_run_ids: Runs whose cluster folder the user asked to delete.
+
+    Returns:
+        The named run ids, de-duplicated and sorted.
+
+    Raises:
+        ValueError: If no run is named, or a named run is malformed, not on the cluster, active, has no
+            successful fetched copy, or still has files a fetch would copy.
+    """
+    # Step 1: cluster-only deletion is never automatic; the user names every run.
+    if not named_run_ids:
+        raise ValueError("--cluster-only needs at least one run id")
+    # Step 2: each named run must exist on the cluster, be idle, and be fully fetched.
+    for run_id in named_run_ids:
+        if not RUN_ID_PATTERN.match(run_id):
+            raise ValueError(f"malformed run id {run_id!r}")
+        if run_id not in remote_runs:
+            raise ValueError(f"run {run_id} is not on the cluster")
+        if run_id in active_run_ids:
+            raise ValueError(f"run {run_id} still has a queued or running job; scancel it first")
+        if not run_succeeded(local_runs.get(run_id)):
+            raise ValueError(f"run {run_id} has no successful fetched copy on the Mac; fetch it first")
+        # A missing entry means the comparison never ran: treat as unverified, not as clean.
+        pending_files = unfetched_files_by_run.get(run_id, [UNVERIFIED_FETCH_MARKER])
+        if pending_files:
+            raise ValueError(f"run {run_id} is not fully fetched ({', '.join(pending_files)}); fetch it first")
+    return sorted(set(named_run_ids))
+
+
+def parse_pending_transfers(itemized_text: str) -> List[str]:
+    """Files an ``rsync --itemize-changes`` dry run would copy to the local side (fails closed).
+
+    Itemize lines start with a code: update type (``>`` received, ``c`` created, ``.`` attributes
+    only), then file type (``f`` file, ``d`` dir, ``L`` link, ...), then attribute flags whose count
+    depends on the rsync build (11 characters for GNU rsync 3.x, 9 for macOS openrsync), so the length
+    is never relied on. Ignored: directory lines (their mtime moves whenever the Mac adds e.g. ``eval/``),
+    attribute-only lines, and ``*deleting`` notices. Every other non-empty line counts as pending, so an
+    unknown format refuses deletion instead of passing it.
+
+    Args:
+        itemized_text: rsync stdout.
+
+    Returns:
+        Relative paths (or the whole line, if it has no path) of what differs or is missing locally.
+    """
+    pending_files = []
+    for line in itemized_text.splitlines():
+        if not line.strip():
+            continue
+        # Split code from path once; the path itself may contain spaces.
+        code, _, relative_path = line.partition(" ")
+        is_directory_line = len(code) > 1 and code[1] == "d"
+        if code.startswith((".", "*")) or is_directory_line:
+            continue
+        pending_files.append(relative_path.strip() or line)
+    return pending_files
+
+
+def list_unfetched_files(ssh_target: str, remote_run_dir: str, local_run_dir: Path) -> List[str]:
+    """Files ``fetch`` would still copy for one run: rsync dry runs mirroring ``fetch_run``.
+
+    rsync compares size and mtime, so a checkpoint cut off mid-download (``--partial``), an older
+    checkpoint than the cluster's latest, or cluster output written after the last fetch (e.g. a
+    render) all show up as pending.
+
+    Args:
+        ssh_target: ssh host alias.
+        remote_run_dir: Absolute run folder on the cluster.
+        local_run_dir: Fetched run folder on the Mac.
+
+    Returns:
+        Relative paths of pending files (empty = the Mac copy is complete). A cluster run with no
+        checkpoint is compared on its other files only, as ``fetch_run`` copies no checkpoint then.
+
+    Raises:
+        RuntimeError: If an rsync or the checkpoint listing fails.
+    """
+    # Step 1: everything except checkpoints, exactly as fetch_run's first rsync.
+    run_listing = run_checked(["rsync", "-an", "--itemize-changes", "--exclude", "nerfstudio_models",
+                               f"{ssh_target}:{remote_run_dir}/", f"{local_run_dir}/"], "run rsync dry run")
+    pending_files = parse_pending_transfers(run_listing.stdout)
+    # Step 2: the latest checkpoint, chosen as fetch_run chooses it (zero-padded step names sort by step).
+    checkpoint_listing = run_checked(ssh_command(ssh_target, [
+        "find", remote_run_dir, "-name", "step-*.ckpt", "-path", "*/nerfstudio_models/*"]), "checkpoint listing")
+    checkpoint_paths = [path_text for path_text in checkpoint_listing.stdout.split() if path_text]
+    if checkpoint_paths:
+        latest_checkpoint = max(checkpoint_paths, key=lambda path_text: Path(path_text).name)
+        relative_path = Path(latest_checkpoint).relative_to(remote_run_dir)
+        # No local file at all: pending without asking rsync (it may fail on a missing parent folder).
+        if not (local_run_dir / relative_path).is_file():
+            return pending_files + [str(relative_path)]
+        # Directory mode filtered to the one file: macOS openrsync's single-file mode itemizes the file
+        # even when identical, so `rsync remote_file local_file` would always look pending.
+        checkpoint_check = run_checked(["rsync", "-an", "--itemize-changes", f"--include={relative_path.name}",
+                                        "--exclude=*", f"{ssh_target}:{Path(latest_checkpoint).parent}/",
+                                        f"{(local_run_dir / relative_path).parent}/"], "checkpoint rsync dry run")
+        # rsync prints the bare file name; report the run-relative path instead.
+        if parse_pending_transfers(checkpoint_check.stdout):
+            pending_files.append(str(relative_path))
+    return pending_files
+
+
+def delete_cluster_run_if_idle(ssh_target: str, absolute_stage_root: str, run_id: str) -> None:
+    """rm -rf one cluster run folder, refusing in the same ssh call if a job of that run is queued.
+
+    Checking squeue and deleting in one remote shell closes the gap between the plan's listing and the
+    rm, in which a render or resume job could have been submitted from another terminal.
+
+    Args:
+        ssh_target: ssh host alias.
+        absolute_stage_root: Stage root on the cluster.
+        run_id: Run id that already passed RUN_ID_PATTERN (one path component).
+
+    Raises:
+        RuntimeError: If a job of the run is queued/running (exit 3) or the rm fails.
+    """
+    run_dir = f"{absolute_stage_root}/runs/{run_id}"
+    run_checked(ssh_command(ssh_target, ["bash", "-c", CLUSTER_RUN_DELETE_GUARD_SCRIPT, "bash", run_dir]),
+                f"delete cluster run {run_id}")
+
+
+def clean_cluster_only(ssh_target: str, absolute_stage_root: str, remote_runs: Dict[str, Optional[Dict[str, str]]],
+                       active_run_ids: set, named_run_ids: Sequence[str], confirmed: bool,
+                       local_runs_root: Path) -> List[str]:
+    """``clean --cluster-only``: delete only the named runs' cluster folders, never a local file or row.
+
+    Args:
+        ssh_target: ssh host alias.
+        absolute_stage_root: Stage root on the cluster.
+        remote_runs: From ``list_remote_runs``.
+        active_run_ids: From ``list_remote_runs``.
+        named_run_ids: Runs to drop from the cluster.
+        confirmed: False = print the plan only; True = delete.
+        local_runs_root: Local runs/ folder.
+
+    Returns:
+        The run ids planned for deletion.
+
+    Raises:
+        ValueError: As ``plan_cluster_only_cleanup``.
+        RuntimeError: If a dry run, listing or deletion fails.
+    """
+    # Step 1: compare each named, well-formed cluster run with its fetched copy (only those; no full scan).
+    unfetched_files_by_run = {
+        run_id: list_unfetched_files(ssh_target, f"{absolute_stage_root}/runs/{run_id}", local_runs_root / run_id)
+        for run_id in set(named_run_ids)
+        if RUN_ID_PATTERN.match(run_id) and run_id in remote_runs and (local_runs_root / run_id).is_dir()}
+    doomed_run_ids = plan_cluster_only_cleanup(remote_runs, active_run_ids, list_local_runs(local_runs_root),
+                                               unfetched_files_by_run, named_run_ids)
+    for run_id in doomed_run_ids:
+        print(f"DELETE {run_id}  [cluster]  fetched copy complete; Mac copy and ledger row kept")
+    if not confirmed:
+        print(f"dry run: {len(doomed_run_ids)} cluster run folder(s) would be deleted; re-run with --yes")
+        return doomed_run_ids
+    # Step 2: delete the cluster folders only.
+    for run_id in doomed_run_ids:
+        delete_cluster_run_if_idle(ssh_target, absolute_stage_root, run_id)
+    print(f"deleted {len(doomed_run_ids)} cluster run folder(s)")
+    return doomed_run_ids
+
+
 def clean_runs(config: Dict[str, Any], named_run_ids: Sequence[str], confirmed: bool,
-               local_runs_root: Path = LOCAL_RUNS_ROOT, ledger_path: Path = SUBMITTED_LEDGER_PATH) -> List[Dict[str, Any]]:
+               local_runs_root: Path = LOCAL_RUNS_ROOT, ledger_path: Path = SUBMITTED_LEDGER_PATH,
+               cluster_only: bool = False) -> List[Any]:
     """Delete every artifact of cancelled/failed runs and of the named runs (dry run unless confirmed).
+
+    With ``cluster_only``, hands off to ``clean_cluster_only``: only the named runs' cluster folders go.
 
     Args:
         config: Parsed Slurm config.
-        named_run_ids: Runs to delete even if successful.
+        named_run_ids: Runs to delete even if successful (with ``cluster_only``: the only runs touched).
         confirmed: False = print the plan only; True = delete.
         local_runs_root: Local runs/ folder.
         ledger_path: Local ledger.
+        cluster_only: Delete only the named runs' cluster folders; fetched copies and ledger rows stay.
 
     Returns:
-        The plan from ``plan_cleanup``.
+        The plan from ``plan_cleanup``, or the run ids from ``clean_cluster_only``.
 
     Raises:
-        ValueError: As ``plan_cleanup``.
+        ValueError: As the planner used.
         RuntimeError: If a remote listing or deletion fails.
     """
     # Step 1: everything known about every run, then the plan.
     ssh_target = resolve_ssh_target(config["ssh_host"])
     absolute_stage_root = resolve_remote_stage_root(config, ssh_target)
     remote_runs, active_run_ids = list_remote_runs(ssh_target, absolute_stage_root)
+    if cluster_only:
+        # Separate path: it has no code that touches local folders or the ledger.
+        return clean_cluster_only(ssh_target, absolute_stage_root, remote_runs, active_run_ids, named_run_ids,
+                                  confirmed, local_runs_root)
     ledger_rows = read_ledger(ledger_path)
     plan = plan_cleanup(remote_runs, active_run_ids, list_local_runs(local_runs_root), ledger_rows, named_run_ids)
     for decision in plan:
@@ -3170,9 +3367,13 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     fetch_parser = subparsers.add_parser("fetch", help="copy a run back (latest checkpoint only)")
     fetch_parser.add_argument("run_id")
     clean_parser = subparsers.add_parser(
-        "clean", help="delete cancelled/failed runs and the named runs (cluster dir, fetched copy, ledger row)")
-    clean_parser.add_argument("run_ids", nargs="*", help="runs to delete even if successful")
+        "clean", help="delete cancelled/failed runs and the named runs (cluster dir, fetched copy, ledger row); "
+                      "with --cluster-only, only the named runs' cluster dirs")
+    clean_parser.add_argument("run_ids", nargs="*",
+                              help="runs to delete even if successful (--cluster-only: the only runs touched)")
     clean_parser.add_argument("--yes", action="store_true", help="delete; without it only the plan is printed")
+    clean_parser.add_argument("--cluster-only", action="store_true",
+                              help="delete only the named runs' cluster folders; each must be fully fetched")
     render_parser = subparsers.add_parser(
         "render", help="render guard frames of a finished run from its checkpoint (no training)")
     render_parser.add_argument("run_id")
@@ -3214,7 +3415,7 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         elif arguments.command == "fetch":
             fetch_run(config, arguments.run_id)
         elif arguments.command == "clean":
-            clean_runs(config, arguments.run_ids, arguments.yes)
+            clean_runs(config, arguments.run_ids, arguments.yes, cluster_only=arguments.cluster_only)
         elif arguments.command == "render":
             submit_render(config, arguments.run_id, arguments.camera_frames, arguments.lidar_sweeps,
                           arguments.skip_gates)

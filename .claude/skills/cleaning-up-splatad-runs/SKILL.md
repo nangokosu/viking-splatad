@@ -34,6 +34,13 @@ Only pass a successful run's id when the user named that run. An "ERROR: ... sca
 
 In the final report, list the deleted failed runs with the cause of each failure.
 
+## Freeing workdisk space only (`--cluster-only`)
+To free cluster space but keep a finished run on your machine, name it with `--cluster-only` (dry run first, then `--yes`):
+```bash
+uv run python scripts/slurm/submit_run.py clean --cluster-only <run_id> ...
+```
+Only the cluster run folder goes; the fetched copy and ledger row stay, so `runs` still shows it as `done`. The whole call is refused if any named run is active, not on the cluster, has no successful fetched copy, or still has files `fetch` would copy (an rsync dry run of the run files and the latest checkpoint, by size and mtime: catches cut-off checkpoint downloads and renders made after the fetch). The delete itself re-checks `squeue` in the same ssh call. Failed runs are not auto-cleaned in this mode. Afterwards the Mac holds the only copy, so `render`/`resume` on that run are no longer possible.
+
 ## After deleting
 - `runs/RUN_FOLDER_GLOSSARY.md` and the ledger header stay.
 - Nothing needs restaging: code and data folders are untouched.
