@@ -304,6 +304,15 @@ profiles:
     train_lidar_only: false
     radar_variant: init
     radar_anchor_profile: june_scene_a_radar_init
+  # June radar init + radar loss WITH the photometric loss (user's approval, 2026-11-16): the
+  # lidar-only init + loss run (job 250274) was cancelled for the same reason as above. Same
+  # construction as june_scene_a_radar_init_cam with radar_variant init_loss; the anchors are the
+  # lidar-only init artifact's, as for june_scene_a_radar_init_loss.
+  june_scene_a_radar_init_loss_cam:
+    <<: *june_core_profile
+    train_lidar_only: false
+    radar_variant: init_loss
+    radar_anchor_profile: june_scene_a_radar_init
 
   # ---- Radar smokes: the month's full-window core with the smoke profile's iteration and save
   # settings (anchors reused), reading the month's full-run init artifact so no separate artifact

@@ -322,3 +322,24 @@ def test_june_camera_profile_resolves_to_radar_init_and_exports_camera_loss(subm
     assert options["loss_weight"] == 0.0
     # Step 2: the profile's own flag is false, which is what submit exports as TRAIN_LIDAR_ONLY=False.
     assert slurm_config["profiles"][JUNE_CAMERA_PROFILE]["train_lidar_only"] is False
+
+
+def test_june_init_loss_camera_profile_matches_core_except_camera_loss_and_radar_keys(slurm_config):
+    """The camera-on init + loss profile is the lidar-only June core with train_lidar_only off plus its keys."""
+    # Step 1: drop the radar keys and the one flag that must differ.
+    profile = dict(slurm_config["profiles"]["june_scene_a_radar_init_loss_cam"])
+    assert profile.pop("radar_variant") == "init_loss"
+    assert profile.pop("radar_anchor_profile") == f"{JUNE_LIDAR_ONLY_PROFILE}_radar_init"
+    assert profile.pop("train_lidar_only") is False
+    # Step 2: everything left equals the lidar-only core.
+    expected = dict(slurm_config["profiles"][JUNE_LIDAR_ONLY_PROFILE])
+    expected.pop("train_lidar_only")
+    assert profile == expected
+
+
+def test_june_init_loss_camera_profile_resolves_like_the_lidar_only_init_loss_profile(submit_module, slurm_config):
+    """Only the camera flag differs from june_scene_a_radar_init_loss: same method, artifact and weights."""
+    camera_options = resolve(submit_module, slurm_config, "june_scene_a_radar_init_loss_cam", "june")
+    lidar_only_options = resolve(submit_module, slurm_config, "june_scene_a_radar_init_loss", "june")
+    assert camera_options == lidar_only_options
+    assert camera_options["method"] == "splatad-radar-init-lidar"
