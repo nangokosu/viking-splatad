@@ -62,7 +62,6 @@
     "T66",
     "T67",
     "T68",
-    "T69",
     "T70",
     "T71",
     "T72",
@@ -330,10 +329,6 @@
     {
       "id": "T68",
       "qualified_name": "viking_splatad.eval.rendered_pointcloud.points_to_map_voxels"
-    },
-    {
-      "id": "T69",
-      "qualified_name": "viking_splatad.viz.viewer_export.quaternion_to_fiftyone_rotation"
     },
     {
       "id": "T70",

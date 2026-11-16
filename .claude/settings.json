@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(gh pr create --title 'Enable code-review and code-simplifier plugins' --body ' *)",
-      "Bash(rm ~/.claude/agents/code-refactorer.md && ls ~/.claude/agents)"
+      "Bash(rm ~/.claude/agents/code-refactorer.md && ls ~/.claude/agents)",
+      "Edit(/.claude/skills/cleaning-up-splatad-runs/**)",
+      "Bash(rsync --version)"
     ]
   },
   "enabledPlugins": {
