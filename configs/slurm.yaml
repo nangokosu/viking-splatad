@@ -291,6 +291,19 @@ profiles:
     <<: *june_core_profile
     radar_variant: init_loss
     radar_anchor_profile: june_scene_a_radar_init
+  # June radar init WITH the photometric (camera) loss (user's approval, 2026-11-16). The lidar-only
+  # June radar init run rendered nothing like the ground truth (test PSNR 8.5, versus 15.9 for the
+  # older stock June run, which trained with the camera loss), so it was no valid pair for that
+  # stock run. This profile is the June core with train_lidar_only switched off plus the radar
+  # init keys, so it differs from the old stock June (B+cam, run june_scene_a-20261101-...) only by
+  # its method and seeds. It is deliberately NOT the june_scene_a_radar_init profile, which must
+  # stay equal to the lidar-only core (tests/unit/test_radar_variant_profiles.py). The anchors are
+  # the lidar-only init artifact's: the seeds do not depend on the training objective.
+  june_scene_a_radar_init_cam:
+    <<: *june_core_profile
+    train_lidar_only: false
+    radar_variant: init
+    radar_anchor_profile: june_scene_a_radar_init
 
   # ---- Radar smokes: the month's full-window core with the smoke profile's iteration and save
   # settings (anchors reused), reading the month's full-run init artifact so no separate artifact

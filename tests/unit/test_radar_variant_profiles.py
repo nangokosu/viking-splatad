@@ -291,3 +291,34 @@ def test_variant_profiles_share_split_settings(submit_module, tmp_path, session_
     for session_config, settings in results.values():
         assert settings == stock_settings
         assert session_config == stock_session_config
+
+
+# ---------------------------------------------------------------- 9: June radar init with the camera loss
+
+# The camera-on June radar init profile and the lidar-only core it derives from.
+JUNE_CAMERA_PROFILE = "june_scene_a_radar_init_cam"
+JUNE_LIDAR_ONLY_PROFILE = "june_scene_a"
+
+
+def test_june_camera_profile_differs_from_lidar_only_core_only_by_camera_loss_and_radar_keys(slurm_config):
+    """The camera-on profile is the lidar-only June core with train_lidar_only off plus the init keys."""
+    # Step 1: drop the radar keys and the one flag that must differ.
+    profile = dict(slurm_config["profiles"][JUNE_CAMERA_PROFILE])
+    assert profile.pop("radar_variant") == "init"
+    assert profile.pop("radar_anchor_profile") == f"{JUNE_LIDAR_ONLY_PROFILE}_radar_init"
+    assert profile.pop("train_lidar_only") is False
+    # Step 2: everything left (iterations, evals, seed, time limit, render settings) equals the core.
+    expected = dict(slurm_config["profiles"][JUNE_LIDAR_ONLY_PROFILE])
+    expected.pop("train_lidar_only")
+    assert profile == expected
+
+
+def test_june_camera_profile_resolves_to_radar_init_and_exports_camera_loss(submit_module, slurm_config):
+    """The profile trains splatad-radar-init on the June init artifact and does not export lidar-only."""
+    # Step 1: the resolver picks the init method and the lidar-only profile's artifact.
+    options = resolve(submit_module, slurm_config, JUNE_CAMERA_PROFILE, "june")
+    assert options["method"] == "splatad-radar-init"
+    assert options["inputs_dir"] == "radar_inputs/june_scene_a_radar_init"
+    assert options["loss_weight"] == 0.0
+    # Step 2: the profile's own flag is false, which is what submit exports as TRAIN_LIDAR_ONLY=False.
+    assert slurm_config["profiles"][JUNE_CAMERA_PROFILE]["train_lidar_only"] is False
