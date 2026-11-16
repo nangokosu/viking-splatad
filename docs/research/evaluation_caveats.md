@@ -66,6 +66,8 @@ For a ray aimed at a trunk base behind grass:
 - **Threshold:** the same value as the ungated render rule, e.g. 0.5 ("a ray through here would more likely stop than pass"). The render grid and the Gaussian grid then differ only by visibility.
 - **Grid:** the same frame, resolution and origin as `labels/occupancy.py`.
 - **Test:** a known-answer test. One Gaussian gives α = σ(o) at its centre, exactly its 3σ voxels, and the exact product-rule value for two overlapping Gaussians.
+- **Centre sampling misses thin Gaussians (found 2026-11-16, fixed by T81):** SplatAD's Gaussians are discs millimetres thick and a few centimetres wide, far smaller than the 0.52 m GT voxel. Their 3σ ellipsoids almost never reach a voxel centre, so the centre-sampled grid sees a small fraction of the trunk surface the model holds. The binding estimator is therefore T81 (`peak_alpha_voxel_occupancy`): each Gaussian adds its peak σ(o) to the voxel holding its mean, plus the T57 tails at other centres. The numbers and the diagnostic script are in PLAN §5 and `docs/research/p2_estimator_diagnostic/`.
+- **Threshold sweep:** scripts/19 also reports P2 precision, recall and IoU over an evenly spaced threshold grid (`eval.p2_threshold_sweep_points`); 0.5 stays binding. This is the "check at a second value" below, done over the whole range.
 
 **Its own caveats:**
 - **Ignores visibility** by design. It also counts Gaussians in space no sensor saw, such as SplatAD's random init points, including those on the scene-box faces. Score only cells within range and field of view of the eval poses (T32).

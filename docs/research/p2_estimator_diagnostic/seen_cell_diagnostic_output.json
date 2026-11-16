@@ -1,0 +1,18 @@
+{
+ "seen_trunk_cells": 3650,
+ "t57_centre_occupied_fraction": 0.08410958904109589,
+ "cells_with_any_gaussian_mean_fraction": 0.9084931506849315,
+ "cells_with_mean_binned_combined_opacity_ge_threshold_fraction": 0.7904109589041096,
+ "gaussians_with_mean_in_seen_cells": 432301,
+ "voxel_edge_m": 0.52193275,
+ "min_axis_std_quantiles_m(10,50,90)": [
+  2.800686674978506e-05,
+  0.0022016180793073916,
+  0.015934565737731304
+ ],
+ "max_axis_std_quantiles_m(10,50,90)": [
+  0.02019833384487361,
+  0.05042585286558795,
+  0.15292511804617853
+ ]
+}

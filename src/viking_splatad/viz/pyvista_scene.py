@@ -7,6 +7,7 @@ so the picture cannot disagree with the numbers.
 """
 
 import itertools
+import subprocess
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
@@ -195,3 +196,62 @@ def viz_command(
     if class_names is not None:
         command += ["--classes", ",".join(class_names)]
     return command
+
+
+# The command that installs the viewer's environment, printed when a picture fails.
+VIZ_ENVIRONMENT_FIX_COMMAND = "uv sync --project viz --locked"
+# Longest the pictures may take before an evaluation gives up on them. A hardcoded safety net, not a
+# measured value: a cold `uv run` may first resolve and install the viz environment, which can take
+# minutes, so 10 minutes leaves room for that while stopping a hung off-screen render.
+VIZ_TIMEOUT_SECONDS = 600
+
+
+def repo_relative(text: str, project_root: Path) -> str:
+    """Replace the absolute repo root by ``<repo>`` and the home directory by ``~`` in a message.
+
+    The reports are meant to be shareable, and CLAUDE.md rule 5 keeps account names (which a home
+    directory contains) out of recorded output.
+
+    Args:
+        text: A path or message.
+        project_root: Repo root.
+
+    Returns:
+        ``text`` with the root replaced by ``<repo>`` and the home directory by ``~``.
+    """
+    text = text.replace(str(Path(project_root).resolve()), "<repo>").replace(str(project_root), "<repo>")
+    # Any other path under the home directory (e.g. the uv cache) would still carry the account name.
+    return text.replace(str(Path.home()), "~")
+
+
+def run_viewer_command(command: List[str], viz_output_dir: Path, project_root: Path, run_command=subprocess.run) -> str:
+    """Run a viewer command (scripts/15 in the viz/ environment) and describe the outcome; never raises.
+
+    The evaluations call this only after their metrics are written, so a drawing problem must not
+    touch them. The command runs from the repo root because the viewer commands (``viz_command``,
+scripts/19's ``p2_viz_command``) use repo-relative script and project paths.
+
+    Args:
+        command: The viewer command, program first.
+        viz_output_dir: Folder the pictures go to (absolute).
+        project_root: Repo root (working directory of the subprocess).
+        run_command: ``subprocess.run`` stand-in, injectable for tests.
+
+    Returns:
+        "written: <folder>" or "failed: <reason>", with paths made repo-relative (``repo_relative``).
+    """
+    # Step 1: run the viewer; a missing launcher (uv) or a hang is a failure to report, not a crash.
+    try:
+        # errors="replace": undecodable viewer output must not raise out of this never-raises helper.
+        completed = run_command(command, cwd=project_root, capture_output=True, text=True, errors="replace",
+                                timeout=VIZ_TIMEOUT_SECONDS)
+    except (OSError, ValueError) as error:
+        return f"failed: could not start {command[0]}: {repo_relative(str(error), project_root)}"
+    except subprocess.TimeoutExpired:
+        return f"failed: no result within {VIZ_TIMEOUT_SECONDS} s"
+    # Step 2: a non-zero exit carries the viewer's last stderr line as the reason.
+    if completed.returncode != 0:
+        stderr_lines = (completed.stderr or "").strip().splitlines()
+        last_line = repo_relative(stderr_lines[-1], project_root) if stderr_lines else "no error output"
+        return f"failed: exit code {completed.returncode}: {last_line}"
+    return f"written: {repo_relative(str(viz_output_dir), project_root)}"

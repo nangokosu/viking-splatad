@@ -161,7 +161,11 @@ R must beat B on at least one of them on blocked and no-return cells (below), an
   - Write `gaussians.npz` next to the lidar renders (`scripts/10_export_gaussians.py`, a job step after `08`).
 - **T57, grid:** Gaussian k's 3-D alpha is α_k(x) = o_k·exp(−½(x−μ_k)ᵀΣ_k⁻¹(x−μ_k)), the 3-D form of the alpha the rasteriser uses.
   - Voxel occupancy = 1 − ∏_k(1 − α_k(x)) at the voxel centre, visiting only voxels inside each Gaussian's 3σ ellipsoid.
+- **T81, peak alpha in the voxel (binding estimator, user's decision 2026-11-16):** the centre sample alone misses SplatAD's Gaussians. They are thin discs (May stock run 17bb7a1: median smallest axis std 2 mm, median largest 5 cm) far smaller than the 0.52 m GT voxel, so almost none reach a voxel centre. On that run T57 marked 8% of the seen trunk cells occupied while the lidar hit 82%.
+  - Gaussian k adds its peak σ(o_k) to the voxel holding its mean, and the T57 tail o_k·exp(−½d²) at every other scored centre within 3σ. Combined by the product rule.
+  - Same run: seen-trunk P2 recall 0.807 vs P1 0.819 (the arms should agree on seen cells).
   - A voxel is occupied if occupancy ≥ `eval.render_accumulation_threshold`, the same value as P1. So the two grids differ only by visibility.
+- **Scripts:** `scripts/19_eval_gaussian_occupancy.py` scores one run (P1 and P2 on the same cells, T78 evidence strata, T79 detection curve, T80 present-but-hidden, threshold sweep) into `<run>/eval/gaussian_occupancy.{json,md}` and `gaussian_occupancy_cells.npz`. Its picture comes from `scripts/15 --p2`. `scripts/20_summarize_gaussian_occupancy.py` groups a session's runs by profile and compares the arms over their repeats (descriptive: each gap beside the spread within both arms).
 - **Scored cells:** only cells within lidar range and FOV of at least one eval pose (T32). P2 also counts Gaussians in space no sensor saw (e.g. SplatAD's random init points).
 - **Precision is essential here:** P2 exposes radar-invented trunks that a render could hide behind grass.
 
@@ -240,7 +244,10 @@ The radar claim concerns blocked and no-return cells. B and R should agree on se
 | T54 | no-return directions to the reference pose → sidecar rows | a known yaw rate rotates each direction by rate × time; t = capture − reference |
 | T55 | sidecar rows → 2000 m placeholders (dataparser, `add_missing_points`) | xyz = 2000·d, depth beyond SplatAD's return threshold, layout matches the sweep |
 | T56 (done) | checkpoint Gaussians → map-frame means, covariances, opacities (P2) | a hand-made state dict: log-scales, an unnormalised quaternion and logit opacity give the exact Σ = R·diag(e^s)²·Rᵀ and sigmoid; `inv(w2m)` moves μ and rotates Σ |
-| T57 | Gaussian occupancy grid (P2) | one Gaussian gives occupancy σ(o) at its centre and visits exactly its 3σ voxels; two overlapping Gaussians give 1 − (1−α₁)(1−α₂) |
+| T57 (done) | Gaussian occupancy grid (P2) | one Gaussian gives occupancy σ(o) at its centre and visits exactly its 3σ voxels; two overlapping Gaussians give 1 − (1−α₁)(1−α₂) |
+| T79 (done) | P2 cuboid detection over f_min (P2 form of T45) | a yawed synthetic cuboid with a hand-set occupied pattern gives the exact per-cuboid fractions and curve; a cuboid with no GT cell is undefined and leaves the denominator |
+| T80 (done) | present but hidden per T78 stratum | hand-made P1/P2/GT masks with known evidence give the exact counts per stratum |
+| T81 (done) | peak-alpha voxel occupancy (binding P2 estimator) | a 1 mm Gaussian off its voxel centre gives σ(o) in its own voxel and 0 elsewhere (T57: 0 everywhere); two in one voxel give 1 − (1−o₁)(1−o₂); a wide one on a centre gives the T57 tails; a far one adds nothing |
 
 ## 7. File structure
 ```
@@ -253,7 +260,8 @@ src/viking_splatad/
   splatad/radar_init_lidar_{model,method}.py           # RadarInitLidarSplatADModel
   dataset/schema.py  contract/splatad_contract.py (validate_radar_inputs)
   eval/rendered_pointcloud.py detection.py  +bev.py  # T67, T68, T45, T46 (scripts/13); T47
-  +eval/gaussian_occupancy.py                          # T56 (checkpoint -> gaussians.npz, torch, CPU) + T57 (grid, numpy)
+  eval/gaussian_occupancy.py                           # T56 (checkpoint -> gaussians.npz, torch, CPU)
+  eval/hidden_geometry.py gaussian_detection.py p2_cells.py p2_repeats.py run_context.py   # T57, T78, T81; T79, T80 (scripts/19, 20)
 scripts/07_build_radar_seeds.py  +08_render_lidar_pointcloud.py  +09_compare_runs.py  slurm/{splatad_run.sbatch,submit_run.py}
 ```
 

@@ -23,6 +23,18 @@ eval:
   # show several trunks with their surroundings while single voxels stay distinguishable. Override
   # per run with --radius-meters (scripts/15) or --viz-radius-meters (scripts/13).
   viz_radius_meters: 25.0
+  # P2 (scripts/19) T79 detection curve: f_min on an evenly spaced grid over [0, 1] with this many
+  # points, ends included. No f_min is tuned on GT (PLAN §5). 11 points = steps of 0.1: a per-cuboid
+  # fraction is a step function of whole cells, so a finer grid adds rows, not information, for
+  # cuboids of ~10 GT cells; scripts/20 bands the repeats on this same grid.
+  p2_f_min_grid_points: 11
+  # P2 threshold sweep (caveats §5: floaters/haze can cross one cut): occupancy thresholds on an
+  # evenly spaced grid over [0, 1] with this many points; render_accumulation_threshold stays the
+  # binding cut. 11 points = steps of 0.1, which includes 0.5 exactly.
+  p2_threshold_sweep_points: 11
+  # T57 working batch (Gaussians per KD-tree batch): a CPU memory policy only, results do not depend
+  # on it. The same value the radar opacity loss uses for its gate batches (radar_lidar_gate_chunk_size).
+  gaussian_occupancy_chunk_size: 4096
   # Scored class names scripts/15 draws (a list of names from scored_class_ids); null = all scored
   # classes. Override per run with --classes (scripts/15) or --viz-classes (scripts/13).
   viz_classes: null

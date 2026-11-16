@@ -41,6 +41,12 @@ PLANNED_TRANSFORM_IDS = frozenset(
         "T56", "T57",
         # Evaluation-only recorded-beam evidence for matched hidden-trunk cells.
         "T78",
+        # P2 cuboid detection over f_min and present-but-hidden cells per T78 evidence stratum
+        # (eval/gaussian_detection.py).
+        "T79", "T80",
+        # P2 peak-alpha voxel occupancy (eval/hidden_geometry.py): replaces T57's centre sample,
+        # which misses SplatAD's thin Gaussians at the GT voxel size.
+        "T81",
         # A run's exact train/test frames rebuilt without torch (dataset/run_split.py,
         # scripts/09_extract_run_split.py): neurad's time window and per-sensor LINSPACE split.
         "T58", "T59",

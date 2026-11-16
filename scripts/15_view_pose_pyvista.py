@@ -24,6 +24,11 @@ sweeps, map frame, straight-down camera, radius, classes and box wireframes, wit
 translucent points coloured by beam elevation (so the lidar ring ripples are visible) and thick black GT boxes.
 ``--show-points`` (with ``--pose``) adds the rendered and real returns to the precision map. Several ``--run`` folders give
 side-by-side panels with linked cameras (e.g. B and R of one session).
+``--p2`` (one ``--run``, launched by scripts/19) instead draws ``p2_occupancy_<view>.png``, the picture of the P2
+metric: the run's scored cells from scripts/19's ``eval/gaussian_occupancy_cells.npz``, the occupied ones (T81
+occupancy >= the archived threshold) as voxel cubes, solid green on GT and translucent red off GT, classified by
+``p2_cells.p2_cell_outcomes`` (the metric's own rule), with the same scored-box wireframes, classes, radius and
+camera as the P1 maps. The caption carries the report's P2 precision and recall per drawn class.
 
 Everything is derived as scripts/13 derives it, through the same functions: the run's split record,
 session and GT, the T67 accumulation threshold, the scored region (``scored_region_cuboids``) and the
@@ -40,6 +45,7 @@ Without ``--output-dir`` an interactive window opens for each map.
 import argparse
 import functools
 import importlib.util
+import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,11 +66,19 @@ from viking_splatad.eval.detection import (
     visible_neighbourhood_mask,
     voxel_centers,
 )
+from viking_splatad.eval.p2_cells import p2_cell_outcomes
 from viking_splatad.eval.rendered_pointcloud import (
     RenderedSweep,
     load_test_lidar_sweeps,
     occupied_voxel_grid,
     points_to_map_voxels,
+)
+from viking_splatad.eval.run_context import (
+    CUBOIDS_FILE_NAME,
+    file_sha256,
+    load_ground_truth,
+    resolve_render_target,
+    resolve_session,
 )
 from viking_splatad.labels.cuboids import Cuboid
 from viking_splatad.viz.pyvista_scene import (
@@ -89,6 +103,7 @@ from viking_splatad.viz.viewer_export import sweep_points_to_map
 
 # File-name stem of the pooled maps (all test sweeps in one grid, as the report pools them).
 POOLED_STEM = "pooled"
+# scripts/13, importable through load_eval_script for callers that need its evaluate_run.
 EVAL_SCRIPT_PATH = Path(__file__).resolve().parent / "13_eval_semantic_occupancy.py"
 DEFAULT_EVAL_CONFIG_RELATIVE_PATH = Path("configs") / "eval.yaml"
 # Camera choices: the default oblique 3D view, or straight down (map x-y plane).
@@ -115,6 +130,16 @@ RIPPLE_COLOR_ENDS = ("#74c476", "#00441b")
 RIPPLE_POINT_OPACITY = 0.10
 RIPPLE_BOX_LINE_WIDTH = 4.0
 RIPPLE_BOX_RGB = (0, 0, 0)
+# P2 inputs scripts/19 writes under the run (its EVAL_OUTPUT_DIR_NAME, REPORT_JSON_NAME, CELLS_ARCHIVE_NAME; a
+# test keeps the two scripts in step), and the P2 picture's file-name stem (p2_occupancy_<view>.png).
+P2_EVAL_DIR_NAME = "eval"
+P2_REPORT_JSON_NAME = "gaussian_occupancy.json"
+P2_CELLS_ARCHIVE_NAME = "gaussian_occupancy_cells.npz"
+P2_PICTURE_STEM = "p2_occupancy"
+# Opacity of occupied cells off GT in the P2 picture, a presentation choice: P2 draws only occupied cells (no faint
+# whole-cloud context as in the P1 map, whose NON_HIT_PRECISION_OPACITY would make sparse false positives vanish), so the red cells
+# must read on their own, yet stay translucent so the green GT cells behind them show through.
+P2_OFF_TRUTH_OPACITY = 0.35
 
 
 @dataclass
@@ -178,6 +203,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ripples", action="store_true",
                         help="with one --run: draw <pooled|stem>_ripples.png, the points twin of the voxel map (same sweeps, frame, camera, radius, classes "
                              "and boxes): rendered returns coloured by beam elevation, to see the lidar ring ripples")
+    parser.add_argument("--p2", action="store_true",
+                        help="with one --run: draw p2_occupancy_<view>.png, the P2 cells of scripts/19 (occupied cells green on GT, "
+                             "red off GT, with the scored boxes)")
     parser.add_argument("--gated", action="store_true",
                         help="use the ray-drop-gated points instead of the ungated set the metric binds to")
     parser.add_argument("--output-dir", type=Path, default=None, help="write <pooled|stem>_<map>.png here; default: interactive window")
@@ -191,9 +219,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def load_eval_script():
     """Import scripts/13 as a module (its file name is not a valid module name).
 
+    The viewer itself reads runs through ``viking_splatad.eval.run_context`` (the resolvers scripts/13
+    uses); this loader stays for callers that need scripts/13 itself, e.g. its ``evaluate_run``.
+
     Returns:
-        The loaded module (cached, so several runs share one import); its run, session and
-        ground-truth resolvers are reused so both scripts read a run the same way.
+        The loaded module (cached, so several callers share one import).
     """
     module_spec = importlib.util.spec_from_file_location("eval_semantic_occupancy", EVAL_SCRIPT_PATH)
     module = importlib.util.module_from_spec(module_spec)
@@ -218,12 +248,11 @@ def load_run_scene(run_dir: Path, rerender_label: Optional[str], eval_settings: 
     Raises:
         ValueError: Refused input (see scripts/13 ``evaluate_run``).
     """
-    eval_script = load_eval_script()
-    # Step 1: renders, session and GT, all derived from the run's own records.
-    _, render_dir, expected_stems, split_record = eval_script.resolve_render_target(run_dir, rerender_label)
-    session_config, manifest = eval_script.resolve_session(split_record, project_root)
+    # Step 1: renders, session and GT, all derived from the run's own records (the resolvers scripts/13 uses).
+    _, render_dir, expected_stems, split_record = resolve_render_target(run_dir, rerender_label)
+    session_config, manifest = resolve_session(split_record, project_root)
     gt_dir = Path(session_config["session"]["gt_dir"])
-    cuboids, grid = eval_script.load_ground_truth(gt_dir)
+    cuboids, grid = load_ground_truth(gt_dir)
     grid_origin, voxel_size = np.asarray(grid["origin"], dtype=np.float64), float(grid["voxel_size"])
     sweeps = load_test_lidar_sweeps(render_dir, expected_stems, accumulation_threshold)
     sweep_poses = [sweep.lidar_to_map for sweep in sweeps]
@@ -249,7 +278,7 @@ def load_run_scene(run_dir: Path, rerender_label: Optional[str], eval_settings: 
         run_id=split_record["run"]["run_id"], sweeps={sweep.stem: sweep for sweep in sweeps},
         scored_cuboids=scored_cuboids, neighbourhood_cuboids=neighbourhood_cuboids,
         membership_sha256=split_record["membership_sha256"],
-        gt_cuboids_sha256=eval_script.file_sha256(gt_dir / eval_script.CUBOIDS_FILE_NAME),
+        gt_cuboids_sha256=file_sha256(gt_dir / CUBOIDS_FILE_NAME),
         grid_origin=grid_origin, voxel_size=voxel_size, ground_truth_class_ids=np.asarray(grid["class_ids"]),
         class_neighbourhoods=class_neighbourhoods, max_range=max_range, vertical_half_fov=vertical_half_fov,
         class_names={class_id: class_name for class_name, class_id in dict(eval_settings["scored_class_ids"]).items()},
@@ -382,7 +411,7 @@ def pooled_voxel_maps(sweeps: Sequence[RenderedSweep], scene: RunScene, selected
                       use_gated: bool, radius_meters: float) -> Dict[str, Any]:
     """The GT and render voxels of one or several pooled sweeps for the three maps (map-frame voxel centres).
 
-    Pooling is the report's (scripts/13 ``pooled_map_points``): every sweep's points go to the map frame
+    Pooling is the report's (``run_context.pooled_map_points``): every sweep's points go to the map frame
     and onto the GT grid, and a voxel is occupied when any sweep put a point in it. Per selected class,
     inside its scoring neighbourhood (for a subset of the run's sweeps, the part those poses see):
     GT voxels = the class's GT, hit when the render occupies it (recall), missed otherwise; render
@@ -602,6 +631,29 @@ def draw_voxels(plotter, pyvista_module, centres: np.ndarray, voxel_size: float,
                      ambient=VOXEL_AMBIENT_LIGHT, diffuse=1.0 - VOXEL_AMBIENT_LIGHT)
 
 
+def draw_scored_cuboid_wireframes(plotter, pyvista_module, scene: RunScene, selected_class_ids: Sequence[int],
+                                  lidar_positions_xy: np.ndarray, radius_meters: float) -> None:
+    """Draw the selected classes' scored cuboids whose centre lies within the radius, as thin dark wireframes.
+
+    Args:
+        plotter: ``pyvista.Plotter`` with the panel's subplot active.
+        pyvista_module: The imported ``pyvista``.
+        scene: The run's scene (its ``scored_cuboids`` are the boxes the metric counts).
+        selected_class_ids: Classes whose boxes are drawn.
+        lidar_positions_xy: (K, 2) map-frame lidar positions of the drawn sweeps.
+        radius_meters: Horizontal radius around any of them.
+    """
+    # Step 1: the counted boxes of the selected classes, kept when their centre is near any lidar position.
+    selected_cuboids = [cuboid for cuboid in scene.scored_cuboids if cuboid.class_id in selected_class_ids]
+    nearby_cuboids = [cuboid for cuboid, nearby in zip(selected_cuboids, within_radius_of_any(cuboid_centers(selected_cuboids), lidar_positions_xy, radius_meters))
+                      if nearby] if selected_cuboids else []
+    # Step 2: 12 edges per box as one line mesh.
+    corner_points, line_cells = cuboid_wireframe_arrays(nearby_cuboids)
+    if corner_points.shape[0]:
+        plotter.add_mesh(pyvista_module.PolyData(corner_points, lines=line_cells),
+                         color=np.array(CUBOID_WIREFRAME_RGB) / 255.0, line_width=WIREFRAME_LINE_WIDTH)
+
+
 def draw_panel(plotter, pyvista_module, column: int, map_name: str, scene: RunScene, selected_class_ids: Sequence[int],
                stem: str, maps: Dict[str, Any], radius_meters: float, lidar_positions_xy: np.ndarray,
                point_arrays: Optional[Dict[str, Any]]) -> None:
@@ -625,13 +677,7 @@ def draw_panel(plotter, pyvista_module, column: int, map_name: str, scene: RunSc
     for centres, colour_rgb, opacity in map_layers(map_name, maps):
         draw_voxels(plotter, pyvista_module, centres, scene.voxel_size, colour_rgb, opacity)
     # Step 2: the selected classes' scored cuboids within the radius, as thin dark wireframes for orientation.
-    selected_cuboids = [cuboid for cuboid in scene.scored_cuboids if cuboid.class_id in selected_class_ids]
-    nearby_cuboids = [cuboid for cuboid, nearby in zip(selected_cuboids, within_radius_of_any(cuboid_centers(selected_cuboids), lidar_positions_xy, radius_meters))
-                      if nearby] if selected_cuboids else []
-    corner_points, line_cells = cuboid_wireframe_arrays(nearby_cuboids)
-    if corner_points.shape[0]:
-        plotter.add_mesh(pyvista_module.PolyData(corner_points, lines=line_cells),
-                         color=np.array(CUBOID_WIREFRAME_RGB) / 255.0, line_width=WIREFRAME_LINE_WIDTH)
+    draw_scored_cuboid_wireframes(plotter, pyvista_module, scene, selected_class_ids, lidar_positions_xy, radius_meters)
     # Step 3: optional returns, kept to the radius so they cannot stretch the camera.
     if point_arrays is not None:
         real_points = point_arrays["real"][within_radius_of_any(point_arrays["real"], lidar_positions_xy, radius_meters)]
@@ -803,12 +849,152 @@ def render_ripples(scene: RunScene, stem: str, selected_class_ids: Sequence[int]
         plotter.close()
 
 
+def load_p2_inputs(run_dir: Path) -> Tuple[Dict[str, Any], Dict[str, np.ndarray]]:
+    """Read the P2 report and cells archive scripts/19 wrote for a run, and check they belong together.
+
+    Args:
+        run_dir: Fetched run folder.
+
+    Returns:
+        (report dict, cells archive as name -> array).
+
+    Raises:
+        ValueError: If the run has no P2 outputs, or the archive is not the one the report was written with.
+    """
+    # Step 1: the outputs sit in the eval root scripts/19 used (the run itself; P2 has no rerender variant).
+    eval_root, _, _, _ = resolve_render_target(run_dir, None)
+    eval_dir = eval_root / P2_EVAL_DIR_NAME
+    report_path, cells_path = eval_dir / P2_REPORT_JSON_NAME, eval_dir / P2_CELLS_ARCHIVE_NAME
+    if not report_path.is_file() or not cells_path.is_file():
+        raise ValueError(f"{eval_dir}: no {P2_REPORT_JSON_NAME} / {P2_CELLS_ARCHIVE_NAME}: run scripts/19 first")
+    report = json.loads(report_path.read_text())
+    # Step 2: the report records the archive's digest, so a stale or foreign archive is refused, never drawn.
+    if report.get("cells_sha256") != file_sha256(cells_path):
+        raise ValueError(f"{cells_path} does not match the cells_sha256 of {report_path}")
+    with np.load(cells_path, allow_pickle=False) as archive:
+        cells = {key: archive[key] for key in archive.files}
+    return report, cells
+
+
+def p2_cell_layers(cells: Dict[str, np.ndarray], class_names: Sequence[str], lidar_positions_xy: np.ndarray,
+                   radius_meters: float) -> Dict[str, Any]:
+    """The occupied scored cells of the P2 picture, split on / off GT, as map-frame voxel centres.
+
+    The split is ``p2_cell_outcomes`` (the metric's rule): for one class, the on-GT cells are the P2 true
+    positives and the off-GT cells its false positives; for several, their unions.
+
+    Args:
+        cells: P2 cells archive (``centres`` plus the arrays ``p2_cell_outcomes`` reads).
+        class_names: Scored class names drawn.
+        lidar_positions_xy: (K, 2) map-frame test lidar positions.
+        radius_meters: Horizontal radius around any of them to keep.
+
+    Returns:
+        {"on_truth" / "off_truth": (V, 3) centres within the radius, "totals": the same two names -> counts over
+        the whole scored region}.
+    """
+    # Step 1: the metric's classification of every archived cell.
+    outcomes = p2_cell_outcomes(cells, class_names)
+    occupied_scored = outcomes["occupied"] & outcomes["scored"]
+    cell_masks = {"on_truth": occupied_scored & outcomes["on_ground_truth"],
+                  "off_truth": occupied_scored & ~outcomes["on_ground_truth"]}
+    # Step 2: whole-region counts for the caption, then the centres cut to the radius for drawing.
+    centres = np.asarray(cells["centres"])
+    layers: Dict[str, Any] = {"totals": {}}
+    for layer_name, cell_mask in cell_masks.items():
+        layers["totals"][layer_name] = int(np.count_nonzero(cell_mask))
+        layer_centres = centres[cell_mask]
+        layers[layer_name] = layer_centres[within_radius_of_any(layer_centres, lidar_positions_xy, radius_meters)]
+    return layers
+
+
+def p2_caption(scene: RunScene, report: Dict[str, Any], class_names: Sequence[str], layers: Dict[str, Any],
+               radius_meters: float) -> str:
+    """Caption of the P2 picture: run, estimator and cut, the report's P2 precision / recall per class, drawn counts.
+
+    Args:
+        scene: The run's scene.
+        report: scripts/19 report.
+        class_names: Scored class names drawn.
+        layers: ``p2_cell_layers`` result.
+        radius_meters: Drawing radius.
+
+    Returns:
+        Caption text, one short line per item (8 pt fits an 800 px panel).
+    """
+    settings = report["settings"]
+    lines = [scene.run_id,
+             f"P2 {settings['occupancy_estimator']}, occupied at >= {settings['occupancy_threshold']:g}, "
+             f"drawn within {radius_meters:g} m of a test lidar"]
+    # Step 1: per class, precision TP / (TP + FP) and recall TP / (TP + FN) from the report's own counts.
+    for class_name in class_names:
+        metrics = report["classes"][class_name]["P2"]
+        true_positive, false_positive, false_negative = (metrics["true_positive"], metrics["false_positive"],
+                                                         metrics["false_negative"])
+        lines.append(f"{class_name}: P2 precision {ratio_text(true_positive, true_positive + false_positive)}, "
+                     f"recall {ratio_text(true_positive, true_positive + false_negative)}")
+    # Step 2: what the colours count, over the whole scored region (the drawing is cut to the radius).
+    totals = layers["totals"]
+    lines.append(f"occupied scored cells: {totals['on_truth']} on GT (green), {totals['off_truth']} off GT (red)")
+    return "\n".join(lines)
+
+
+def render_p2(scene: RunScene, report: Dict[str, Any], cells: Dict[str, np.ndarray], selected_class_ids: Sequence[int],
+              output_dir: Optional[Path], radius_meters: float, view: str = VIEW_CHOICES[0]) -> None:
+    """Draw the P2 picture of one run: occupied scored cells green on GT, red off GT, with the scored boxes.
+
+    Args:
+        scene: The run's scene (boxes, test lidar positions, GT grid).
+        report: scripts/19 report of the run.
+        cells: Its cells archive.
+        selected_class_ids: Scored class ids drawn (cells and boxes).
+        output_dir: Folder for ``p2_occupancy_<view>.png``, or None for an interactive window.
+        radius_meters: Horizontal radius around any test lidar position to draw.
+        view: ``oblique`` or ``top``.
+
+    Raises:
+        ValueError: If the archive's grid is not the scene's GT grid.
+    """
+    # PyVista (VTK) is imported here so the module loads in environments without it (tests).
+    import pyvista
+
+    # Step 1: the archive's cells must lie on the GT grid the boxes come from (same origin and voxel edge).
+    if not (np.array_equal(np.asarray(cells["grid_origin"]), scene.grid_origin)
+            and float(cells["voxel_size"]) == scene.voxel_size):
+        raise ValueError("P2 cells archive grid differs from the run's GT grid")
+    # Step 2: the cells to draw, near the pooled test sweeps as in the P1 pooled map.
+    lidar_positions_xy = np.array([sweep.lidar_to_map[:2, 3] for sweep in scene.sweeps.values()])
+    class_names = [scene.class_names[class_id] for class_id in selected_class_ids]
+    layers = p2_cell_layers(cells, class_names, lidar_positions_xy, radius_meters)
+    plotter = pyvista.Plotter(off_screen=output_dir is not None, window_size=(PANEL_PIXELS, PANEL_PIXELS))
+    # The window is closed even when drawing fails.
+    try:
+        # Step 3: translucent red behind, solid green, the counted boxes, then the caption.
+        draw_voxels(plotter, pyvista, layers["off_truth"], scene.voxel_size, NON_HIT_VOXEL_RGB, P2_OFF_TRUTH_OPACITY)
+        draw_voxels(plotter, pyvista, layers["on_truth"], scene.voxel_size, HIT_VOXEL_RGB, SOLID_VOXEL_OPACITY)
+        draw_scored_cuboid_wireframes(plotter, pyvista, scene, selected_class_ids, lidar_positions_xy, radius_meters)
+        plotter.add_text(p2_caption(scene, report, class_names, layers, radius_meters), font_size=8)
+        if view == "top":
+            plotter.view_xy()
+        # Translucent red over solid green composites in the right order only with depth peeling.
+        plotter.enable_depth_peeling()
+        if output_dir is None:
+            plotter.show()
+        else:
+            output_path = output_dir / f"{P2_PICTURE_STEM}_{view}.png"
+            plotter.show(screenshot=str(output_path))
+            print(f"wrote {output_path}")
+    finally:
+        plotter.close()
+
+
 def main(argument_list: Optional[List[str]] = None) -> int:
     """Draw the pooled maps and every test sweep (no ``--pose``) or only the chosen poses of the given runs.
 
     Without ``--pose`` and with ``--output-dir`` it writes ``pooled_<map>.png`` and one ``<stem>_<map>.png`` per test sweep
     shared by the runs; without ``--output-dir`` (windows) it draws the pooled maps only.
     With ``--ripples`` (one run) it draws the ripple view instead, with the same stems.
+    With ``--p2`` (one run) it draws only the P2 picture ``p2_occupancy_<view>.png`` of scripts/19's cells.
 
     Args:
         argument_list: CLI arguments (default: sys.argv).
@@ -825,6 +1011,12 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     # The ripple view draws one run, checked before the slow run loading.
     if arguments.ripples and len(arguments.run_dirs) != 1:
         print("refused: --ripples draws one run: give a single --run", file=sys.stderr)
+        return 1
+    # The P2 picture draws one run's pooled P2 cells: no rerender, pose, point overlay or ripple variant exists.
+    if arguments.p2 and (len(arguments.run_dirs) != 1 or arguments.rerender is not None or arguments.ripples
+                         or arguments.pose is not None or arguments.show_points or arguments.all_points):
+        print("refused: --p2 draws one run's pooled P2 cells: give a single --run, without --rerender, --ripples, "
+              "--pose, --show-points or --all-points", file=sys.stderr)
         return 1
     # Steps 2-3 run in one guard so a missing file or key is reported as a refusal (exit 1), not a traceback.
     try:
@@ -845,9 +1037,13 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         scenes = [load_run_scene(run_dir, arguments.rerender, eval_settings, accumulation_threshold, project_root)
                   for run_dir in arguments.run_dirs]
         check_scenes_comparable(scenes)
+        # --p2: one picture of the run's P2 cells, from scripts/19's outputs.
+        if arguments.p2:
+            p2_report, p2_cells = load_p2_inputs(arguments.run_dirs[0])
+            stems = [P2_PICTURE_STEM]
         # No --pose: the pooled maps the report is computed on, plus (when writing PNGs) one picture set per test sweep.
         # Interactive windows stay pooled-only: one window per sweep would open dozens. The raw points exist per sweep only.
-        if arguments.pose is None:
+        elif arguments.pose is None:
             if arguments.show_points or arguments.all_points:
                 raise ValueError("--show-points / --all-points draw one sweep's returns: give --pose")
             stems = [POOLED_STEM]
@@ -869,6 +1065,10 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         return 1
     for stem in stems:
         try:
+            if arguments.p2:
+                render_p2(scenes[0], p2_report, p2_cells, list(selected_class_ids), arguments.output_dir, radius_meters,
+                          arguments.view)
+                continue
             if arguments.ripples:
                 render_ripples(scenes[0], stem, list(selected_class_ids), arguments.gated, arguments.output_dir, radius_meters)
                 continue

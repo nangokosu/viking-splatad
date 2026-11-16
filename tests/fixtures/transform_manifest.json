@@ -72,10 +72,13 @@
     "T76",
     "T77",
     "T78",
+    "T79",
     "T7a",
     "T7b",
     "T7c",
     "T8",
+    "T80",
+    "T81",
     "T9a",
     "T9b"
   ],
@@ -369,6 +372,10 @@
       "qualified_name": "viking_splatad.eval.hidden_geometry.recorded_ray_evidence"
     },
     {
+      "id": "T79",
+      "qualified_name": "viking_splatad.eval.gaussian_detection.cuboid_occupied_fractions"
+    },
+    {
       "id": "T7a",
       "qualified_name": "viking_splatad.extract.camera.parse_camera_info"
     },
@@ -383,6 +390,14 @@
     {
       "id": "T8",
       "qualified_name": "viking_splatad.extract.camera.decode_and_resize_image"
+    },
+    {
+      "id": "T80",
+      "qualified_name": "viking_splatad.eval.gaussian_detection.present_but_hidden"
+    },
+    {
+      "id": "T81",
+      "qualified_name": "viking_splatad.eval.hidden_geometry.peak_alpha_voxel_occupancy"
     },
     {
       "id": "T9a",
