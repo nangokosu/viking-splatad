@@ -313,6 +313,12 @@ profiles:
     train_lidar_only: false
     radar_variant: init_loss
     radar_anchor_profile: june_scene_a_radar_init
+  # Stock June WITH the photometric loss (user's request 2026-11-16: 5 repeats per variant): the
+  # baseline arm of the two *_cam radar profiles above. It reproduces the old stock June run
+  # (B+cam, june_scene_a-20261101-...) at current code, since june_scene_a is now lidar-only.
+  june_scene_a_cam:
+    <<: *june_core_profile
+    train_lidar_only: false
 
   # ---- Radar smokes: the month's full-window core with the smoke profile's iteration and save
   # settings (anchors reused), reading the month's full-run init artifact so no separate artifact

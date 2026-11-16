@@ -343,3 +343,34 @@ def test_june_init_loss_camera_profile_resolves_like_the_lidar_only_init_loss_pr
     lidar_only_options = resolve(submit_module, slurm_config, "june_scene_a_radar_init_loss", "june")
     assert camera_options == lidar_only_options
     assert camera_options["method"] == "splatad-radar-init-lidar"
+
+
+# ---------------------------------------------------------------- 10: June stock with the camera loss
+
+JUNE_CAMERA_STOCK_PROFILE = "june_scene_a_cam"
+
+
+def test_june_camera_stock_profile_differs_from_lidar_only_core_only_by_camera_loss(slurm_config):
+    """The camera-on stock baseline is the lidar-only June core with train_lidar_only off and nothing else."""
+    profile = dict(slurm_config["profiles"][JUNE_CAMERA_STOCK_PROFILE])
+    assert profile.pop("train_lidar_only") is False
+    expected = dict(slurm_config["profiles"][JUNE_LIDAR_ONLY_PROFILE])
+    expected.pop("train_lidar_only")
+    assert profile == expected
+
+
+def test_june_camera_radar_profiles_equal_camera_stock_except_radar_keys(slurm_config):
+    """Each *_cam radar arm differs from its camera-on stock baseline only by the radar keys."""
+    stock_profile = dict(slurm_config["profiles"][JUNE_CAMERA_STOCK_PROFILE])
+    for radar_profile_name in (JUNE_CAMERA_PROFILE, "june_scene_a_radar_init_loss_cam"):
+        radar_profile = dict(slurm_config["profiles"][radar_profile_name])
+        radar_profile.pop("radar_variant")
+        radar_profile.pop("radar_anchor_profile")
+        assert radar_profile == stock_profile, radar_profile_name
+
+
+def test_june_camera_stock_profile_resolves_to_plain_splatad(submit_module, slurm_config):
+    """The camera-on stock baseline trains plain splatad with no radar inputs."""
+    options = resolve(submit_module, slurm_config, JUNE_CAMERA_STOCK_PROFILE, "june")
+    assert options["method"] == "splatad"
+    assert options["inputs_dir"] is None
