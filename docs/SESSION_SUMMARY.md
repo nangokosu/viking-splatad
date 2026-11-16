@@ -1,62 +1,39 @@
-# Last session summary (2026-11-15)
+# Last session summary (2026-11-15, evening)
 
 ## Done
-Branch `radar-init-loss-merge` (not pushed): Neel's radar opacity loss merged with Dorsa's radar initialization, giving three variants per session (stock `splatad`, `splatad-radar-init`, `splatad-radar-init-lidar`).
+Branch `radar-init-loss-merge` (not pushed): Neel's radar opacity loss merged with Dorsa's radar initialization, giving three variants per session (stock `splatad`, `splatad-radar-init`, `splatad-radar-init-lidar`). Earlier work of the day: merge, painting, seed model, smokes (`7dce3fb` … `93d2579`).
 
-- `7dce3fb` merge; `553d650`, `fe84c70` tests first; `ca83f2c` docs; `702a6b8`, `e83a866` implementation.
-- `6d81e8e`, `6ba4709`, `a0ea119`: the two code reviews (Slurm wiring, radar modules) and their fixes.
-- `1420416`: painting tries the K nearest train frames (`paint_frames_per_camera: 2`); footprint is half a cell (one cell wide).
-- `476b757`: seed `features_rest` random like stock; seed opacity from stock `init_opacities`.
-- `cf9a5f0`:
-  - Profiles `smoke_a4500_scene_split_radar_init` and `_radar_init_loss` on `may_chunks0_1_smoke`, the stock `smoke_a4500_scene_split` settings plus `radar_variant`. The `smoke_a4500` prefix is needed for the A4500 `gres`.
-  - Fix: `load_verified_anchors` accepts a dataset named by its folder (`may_chunks0_1_smoke`, extracted as `may_short_grass`).
-- Full suite in the image: 1362 passed, 1 allowed skip.
-- **May chunks 0-1 radar smokes, successful and fetched:**
-  - Runs `…radar_init-20261115-142917-cf9a5f0` and `…radar_init_loss-20261115-143151-cf9a5f0`.
-  - Same frames as the stock smoke (`membership_sha256` 415ff0704f00).
-  - Final eval at step 2950:
-
-    | Method | PSNR | Chamfer | Median chamfer | Rel. depth | Train time |
-    |---|---|---|---|---|---|
-    | Stock | 19.65 | 0.968 | 1.382 | 0.212 | 827 s |
-    | Radar init | 21.14 | 0.942 | 0.867 | 0.084 | 832 s |
-    | Radar init + loss | 20.52 | 0.885 | 1.161 | 0.075 | 1432 s |
-
-  - Single runs, non-trunk scene: wiring check only, not a result.
-- **Four full Scene A radar runs submitted** (code `1ed8131`; gates passed, splits identical to the reference records):
-
-  | Job | Run |
-  |---|---|
-  | 249564 | `may_short_grass-may_scene_a_radar_init-20261115-163941-1ed8131` |
-  | 249567 | `may_short_grass-may_scene_a_radar_init_loss-20261115-164255-1ed8131` |
-  | 249571 | `june_tall_grass-june_scene_a_radar_init-20261115-164604-1ed8131` |
-  | 249572 | `june_tall_grass-june_scene_a_radar_init_loss-20261115-164912-1ed8131` |
-
-  At submission 249564 was running (gpunode2) and the other three were pending. All four are in `runs/submitted.tsv`, so `submit_run.py runs` tracks them.
+This session (time limits and resubmits):
+- Checked the four full Scene A radar runs. The two `radar_init` runs finished and were fetched (step-20000 checkpoints on the Mac).
+- `may_scene_a_radar_init_loss` (job 249567) was cancelled at its 6 h limit at step 17990 of 20001. `june_scene_a_radar_init_loss` (249572) ran at ~1.35 s/step, projecting ~7.5 h, so it was cancelled at ~45 min.
+- `a0abfe1`: May core `time_limit` 6 h -> 14 h. `269c590`: June core `time_limit` 6 h -> 16 h. Derivation (measured pace x 2.0 `radar_runtime_budget.headroom_factor`) is in the `configs/slurm.yaml` comments. The limit is raised on the shared core profile, not per radar profile, because `tests/unit/test_radar_variant_profiles.py` requires a radar profile to equal its stock profile except for the radar keys. Full suite after each: 1362 passed, 1 allowed skip.
+- Cleaned (skill `cleaning-up-splatad-runs`): the failed May run, the cancelled June run, and two instant failures of my first resubmits (jobs 250176, 250181: code of the new commits was never staged, so `splatad_run.sbatch` was missing).
+- Staged both sessions at `269c590` and resubmitted.
 
 ## Current state
-- **Radar artifacts (gitignored):**
+Jobs on the cluster (all code `269c590`; gates passed, splits identical to the reference records):
 
-  | Artifact | Anchors | Painted |
-  |---|---|---|
-  | May Scene A `may_scene_a_radar_init` | 359,387 | 0.717 |
-  | June Scene A `june_scene_a_radar_init` | 201,471 | 0.618 |
-  | Chunks 0-1 `smoke_a4500_scene_split_radar_init` | 23,961 | 0.755 |
+| Job | Run | Node | Limit | State |
+|---|---|---|---|---|
+| 250273 | `may_short_grass-may_scene_a_radar_init_loss-20261116-004300-269c590` | gpunode3 | 14 h | running |
+| 250274 | `june_tall_grass-june_scene_a_radar_init_loss-20261116-004615-269c590` | gpunode2 | 16 h | running |
 
-  The chunks 0-1 clock fit is looser on its 15 s window: offset 55 ms, residual 32 ms.
-- **Cluster workdisk at its ~100 GB per-user quota.** It counts the user's other projects (~45 GB). Being full silently killed four smoke jobs (no log error, 0-byte checkpoint).
-  - Freed so far: `pip-cache` and the cluster copy of the stock chunks 0-1 smoke (the Mac copy is kept).
-  - Before the four full runs: 67 GB used, and a 5 GB test write passed. The four runs need ~16 GB at peak and ~10 GB once finished.
-- Cluster login: key authorized; the passphrase is in Keychain (`UseKeychain`).
-- **Risks:**
-  - Every anchor becomes a Gaussian (200k-360k on Scene A).
-  - The May loss acts on lidar batches only.
-  - Run-to-run noise means repeats are needed.
-- Neel's scripts 17/18 accept only B vs L on June.
-- Carried over: `pyvista-pose-viewer` not merged; T16 elevation bias undecided.
+Both started about 19:45 EST on 2026-11-15 and should end roughly 8 h later. Both are in `runs/submitted.tsv`.
+
+Fetched and ready to evaluate (not yet compared):
+- `may_short_grass-may_scene_a_radar_init-20261115-163941-1ed8131` (3 h 7 min on the cluster).
+- `june_tall_grass-june_scene_a_radar_init-20261115-164604-1ed8131`.
+
+Other state:
+- The init + loss arm trains ~7 h, against ~2.7 h for stock May and ~3.1 h for May init. Plan repeats accordingly.
+- Radar artifacts (gitignored) are unchanged: May Scene A 359,387 anchors, June Scene A 201,471.
+- Cluster workdisk: still watch the ~100 GB per-user quota (it counts other projects); a full disk silently kills jobs.
+- Risks: every anchor becomes a Gaussian (200k-360k); the May loss acts on lidar batches only; run-to-run noise means repeats are needed. Neel's scripts 17/18 accept only B vs L on June. `pyvista-pose-viewer` not merged; T16 elevation bias undecided.
+- Always run `submit_run.py stage --session <s>` after a new commit and before `submit`: `submit` does not copy code.
+- `submit_run.py clean` has no "only these runs" mode: it also lists queued or just-submitted runs without `end_utc`, so check `squeue` and the dry run before `--yes`.
 
 ## Next steps
-1. Run `submit_run.py runs` to check the four radar jobs (249564, 249567, 249571, 249572). Fetch the successful runs; diagnose and clean any that fail. If several died together, suspect the workdisk quota first.
-2. Compare them with the existing stock full runs (`may_scene_a` and `june_scene_a`, run 2026-11-01).
+1. Run `submit_run.py runs`. When 250273 and 250274 end, fetch them; if one failed, diagnose from the Slurm log, then clean it.
+2. Compare the four radar runs with the stock full runs (`may_scene_a`, `june_scene_a`, 2026-11-01).
 3. Repeats per variant; evaluation with scripts 13 and 15.
 4. Push the branch and open a PR to main (user's call); tell Dorsa and Neel which of their pieces changed.
