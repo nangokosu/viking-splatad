@@ -316,9 +316,45 @@ profiles:
   # Stock June WITH the photometric loss (user's request 2026-11-16: 5 repeats per variant): the
   # baseline arm of the two *_cam radar profiles above. It reproduces the old stock June run
   # (B+cam, june_scene_a-20261101-...) at current code, since june_scene_a is now lidar-only.
-  june_scene_a_cam:
+  june_scene_a_cam: &june_cam_profile
     <<: *june_core_profile
     train_lidar_only: false
+
+  # ---- Presentation models (user's request 2026-11-18): one run per variant, 30001 iterations
+  # (SplatAD's stock count; the learning-rate schedules already use max_steps 30000, so this is
+  # the full stock recipe) instead of 20001. June trains with the camera loss, as the *_cam arms.
+  # Each profile is its 20k base with only max_num_iterations and time_limit changed (plus the
+  # radar_anchor_profile the base leaves at its default, named explicitly)
+  # (tests/unit/test_presentation_profiles.py), so the split, seed and radar anchors are the same.
+  # time_limit: scripts/slurm/estimate_time_limit.py over the fetched 17bb7a1 campaign runs of the
+  # month's three 20k arms (slowest run scaled to 30001 iterations, x headroom_factor, rounded up);
+  # one limit per month, as the 20k profiles share one.
+  may_scene_a_30k: &may_30k_profile
+    <<: *may_core_profile
+    max_num_iterations: 30001
+    # estimate_time_limit.py (2026-11-18, 12 runs): slowest 10.14 h predicted (init + loss) x 2.0 -> 21 h.
+    time_limit: "0-21:00:00"
+  may_scene_a_radar_init_30k:
+    <<: *may_30k_profile
+    radar_variant: init
+    radar_anchor_profile: may_scene_a_radar_init
+  may_scene_a_radar_init_loss_30k:
+    <<: *may_30k_profile
+    radar_variant: init_loss
+    radar_anchor_profile: may_scene_a_radar_init
+  june_scene_a_cam_30k: &june_cam_30k_profile
+    <<: *june_cam_profile
+    max_num_iterations: 30001
+    # estimate_time_limit.py (2026-11-18, 10 runs): slowest 9.80 h predicted (init + loss) x 2.0 -> 20 h.
+    time_limit: "0-20:00:00"
+  june_scene_a_radar_init_cam_30k:
+    <<: *june_cam_30k_profile
+    radar_variant: init
+    radar_anchor_profile: june_scene_a_radar_init
+  june_scene_a_radar_init_loss_cam_30k:
+    <<: *june_cam_30k_profile
+    radar_variant: init_loss
+    radar_anchor_profile: june_scene_a_radar_init
 
   # ---- Radar smokes: the month's full-window core with the smoke profile's iteration and save
   # settings (anchors reused), reading the month's full-run init artifact so no separate artifact
