@@ -8,13 +8,13 @@ Branch `radar-init-loss-merge` (not pushed).
 - Cluster workdisk 61 GB -> 37 GB: removed `data/may_chunks0_1_smoke` (by hand; re-stage with `stage --session may_chunks0_1_smoke`) and the cluster copies of the 8 fetched runs (`--cluster-only`). Those runs still exist on the Mac.
 
 ## Current state
-Presentation models (user's request 2026-11-18): one run per variant, 30001 iterations, all with the camera loss, code `cb9d5d5` (profiles `*_30k`, time limits 21 h May / 20 h June from `scripts/slurm/estimate_time_limit.py`). Submitted 2026-11-18 ~23:20 UTC behind the campaign; **all six PENDING (Priority)** as of 2026-11-19. Expect ~5 h (stock, init) and ~10 h (init + loss) each once started. The campaign watcher does not cover them: fetch by hand from `submit_run.py runs`, and do not cluster-clean unless the user says so.
+Presentation models (user's request 2026-11-18): one run per variant, 30001 iterations, all with the camera loss, code `d51a4d6` (profiles `*_30k`, time limits 21 h May / 20 h June from `scripts/slurm/estimate_time_limit.py`). The first six jobs (2537xx, 2026-11-18) died at start because code `cb9d5d5` was never fully staged on the cluster (`splatad_run.sbatch` missing); their folders were cleaned. Restaged and resubmitted 2026-11-19 ~13:14-13:30 UTC; **all six PENDING** at submit. Expect ~5 h (stock, init) and ~10 h (init + loss) each once started. The campaign watcher does not cover them: fetch by hand from `submit_run.py runs`, and do not cluster-clean unless the user says so.
 
 | Variant | May job | June job |
 |---|---|---|
-| Stock | 253711 | 253720 |
-| Radar init | 253718 | 253723 |
-| Radar init + loss | 253719 | 253726 |
+| Stock | 254201 | 254216 |
+| Radar init | 254202 | 254219 |
+| Radar init + loss | 254211 | 254220 |
 
 Repeat campaign: 5 runs per arm, 30 jobs, all on code `17bb7a1`, submitted 2026-11-16 ~13:40 UTC, round-robin. Only 2 A6000 nodes (gpunode2, gpunode3), so expect at least ~2.7 days (measured run times: ~3.2 h stock and init, ~6.5-6.9 h init + loss). Run ids are in `runs/submitted.tsv`.
 
