@@ -50,6 +50,12 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # SuperSplat export (export/): PLY writer, principal axes -> quaternion, SH basis/fit,
         # per-Gaussian colour baked with the upstream RGBDecoderCNN, observed-scene crop box.
         "T82", "T83", "T84", "T85", "T86",
+        # SuperSplat export, viewer fixes: driven-path corridor crop (export/crop.py) and the map ->
+        # SuperSplat viewer frame, recentred on the train path with up = -y (export/viewer_frame.py).
+        "T87", "T88",
+        # Inverses used by the colour check and the SH fit: viewer frame -> map frame for points (T89)
+        # and map -> viewer frame for viewing directions (T90).
+        "T89", "T90",
         # A run's exact train/test frames rebuilt without torch (dataset/run_split.py,
         # scripts/09_extract_run_split.py): neurad's time window and per-sensor LINSPACE split.
         "T58", "T59",

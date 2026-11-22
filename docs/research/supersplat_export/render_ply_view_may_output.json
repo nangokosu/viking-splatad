@@ -1,0 +1,29 @@
+{
+  "run_dir": "runs/may_short_grass-may_scene_a_radar_init_loss_30k-20261119-132048-d51a4d6",
+  "frame": {
+    "frame_index": 1200,
+    "file": "camera/ids_camera/001200_1714572004836549599.jpg"
+  },
+  "image_size_hw": [
+    385,
+    513
+  ],
+  "downscale": 4,
+  "gaussians_total": 4801958,
+  "gaussians_projected": 1279826,
+  "projected_radius_px_percentiles": {
+    "50": 1.0,
+    "90": 2.0,
+    "99": 11.0
+  },
+  "accumulated_alpha_percentiles": {
+    "5": 0.9709675669670105,
+    "25": 0.9988735914230347,
+    "50": 0.9999978542327881
+  },
+  "abs_error_vs_photo": {
+    "median": 0.146705901053226,
+    "p90": 0.47423738426290807
+  },
+  "image": "docs/research/supersplat_export/render_ply_view_may_output_may_short_grass-may_scene_a_radar_init_loss_30k-20261119-132048-d51a4d6_render.png"
+}

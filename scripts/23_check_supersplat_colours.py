@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Check that colours baked into a SuperSplat export match a real camera image.
 
-Pipeline: read the PLY (map frame), decode colour = 0.5 + C0 * f_dc and alpha = sigmoid(opacity),
+Pipeline: read the PLY (converted back to the map frame through ``supersplat_frame.json`` when that sidecar
+records the SuperSplat viewer frame; a map-frame sidecar leaves the means as stored; a PLY without any
+sidecar is a legacy map-frame, box-cropped export), decode colour = 0.5 + C0 * f_dc and alpha = sigmoid(opacity),
 keep Gaussians above an opacity threshold, project their centres into one camera frame with
 the repo's ``project_map_points``, z-buffer per pixel (nearest centre wins), then compare the
 winning colours with the image pixels under them (per-channel absolute error, RGB in [0, 1]).
@@ -52,6 +54,9 @@ from viking_splatad.export.crop import check_dataset_identity  # noqa: E402
 from viking_splatad.export.spherical_harmonics import SH_C0, SH_COLOUR_OFFSET  # noqa: E402
 from viking_splatad.export.splatad_colours import RGB_MAX, RGB_MIN, camera_sensor_index  # noqa: E402
 from viking_splatad.export.supersplat_ply import read_supersplat_ply  # noqa: E402
+from viking_splatad.export.viewer_frame import (  # noqa: E402
+    VIEWER_FRAME_FILE_NAME, VIEWER_FRAME_NAME, check_record_matches_ply, read_viewer_frame_record,
+    viewer_to_map_points)
 from viking_splatad.pipeline.derived import DERIVED_FILE_NAME, load_derived  # noqa: E402
 from viking_splatad.radar_init.seeds import project_map_points  # noqa: E402
 from viking_splatad.splatad.viking_conversions import open_dataset_view  # noqa: E402
@@ -75,10 +80,10 @@ RENDER_RGB_FOLDER = "renders/test/rgb"
 PHOTO_RGB_FOLDER = "renders/test/gt-rgb"
 # The exported PLY inside a run.
 PLY_RELATIVE_PATH = "renders/supersplat.ply"
-# Script 22 (export), reused for checkpoint loading, run layout and the decoder batch size.
 # Repository root: this file lives in <root>/scripts/; the default output folder is anchored here, not on the cwd.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_RELATIVE_DIR = Path("reports") / "supersplat_colour_check"
+# Script 22 (export), reused for checkpoint loading, run layout and the decoder batch size.
 EXPORT_SCRIPT_PATH = Path(__file__).resolve().parent / "22_export_supersplat_ply.py"
 # Two errors x and y count as "approximately equal" when |x - y| <= CLOSENESS_FRACTION * max(x, y).
 # A judgement threshold (10 %), recorded in the JSON; the raw numbers are always reported as well.
@@ -335,26 +340,52 @@ def require_nonempty_winners(visibility: dict) -> None:
 
 
 def decode_ply(ply_path: Path) -> dict:
-    """Read an export and decode its centres, degree-0 colours and opacities.
+    """Read an export and decode its centres (map frame), degree-0 colours and opacities.
 
     colour = clip(0.5 + C0 * f_dc, 0, 1) (the degree-0 SH basis is the constant C0) and
-    alpha = sigmoid(opacity logit).
+    alpha = sigmoid(opacity logit). If ``supersplat_frame.json`` sits next to the PLY it is first checked
+    against the file (``check_record_matches_ply``: an interrupted or mixed export is refused), then its
+    ``frame`` decides: the viewer frame, p_viewer = M (p_map - origin), is mapped back with
+    p_map = M^T p_viewer + origin (``viewer_to_map_points``); the map frame keeps the centres as stored.
+    Without the sidecar the centres are used as stored (map frame). This function stays lenient so it can
+    be unit-tested on a bare PLY; the refusal of a missing sidecar lives at the CLI boundary
+    (``require_frame_record``, called by both entry points).
 
     Args:
         ply_path: ``supersplat.ply``.
 
     Returns:
-        Dict with ``means`` float64 [N,3], ``colours`` float64 [N,3] in [0,1], ``alpha`` float64 [N] and
-        ``opacity_logits`` float32 [N] as stored.
+        Dict with ``means`` float64 [N,3] in the MAP frame, ``colours`` float64 [N,3] in [0,1],
+        ``alpha`` float64 [N], ``opacity_logits`` float32 [N] as stored, ``crop`` (the sidecar's crop
+        record, or None for a legacy export without sidecar) and ``frame`` (the sidecar's frame name, or None).
+
+    Raises:
+        SystemExit: If the sidecar does not describe this PLY (size mismatch): re-export.
     """
     fields = read_supersplat_ply(ply_path)
     means = np.stack([fields[axis_name] for axis_name in POSITION_FIELD_NAMES], axis=1).astype(np.float64)
+    # Step 1: viewer-frame export -> back to the map frame, where the cameras and poses live.
+    frame_record_path = Path(ply_path).parent / VIEWER_FRAME_FILE_NAME
+    crop_record = None
+    frame_name = None
+    if frame_record_path.is_file():
+        frame_record = read_viewer_frame_record(frame_record_path)
+        # The sidecar and the PLY are written by two renames; refuse a pair that does not belong together.
+        try:
+            check_record_matches_ply(frame_record, ply_path)
+        except ValueError as error:
+            raise SystemExit(f"{error}; re-export with scripts/22_export_supersplat_ply.py --overwrite") from error
+        frame_name = frame_record["frame"]
+        if frame_name == VIEWER_FRAME_NAME:
+            means = viewer_to_map_points(means, frame_record["origin_map"], frame_record["rotation"])
+        crop_record = frame_record["crop"]
     albedo_coefficients = np.stack([fields[f"f_dc_{channel_index}"] for channel_index in range(CHANNEL_COUNT)],
                                    axis=1).astype(np.float64)
     colours = np.clip(SH_COLOUR_OFFSET + SH_C0 * albedo_coefficients, RGB_MIN, RGB_MAX)
     # expit(x) = 1 / (1 + exp(-x)) is stable for large |x|.
     alpha = expit(fields["opacity"].astype(np.float64))
-    return {"means": means, "colours": colours, "alpha": alpha, "opacity_logits": fields["opacity"]}
+    return {"means": means, "colours": colours, "alpha": alpha, "opacity_logits": fields["opacity"],
+            "crop": crop_record, "frame": frame_name}
 
 
 def select_opaque_indices(alpha: np.ndarray) -> np.ndarray:
@@ -695,9 +726,10 @@ def max_difference_within_float32(stored: np.ndarray, exported: np.ndarray) -> t
 def load_checkpoint_rows_matching_ply(arguments: argparse.Namespace, dataset_dir: Path, decoded_ply: dict) -> dict:
     """Load the run's checkpoint and prove that its kept rows are the PLY rows.
 
-    Recomputes the export's crop (same functions, same inputs; skipped when the PLY holds every Gaussian,
-    i.e. it was exported with --no-crop) so kept checkpoint row k is PLY row k,
-    then compares every mean and opacity logit.
+    Rebuilds the export's crop with script 22's ``select_crop`` so kept checkpoint row k is PLY row k,
+    then compares every mean and opacity logit. With a sidecar the crop is REPLAYED from its record (the
+    recorded corridor width / z range, the recorded box, or none), never re-derived. Without a sidecar the
+    export is a legacy one: every row when the PLY holds every Gaussian (--no-crop), else the box (T86).
 
     Args:
         arguments: Parsed CLI (``run_dir``).
@@ -713,7 +745,6 @@ def load_checkpoint_rows_matching_ply(arguments: argparse.Namespace, dataset_dir
     """
     from viking_splatad.eval.gaussian_occupancy import (  # pylint: disable=import-outside-toplevel
         checkpoint_gaussians_to_map_frame, latest_checkpoint_path)
-    from viking_splatad.export.crop import crop_mask, train_lidar_bounds_map  # pylint: disable=import-outside-toplevel
     from viking_splatad.export.splatad_colours import model_settings_from_config_yml  # pylint: disable=import-outside-toplevel
 
     export_module = load_export_script_module()
@@ -730,14 +761,19 @@ def load_checkpoint_rows_matching_ply(arguments: argparse.Namespace, dataset_dir
         actor_count=gauss_params["actor_count"], dataparser_transform=dataparser_transform,
         dataparser_scale=float(transforms["scale"]))
     total_count = len(gaussians.means)
-    if total_count == len(decoded_ply["means"]):
-        # A PLY with as many rows as the checkpoint has Gaussians was exported with --no-crop: every
-        # row is kept, so the crop is not recomputed (it could only disagree with a crop that never ran).
+    recorded_crop = decoded_ply.get("crop")
+    # Legacy export (no sidecar): a PLY with as many rows as the checkpoint has Gaussians was exported with
+    # --no-crop, so every row is kept; any other legacy export is box-cropped.
+    legacy_without_crop = recorded_crop is None and total_count == len(decoded_ply["means"])
+    if legacy_without_crop:
         keep_mask = np.ones(total_count, dtype=bool)
     else:
-        lower_corner, upper_corner = train_lidar_bounds_map(arguments.run_dir, dataset_dir)
-        keep_mask = crop_mask(gaussians.means, gaussians.opacities, lower_corner, upper_corner,
-                              float(settings["mcmc_min_opacity"]))
+        try:
+            keep_mask, _crop_record = export_module.select_crop(
+                arguments.run_dir, dataset_dir, gaussians.means, gaussians.opacities,
+                export_module.CROP_MODE_BOX, float(settings["mcmc_min_opacity"]), recorded_crop=recorded_crop)
+        except ValueError as error:
+            raise SystemExit(f"cannot rebuild the export's crop: {error}") from error
     kept_means = gaussians.means[keep_mask]
     kept_logits = np.asarray(gauss_params["opacities"], dtype=np.float64).reshape(-1)[keep_mask]
     if len(kept_means) != len(decoded_ply["means"]):
@@ -749,8 +785,9 @@ def load_checkpoint_rows_matching_ply(arguments: argparse.Namespace, dataset_dir
                          f"{mean_tolerance}), logits {logit_difference} (tol {logit_tolerance})")
     row_match = {
         "method": ("no crop (PLY row count equals the checkpoint's Gaussian count: exported with --no-crop); "
-                   if total_count == len(decoded_ply["means"]) else
-                   "recomputed the export's crop (train_lidar_bounds_map + crop_mask, same inputs); ")
+                   if legacy_without_crop else
+                   "rebuilt the export's crop with select_crop (replayed from the sidecar's recorded "
+                   "parameters, or train_lidar_bounds_map + crop_mask for a legacy box export); ")
                   + "kept checkpoint row k is PLY row k; verified by comparing every mean and opacity logit",
         "rows_kept": len(kept_means), "max_abs_mean_difference": mean_difference,
         "mean_tolerance_float32": mean_tolerance, "max_abs_logit_difference": logit_difference,
@@ -863,6 +900,29 @@ def build_diagnostic_report(run_id: str, frame_row: dict, frame_index: int, imag
     }
 
 
+def require_frame_record(ply_path: Path) -> None:
+    """Refuse a PLY that has no ``supersplat_frame.json`` beside it.
+
+    Every export since 2026-11-22 writes the sidecar and no legacy map-frame exports remain, so a missing
+    sidecar means an incomplete export (e.g. a first export killed between the PLY and sidecar renames) and
+    the frame of the centres would be a guess.
+
+    Args:
+        ply_path: ``supersplat.ply`` to check.
+
+    Returns:
+        None.
+
+    Raises:
+        SystemExit: If the sidecar is absent, telling the user to re-export with scripts/22.
+    """
+    frame_record_path = Path(ply_path).parent / VIEWER_FRAME_FILE_NAME
+    if not frame_record_path.is_file():
+        raise SystemExit(f"{ply_path} has no {VIEWER_FRAME_FILE_NAME} beside it, so its frame is unknown "
+                         "(an incomplete export, or one older than the sidecar); re-export it with "
+                         "scripts/22_export_supersplat_ply.py")
+
+
 def run_test_frame_diagnostic(arguments: argparse.Namespace) -> None:
     """Split the colour error into PLY colour, camera-direction bake and SplatAD's own render.
 
@@ -877,6 +937,7 @@ def run_test_frame_diagnostic(arguments: argparse.Namespace) -> None:
     run_dir, run_id = arguments.run_dir, arguments.run_dir.name
     # Step 1: dataset (verified), PLY decode, opacity filter.
     dataset_dir = resolve_dataset_dir(arguments)
+    require_frame_record(run_dir / PLY_RELATIVE_PATH)
     decoded_ply = decode_ply(run_dir / PLY_RELATIVE_PATH)
     opaque_indices = select_opaque_indices(decoded_ply["alpha"])
     # Step 2: median TEST frame, looked up in the dataset by frame index and verified by file name.
@@ -940,6 +1001,7 @@ def run_train_frame_check(arguments: argparse.Namespace) -> None:
     run_id = arguments.run_dir.name
     # Step 1: dataset (verified), PLY decode, opacity filter.
     dataset_dir = resolve_dataset_dir(arguments)
+    require_frame_record(arguments.run_dir / PLY_RELATIVE_PATH)
     decoded_ply = decode_ply(arguments.run_dir / PLY_RELATIVE_PATH)
     opaque_indices = select_opaque_indices(decoded_ply["alpha"])
     # Step 2: frame, image, z-buffer winners.

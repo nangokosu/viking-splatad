@@ -130,6 +130,24 @@ def test_supersplat_failure_path_does_not_exit():
     assert "set -e" not in step_text
 
 
+def test_supersplat_failure_branch_removes_the_exports_temp_files():
+    """After a failed export, only script 22's two mkstemp patterns are removed from renders/."""
+    step_commands = command_lines(supersplat_step_text(read_run_script()))
+    # Step 1: the patterns are the ones the writers use (mkstemp prefix "<final name>.", suffix ".tmp").
+    assert "SUPERSPLAT_PLY_TEMP_PATTERN='supersplat.ply.*.tmp'" in step_commands
+    assert "SUPERSPLAT_SIDECAR_TEMP_PATTERN='supersplat_frame.json.*.tmp'" in step_commands
+    assert "TIMEOUT_EXIT_CODE=124" in step_commands
+    # Step 2: the rm sits in the failure (else) branch, after the exit code is captured.
+    export_start = step_commands.index("elif timeout")
+    failure_branch = step_commands[export_start:].split("\n  else\n", 1)[1]
+    cleanup_line = ('rm -f "$RUN_DIR/renders"/$SUPERSPLAT_PLY_TEMP_PATTERN '
+                    '"$RUN_DIR/renders"/$SUPERSPLAT_SIDECAR_TEMP_PATTERN')
+    assert cleanup_line in failure_branch
+    assert failure_branch.index("SUPERSPLAT_EXIT_CODE=$?") < failure_branch.index(cleanup_line)
+    # Step 3: no recursive or broader removal.
+    assert "rm -rf" not in step_commands
+
+
 def test_run_script_is_valid_bash():
     """`bash -n` parses splatad_run.sbatch without a syntax error."""
     completed_process = subprocess.run(["bash", "-n", str(RUN_SCRIPT_PATH)], capture_output=True, text=True)
@@ -141,7 +159,7 @@ BUDGET_END_MARKER = "# END supersplat_time_budget"
 # Synthetic clock for the stub `date`: any epoch works, the budget only uses differences.
 STUB_NOW_EPOCH = 1_000_000
 STUB_RESERVE_SECONDS = 300
-STUB_MEASURED_SECONDS = 185
+STUB_MEASURED_SECONDS = 192
 STUB_SAFETY_FACTOR = 4
 FIXED_CAP_SECONDS = STUB_MEASURED_SECONDS * STUB_SAFETY_FACTOR
 

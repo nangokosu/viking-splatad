@@ -1,0 +1,42 @@
+{
+  "run_dir": "runs/may_short_grass-may_scene_a_radar_init_loss_30k-20261119-132048-d51a4d6",
+  "corridor_width_m": 37.09164047241211,
+  "corridor_returns": 37062453,
+  "gaussians": 4785844,
+  "gaussian_z_percentiles": {
+    "0.001": -18.273612258464528,
+    "0.01": -4.366522441264824,
+    "0.1": -0.3583787892310173,
+    "1": -0.0698067743031532,
+    "99": 11.306959621265737,
+    "99.9": 16.537675653295352,
+    "99.99": 24.953966007640997,
+    "99.999": 43.87195915926434
+  },
+  "candidates_by_tail_percent": {
+    "0.0": {
+      "z_lower": -76.01128387451172,
+      "z_upper": 72.47865295410156,
+      "gaussians_below": 0,
+      "gaussians_above": 0
+    },
+    "0.001": {
+      "z_lower": -0.9204299449920654,
+      "z_upper": 22.491147994995117,
+      "gaussians_below": 2062,
+      "gaussians_above": 1146
+    },
+    "0.01": {
+      "z_lower": -0.596761167049408,
+      "z_upper": 20.022348403930664,
+      "gaussians_below": 3116,
+      "gaussians_above": 2103
+    },
+    "0.1": {
+      "z_lower": -0.25249651074409485,
+      "z_upper": 16.826292037963867,
+      "gaussians_below": 7088,
+      "gaussians_above": 4418
+    }
+  }
+}

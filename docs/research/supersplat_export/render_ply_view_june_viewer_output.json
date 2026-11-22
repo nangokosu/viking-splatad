@@ -1,0 +1,30 @@
+{
+  "run_dir": "runs/june_tall_grass-june_scene_a_radar_init_loss_cam_30k-20261119-133010-d51a4d6",
+  "frame": {
+    "frame_index": 1076,
+    "file": "camera/ids_camera/001076_1718181175579148525.jpg"
+  },
+  "image_size_hw": [
+    385,
+    513
+  ],
+  "downscale": 4,
+  "ply_frame": "supersplat_viewer",
+  "gaussians_total": 4811023,
+  "gaussians_projected": 253801,
+  "projected_radius_px_percentiles": {
+    "50": 2.0,
+    "90": 6.0,
+    "99": 23.0
+  },
+  "accumulated_alpha_percentiles": {
+    "5": 0.9079267263412476,
+    "25": 0.9989038109779358,
+    "50": 0.9999901056289673
+  },
+  "abs_error_vs_photo": {
+    "median": 0.11399478093960552,
+    "p90": 0.38981219859419525
+  },
+  "image": "docs/research/supersplat_export/render_ply_view_june_viewer_output_june_tall_grass-june_scene_a_radar_init_loss_cam_30k-20261119-133010-d51a4d6_render.png"
+}

@@ -253,3 +253,13 @@ def test_crop_mask_rejects_bad_inputs():
         crop_mask(means, np.full(2, 0.5), upper, lower, TEST_MIN_OPACITY)
     with pytest.raises(ValueError):
         crop_mask(np.full((2, 3), np.nan), np.full(2, 0.5), lower, upper, TEST_MIN_OPACITY)
+
+
+@pytest.mark.covers("T86")
+def test_crop_mask_rejects_bad_min_opacity():
+    """A NaN, infinite, negative or above-one opacity floor raises."""
+    means = np.zeros((2, 3))
+    lower, upper = np.full(3, -1.0), np.full(3, 1.0)
+    for bad_floor in (np.nan, np.inf, -0.1, 1.5):
+        with pytest.raises(ValueError, match="min_opacity"):
+            crop_mask(means, np.full(2, 0.5), lower, upper, bad_floor)

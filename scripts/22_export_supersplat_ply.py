@@ -1,4 +1,4 @@
-"""Export a trained SplatAD run's Gaussians as a SuperSplat-readable 3DGS ``.ply`` (T82-T86).
+"""Export a trained SplatAD run's Gaussians as a SuperSplat-readable 3DGS ``.ply`` (T82-T88).
 
 Wires the export modules together for one run, or for every fetched run with ``--all``:
 
@@ -7,18 +7,36 @@ Wires the export modules together for one run, or for every fetched run with ``-
        the Gaussian parameters, ``features_dc`` / ``features_rest``, the RGB decoder and the
        appearance embedding are kept.
     2. Map-frame geometry with T56 (``checkpoint_gaussians_to_map_frame``).
-    3. Crop (T86, unless ``--no-crop``): the box of the train lidar sweeps in the map frame, and
-       ``opacity >= mcmc_min_opacity`` from the run's ``config.yml``.
-    4. Colour (T85 + T84): SplatAD stores no RGB per Gaussian, so the upstream RGB decoder is run on
-       each Gaussian's features along M Fibonacci directions and fitted with SH (degree 0 = the mean).
+    3. Crop (unless ``--no-crop``; ``--crop-mode`` picks which): ``corridor`` (default, T87) keeps the
+       Gaussians within the train sensor path's corridor (horizontal distance, percentile-trimmed z range
+       of the corridor's lidar returns); ``box`` (T86) keeps the map-frame box of the train lidar sweeps. Both
+       also need ``opacity >= mcmc_min_opacity`` from the run's ``config.yml``. The box spans the
+       lidar's maximum range (+-200 m) and leaves a sparse shell of large background Gaussians that
+       dominates the viewer's framing, which is why the corridor is the default.
+    4. Frame (``--frame``): ``viewer`` (default, T88) re-expresses means and principal axes as
+       p' = M (p - origin), R' = M R with the origin the mean train sensor position and M the rotation
+       taking map up (+z) to the file's -y, because SuperSplat rotates every PLY by 180 degrees about z
+       at load and so expects up = -y; ``map`` leaves the map frame untouched. The viewer frame is
+       recorded in ``<run>/renders/supersplat_frame.json`` (frame name, origin, rotation, crop, and the
+       PLY's byte size and vertex count) so that scripts can go back to the map frame. A map-frame export
+       writes the same sidecar with origin 0 and the identity rotation, so a missing sidecar can only mean a
+       legacy (map-frame, box-cropped) export. Write order: sidecar staged to a temp file, then the PLY
+       (atomic), then the sidecar moved into place; a crash in between leaves the OLD sidecar, whose
+       ``ply_bytes`` no longer matches the new PLY, which script 23 detects.
+    5. Colour (T85 + T84): SplatAD stores no RGB per Gaussian, so the upstream RGB decoder is run on
+       each Gaussian's features along D = oversampling * (degree+1)^2 Fibonacci directions and fitted
+       with SH (degree 0 = the mean).
        Directions are generated in the map frame, d_dp = A d_map for the decoder (the decoder was
-       trained in the dataparser frame x_dp = A x_map + t; direction vectors ignore t). The ray
+       trained in the dataparser frame x_dp = A x_map + t; direction vectors ignore t). The SH fit
+       operator uses the directions in the PLY's own frame (M d_map for ``viewer``), so the stored
+       coefficients are SH of the PLY frame's viewing direction. The ray
        convention is camera -> scene, the sign of 3DGS' ``dir = mean - campos``. The appearance vector
        is the embedding row of the run's camera (first camera of the config, a note is printed if
        there are several).
-    5. Quaternions from the principal axes (T83), ``log_scales = log(axis_std)``, opacity logits as
+    6. Quaternions from the principal axes (T83), ``log_scales = log(axis_std)``, opacity logits as
        stored in the checkpoint (exactly the logit of the activated opacity, so no clipping of 0 / 1
-       is needed), then ``<run>/renders/supersplat.ply`` (T82, atomic write).
+       is needed), then ``<run>/renders/supersplat.ply`` (T82, atomic write) and the sidecar (both
+       frames, in the order of step 4).
 
 The session (and so the default dataset ``data/intermediate/<session>``) is the folder under
 ``train/``, the same one ``scripts/09_extract_run_split.py`` reads from ``job_info.txt``.
@@ -33,7 +51,7 @@ folder writable, e.g. the run's ``renders``:
 Which is, spelled out, the ``docker run`` of test_in_image.sh with one extra
 ``-v "$PWD/runs/<run>/renders":/workspace/viking-splatad/runs/<run>/renders``.
 
-``--dry-run`` does everything except the write (checkpoint, crop, colour bake, SH fit, quaternions)
+``--dry-run`` does everything except the writes (checkpoint, crop, colour bake, SH fit, quaternions)
 and reports the projected file size and the peak resident memory, so it needs no writable folder.
 """
 
@@ -42,6 +60,7 @@ import functools
 import glob
 import importlib.util
 import json
+import os
 import resource
 import shutil
 import signal
@@ -54,6 +73,7 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple
 import numpy as np
 
 from viking_splatad.export.spherical_harmonics import COLOUR_CHANNEL_COUNT, MAX_SH_DEGREE
+from viking_splatad.export.viewer_frame import MAP_FRAME_NAME, VIEWER_FRAME_FILE_NAME, VIEWER_FRAME_NAME
 
 # Repository root: this file lives in <root>/scripts/.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -67,6 +87,18 @@ CONFIG_FILE_NAME = "config.yml"
 DATAPARSER_TRANSFORMS_FILE_NAME = "dataparser_transforms.json"
 RENDERS_FOLDER_NAME = "renders"
 OUTPUT_FILE_NAME = "supersplat.ply"
+# Crop modes of ``export_run`` / ``--crop-mode``, and the sidecar "mode" value when nothing is cropped.
+CROP_MODE_CORRIDOR, CROP_MODE_BOX, CROP_MODE_NONE = "corridor", "box", "none"
+CROP_MODES = (CROP_MODE_CORRIDOR, CROP_MODE_BOX)
+# Frames of ``export_run`` / ``--frame``: SuperSplat's file frame (recentred, up = -y) or the map frame.
+FRAME_VIEWER, FRAME_MAP = "viewer", "map"
+FRAMES = (FRAME_VIEWER, FRAME_MAP)
+# Name each CLI frame carries in the sidecar record.
+FRAME_RECORD_NAMES = {FRAME_VIEWER: VIEWER_FRAME_NAME, FRAME_MAP: MAP_FRAME_NAME}
+# CLI defaults: the corridor crop and the viewer frame (the box crop and the map frame looked wrong in
+# SuperSplat, see docs/research/supersplat_export/).
+DEFAULT_CROP_MODE = CROP_MODE_CORRIDOR
+DEFAULT_FRAME = FRAME_VIEWER
 # Names of the SH feature tensors inside ``_model.gauss_params`` (splatad.py).
 FEATURES_DC_NAME = "features_dc"
 FEATURES_REST_NAME = "features_rest"
@@ -369,6 +401,15 @@ def raise_system_exit_on_sigterm() -> None:
         None.
     """
     def raise_exit(signal_number, stack_frame):  # pylint: disable=unused-argument
+        """SIGTERM handler: unwind the stack by raising SystemExit.
+
+        Args:
+            signal_number: Number of the received signal.
+            stack_frame: Interrupted frame (unused).
+
+        Raises:
+            SystemExit: Always.
+        """
         raise SystemExit(f"terminated by signal {signal_number}")
 
     signal.signal(signal.SIGTERM, raise_exit)
@@ -377,11 +418,12 @@ def raise_system_exit_on_sigterm() -> None:
 def bake_sh_colours(
     decoder, features_dc: np.ndarray, features_rest: np.ndarray, appearance_vector: np.ndarray,
     directions_map: np.ndarray, rotation_map_to_dataparser: np.ndarray, sh_degree: int,
+    directions_fit: Optional[np.ndarray] = None,
 ):
     """Bake colours with the upstream decoder and fit SH coefficients, streamed in chunks.
 
-    For chunk c the (n, M, 3) colours exist only inside the loop; the fit writes into preallocated
-    (N, 3) / (N, 3, K) arrays, so memory is O(chunk * M) rather than O(N * M). The decoder forward
+    For chunk c the (n, D, 3) colours exist only inside the loop; the fit writes into preallocated
+    (N, 3) / (N, 3, K) arrays, so memory is O(chunk * D) rather than O(N * D). The decoder forward
     uses its own batch (``decoder_batch_size_for_budget``), separate from the fit chunk.
 
     Args:
@@ -389,19 +431,33 @@ def bake_sh_colours(
         features_dc: (N, 3) albedo features.
         features_rest: (N, F) remaining features.
         appearance_vector: (A,) embedding row of the camera.
-        directions_map: (M, 3) unit directions, map frame, M = oversampling * (degree+1)^2.
+        directions_map: (D, 3) unit directions, map frame, D = oversampling * (degree+1)^2.
         rotation_map_to_dataparser: A of x_dp = A x_map + t; directions rotate with A only.
         sh_degree: SH degree 0..3.
+        directions_fit: (D, 3) the SAME directions expressed in the frame of the PLY, row m of this
+            array being the image of row m of ``directions_map`` (M d_map in the viewer frame, M the
+            viewer rotation). The
+            SH basis of the fit is evaluated on them, so the stored coefficients describe colour as a
+            function of the PLY frame's viewing direction. None = the PLY is in the map frame, so
+            ``directions_map`` itself is used.
 
     Returns:
         (sh_dc (N, 3) float64, sh_rest (N, 3, K) float64 or None when K = 0).
+
+    Raises:
+        ValueError: If ``directions_fit`` does not have the shape of ``directions_map``.
     """
     from viking_splatad.export.spherical_harmonics import (  # pylint: disable=import-outside-toplevel
         apply_sh_fit, chunk_size_for_budget, sh_fit_operator)
     from viking_splatad.export.splatad_colours import bake_gaussian_colours  # pylint: disable=import-outside-toplevel
 
-    # Step 1: the fit operator pinv(B) depends only on the map-frame directions, so it is built once.
-    pseudo_inverse = sh_fit_operator(directions_map, sh_degree)
+    # Step 1: the fit operator pinv(B) depends only on the directions (in the PLY's frame), so it is
+    # built once. Colour c_m is decoded along d_map_m and fitted as c_m ~ B(d_fit_m) k, with d_fit_m the
+    # PLY-frame image of d_map_m; the coefficients k are then right for a viewer looking along d_fit.
+    fit_directions = directions_map if directions_fit is None else directions_fit
+    if fit_directions.shape != directions_map.shape:
+        raise ValueError(f"directions_fit {fit_directions.shape} must match directions_map {directions_map.shape}")
+    pseudo_inverse = sh_fit_operator(fit_directions, sh_degree)
     rest_per_channel = pseudo_inverse.shape[0] - 1
     # Step 2: the decoder lives in the dataparser frame: d_dp = A d_map, renormalised.
     directions_dataparser = rotate_directions_to_dataparser(directions_map, rotation_map_to_dataparser)
@@ -410,7 +466,7 @@ def bake_sh_colours(
     decoder_batch_size = decoder_batch_size_for_budget(decoder)
     sh_dc = np.empty((gaussian_count, COLOUR_CHANNEL_COUNT), dtype=np.float64)
     sh_rest = np.empty((gaussian_count, COLOUR_CHANNEL_COUNT, rest_per_channel), dtype=np.float64)
-    # Step 3: bake the chunk (n, M, 3), fit it, keep only the coefficients.
+    # Step 3: bake the chunk (n, D, 3), fit it, keep only the coefficients.
     for chunk_start in range(0, gaussian_count, fit_chunk_size):
         chunk_stop = min(chunk_start + fit_chunk_size, gaussian_count)
         chunk_colours = bake_gaussian_colours(
@@ -421,44 +477,162 @@ def bake_sh_colours(
     return sh_dc, (sh_rest if rest_per_channel > 0 else None)
 
 
-def export_run(run_dir: Path, dataset_dir: Optional[Path], sh_degree: int, crop: bool,
-               overwrite: bool, dry_run: bool = False) -> dict:
+def select_crop(run_dir: Path, dataset_dir: Optional[Path], means_map: np.ndarray,
+                activated_opacities: np.ndarray, crop_mode: Optional[str], min_opacity: float,
+                recorded_crop: Optional[dict] = None, sensor_positions_map: Optional[np.ndarray] = None
+                ) -> Tuple[np.ndarray, dict]:
+    """Keep mask and crop record of one export; the one crop implementation of scripts 22 and 23.
+
+    Fresh (``recorded_crop`` None): the crop ``crop_mode`` names is computed from the dataset (corridor
+    T87, box T86, None = keep all). Replay (``recorded_crop`` is a sidecar's crop record): the mask is
+    rebuilt from the RECORDED parameters (corridor ``width_m`` / ``z_lower`` / ``z_upper`` with the path
+    from the train sensor poses; box ``lower`` / ``upper``), never re-derived, so a later change of the
+    width percentile or of the lidar reading cannot change which rows an old PLY holds. ``crop_mode`` is
+    ignored in replay.
+
+    Args:
+        run_dir: Run folder (``split_frames.csv`` and ``split.json``).
+        dataset_dir: Dataset the run trained on (unused for mode none).
+        means_map: (N, 3) Gaussian centres, map frame.
+        activated_opacities: (N,) peak alpha in [0, 1].
+        crop_mode: ``CROP_MODE_CORRIDOR``, ``CROP_MODE_BOX`` or None (keep all); fresh crops only.
+        min_opacity: Opacity floor (``mcmc_min_opacity`` of the run's config).
+        recorded_crop: A sidecar's ``crop`` dict to replay, or None.
+        sensor_positions_map: Optional (P, 3) train sensor positions already computed by the caller
+            (output of ``train_sensor_positions_map``); None = read from the poses when needed.
+
+    Returns:
+        (keep_mask (N,) bool, crop_record dict: the sidecar's ``crop`` value).
+
+    Raises:
+        ValueError: On an unknown or incomplete recorded crop, a recorded path length that differs from the
+            poses', or the errors of the crop functions.
+    """
+    from viking_splatad.export.crop import (  # pylint: disable=import-outside-toplevel
+        CORRIDOR_RANGE_PERCENTILE, CORRIDOR_Z_TAIL_PERCENT, PATH_XY_COLUMNS, corridor_crop_mask, crop_mask,
+        train_lidar_bounds_map, train_lidar_corridor_map, train_sensor_positions_map)
+
+    replaying = recorded_crop is not None
+    # Step 1: the mode to build: the record's when replaying, else the caller's.
+    effective_mode = (recorded_crop.get("mode") if replaying else (crop_mode or CROP_MODE_NONE))
+    if effective_mode not in (*CROP_MODES, CROP_MODE_NONE):
+        raise ValueError(f"unknown crop mode {effective_mode!r}")
+    # Step 2: no crop keeps every Gaussian.
+    if effective_mode == CROP_MODE_NONE:
+        return np.ones(means_map.shape[0], dtype=bool), {"mode": CROP_MODE_NONE}
+    # Step 3: corridor, from the dataset (fresh) or from the recorded parameters (replay).
+    if effective_mode == CROP_MODE_CORRIDOR:
+        if not replaying:
+            corridor = train_lidar_corridor_map(run_dir, dataset_dir, sensor_positions_map=sensor_positions_map)
+            crop_record = {"mode": CROP_MODE_CORRIDOR, "width_m": corridor.width_m,
+                           "z_lower": corridor.z_lower, "z_upper": corridor.z_upper,
+                           "range_percentile": CORRIDOR_RANGE_PERCENTILE,
+                           "z_tail_percent": CORRIDOR_Z_TAIL_PERCENT,
+                           "path_points": int(corridor.path_xy.shape[0])}
+            path_xy = corridor.path_xy
+        else:
+            missing_keys = [key for key in ("width_m", "z_lower", "z_upper") if key not in recorded_crop]
+            if missing_keys:
+                raise ValueError(f"recorded corridor crop lacks {missing_keys}")
+            crop_record = dict(recorded_crop)
+            positions = (train_sensor_positions_map(run_dir, dataset_dir) if sensor_positions_map is None
+                         else sensor_positions_map)
+            path_xy = positions[:, :PATH_XY_COLUMNS]
+            # The path is rebuilt from the poses: its length must be the one the export used.
+            if "path_points" in recorded_crop and recorded_crop["path_points"] != path_xy.shape[0]:
+                raise ValueError(f"recorded corridor has {recorded_crop['path_points']} path points but the "
+                                 f"dataset's train poses give {path_xy.shape[0]}: wrong dataset or split")
+        keep_mask = corridor_crop_mask(
+            means_map, activated_opacities, path_xy, crop_record["width_m"], crop_record["z_lower"],
+            crop_record["z_upper"], min_opacity)
+        return keep_mask, crop_record
+    # Step 4: box, from the dataset (fresh) or from the recorded corners (replay).
+    if replaying and "lower" in recorded_crop and "upper" in recorded_crop:
+        lower_corner = np.asarray(recorded_crop["lower"], dtype=np.float64)
+        upper_corner = np.asarray(recorded_crop["upper"], dtype=np.float64)
+    elif replaying:
+        raise ValueError("recorded box crop lacks 'lower' / 'upper'")
+    else:
+        lower_corner, upper_corner = train_lidar_bounds_map(run_dir, dataset_dir)
+    keep_mask = crop_mask(means_map, activated_opacities, lower_corner, upper_corner, min_opacity)
+    return keep_mask, {"mode": CROP_MODE_BOX, "lower": lower_corner.tolist(), "upper": upper_corner.tolist()}
+
+
+def export_run(run_dir: Path, dataset_dir: Optional[Path], sh_degree: int, crop_mode: Optional[str],
+               overwrite: bool, dry_run: bool = False, frame: str = FRAME_MAP) -> dict:
     """Export one run to ``<run>/renders/supersplat.ply`` and print per-step timings and counts.
 
     Args:
         run_dir: Run folder.
         dataset_dir: Dataset the run trained on, or None for ``data/intermediate/<session>``.
         sh_degree: SH degree 0..3.
-        crop: Apply the observed-scene crop (T86).
+        crop_mode: ``"corridor"`` (T87), ``"box"`` (T86), or None / False for no crop (keep every
+            Gaussian; ``False`` is the legacy spelling of the former ``crop=False`` argument).
         overwrite: Replace an existing ply.
-        dry_run: Do every step except the disk guard and the write.
+        dry_run: Do every step except the disk guard and the writes.
+        frame: ``"viewer"`` (T88: recentred on the train path, up = -y) or ``"map"``; both write the sidecar.
+            Unlike the CLI (default viewer) the function defaults to the map frame, so that a library
+            call without a dataset (no crop, no frame change) needs none; the viewer frame needs the
+            dataset's poses for its origin.
 
     Returns:
         Dict with ``output_path, bytes`` (written, or projected when dry), ``kept, dropped,
-        step_seconds, peak_rss_bytes, dry_run``.
+        step_seconds, peak_rss_bytes, dry_run, crop_mode, frame``.
 
     Raises:
         FileExistsError: If the ply exists, ``overwrite`` is false and this is not a dry run.
         FileNotFoundError, ValueError: From ``find_train_dir`` and the loaders.
-        ValueError: If the crop keeps no Gaussian (a header-only ply is never written).
+        ValueError: If ``crop_mode`` or ``frame`` is not one of the accepted values, if the dataset is
+            needed (corridor / box crop, viewer frame) but its folder does not exist, or if the crop
+            keeps no Gaussian (a header-only ply is never written).
         InsufficientDiskSpaceError: If the projected size plus the margin exceeds the free space.
     """
     from viking_splatad.eval.gaussian_occupancy import (  # pylint: disable=import-outside-toplevel
         checkpoint_gaussians_to_map_frame, latest_checkpoint_path)
-    from viking_splatad.export.crop import crop_mask, train_lidar_bounds_map  # pylint: disable=import-outside-toplevel
+    from viking_splatad.export.crop import (  # pylint: disable=import-outside-toplevel
+        check_dataset_identity, train_sensor_positions_map)
     from viking_splatad.export.spherical_harmonics import (  # pylint: disable=import-outside-toplevel
         DIRECTION_OVERSAMPLING_FACTOR, fibonacci_sphere_directions)
     from viking_splatad.export.splatad_colours import (  # pylint: disable=import-outside-toplevel
         camera_sensor_index, load_upstream_rgb_decoder, model_settings_from_config_yml)
     from viking_splatad.export.supersplat_ply import (  # pylint: disable=import-outside-toplevel
         rotations_to_quaternions_wxyz, write_supersplat_ply)
+    from viking_splatad.export.viewer_frame import (  # pylint: disable=import-outside-toplevel
+        SUPERSPLAT_FROM_MAP_ROTATION, identity_frame_transform, map_to_viewer_frame, path_origin,
+        rotate_directions_to_viewer, stage_viewer_frame_record)
 
     run_dir = Path(run_dir)
     output_path = run_dir / RENDERS_FOLDER_NAME / OUTPUT_FILE_NAME
+    frame_record_path = run_dir / RENDERS_FOLDER_NAME / VIEWER_FRAME_FILE_NAME
+    # Step 0: normalise and validate the options. ``False`` / None both mean "no crop".
+    if crop_mode is False or crop_mode is None:
+        crop_mode = None
+    elif crop_mode not in CROP_MODES:
+        raise ValueError(f"crop_mode must be one of {CROP_MODES}, None or False, got {crop_mode!r}")
+    if frame not in FRAMES:
+        raise ValueError(f"frame must be one of {FRAMES}, got {frame!r}")
     # A dry run writes nothing, so an existing ply is no obstacle to it.
     if output_path.exists() and not overwrite and not dry_run:
         raise FileExistsError(f"{output_path} exists (use --overwrite)")
     train_dir = find_train_dir(run_dir)
+    # The dataset (lidar sweeps for the crops, poses for the viewer origin) is needed by either option;
+    # fail before the slow checkpoint load when it is missing.
+    dataset_path = Path(dataset_dir) if dataset_dir else DEFAULT_DATASET_PARENT / session_of_train_dir(train_dir)
+    # Name only the option(s) that need the dataset, each with its own way out.
+    dataset_needs = []
+    if crop_mode is not None:
+        dataset_needs.append((f"the {crop_mode} crop (train lidar)", "--no-crop"))
+    if frame == FRAME_VIEWER:
+        dataset_needs.append(("the viewer frame (train poses)", "--frame map"))
+    if dataset_needs and not dataset_path.is_dir():
+        raise ValueError(f"{run_dir.name}: dataset {dataset_path} not found, but it is needed by "
+                         + " and by ".join(need for need, _remedy in dataset_needs)
+                         + ". Pass --dataset-dir, or use " + " and ".join(remedy for _need, remedy in dataset_needs)
+                         + " to export without a dataset")
+    # Fail fast on a foreign dataset too: the manifest / poses hashes must be the ones the run trained on,
+    # checked before the slow checkpoint load (the crop and the viewer origin would raise it later anyway).
+    if dataset_needs:
+        check_dataset_identity(run_dir, dataset_path)
     step_seconds: Dict[str, float] = {}
     # Step 1: checkpoint, config and dataparser transform.
     with timed_step("load_checkpoint", step_seconds):
@@ -481,16 +655,19 @@ def export_run(run_dir: Path, dataset_dir: Optional[Path], sh_degree: int, crop:
         opacity_logits = np.asarray(gauss_params["opacities"], dtype=np.float64).reshape(-1)
         del gaussians, gauss_params
     total_count = means_map.shape[0]
-    # Step 3: crop mask (everything kept when --no-crop).
+    # Step 3: train sensor positions, read once for both the corridor path and the viewer origin.
+    sensor_positions_map = None
+    if crop_mode == CROP_MODE_CORRIDOR or frame == FRAME_VIEWER:
+        with timed_step("sensor_positions", step_seconds):
+            sensor_positions_map = train_sensor_positions_map(run_dir, dataset_path)
+    # Step 3b: crop mask (everything kept when no crop), and the crop's record for the sidecar.
     with timed_step("crop", step_seconds):
-        if crop:
-            session = session_of_train_dir(train_dir)
-            lower_corner, upper_corner = train_lidar_bounds_map(
-                run_dir, dataset_dir or DEFAULT_DATASET_PARENT / session)
-            keep_mask = crop_mask(means_map, activated_opacities, lower_corner, upper_corner,
-                                  float(settings["mcmc_min_opacity"]))
-        else:
-            keep_mask = np.ones(total_count, dtype=bool)
+        keep_mask, crop_record = select_crop(run_dir, dataset_path, means_map, activated_opacities, crop_mode,
+                                             float(settings["mcmc_min_opacity"]),
+                                             sensor_positions_map=sensor_positions_map)
+        if crop_record["mode"] == CROP_MODE_CORRIDOR:
+            print(f"  corridor: width {crop_record['width_m']:.2f} m, z in [{crop_record['z_lower']:.2f}, "
+                  f"{crop_record['z_upper']:.2f}] m ({crop_record['path_points']} path points)")
     kept_count = int(keep_mask.sum())
     # Step 4: an empty selection would give a header-only ply SuperSplat cannot show.
     if kept_count == 0:
@@ -514,6 +691,13 @@ def export_run(run_dir: Path, dataset_dir: Optional[Path], sh_degree: int, crop:
     features_dc_kept = tensors.pop("features_dc")[keep_mask]
     features_rest_kept = tensors.pop("features_rest")[keep_mask]
     del means_map, axis_std, principal_axes, activated_opacities, opacity_logits
+    # Step 6b: frame. Viewer: p' = M (p - origin), R' = M R (T88); the origin is the mean train sensor
+    # position, so the path (and with it the kept scene) is centred on the viewer's origin.
+    # Map: the identity (origin 0, R = I), recorded so that the sidecar exists for both frames.
+    frame_origin, frame_rotation = identity_frame_transform()
+    if frame == FRAME_VIEWER:
+        frame_origin, frame_rotation = path_origin(sensor_positions_map), SUPERSPLAT_FROM_MAP_ROTATION
+        means_kept, principal_axes_kept = map_to_viewer_frame(means_kept, principal_axes_kept, frame_origin)
     # Step 7: colour. Camera: first of the config's list (single camera today).
     camera_names = settings["cameras"]
     if len(camera_names) > 1:
@@ -521,13 +705,18 @@ def export_run(run_dir: Path, dataset_dir: Optional[Path], sh_degree: int, crop:
     with timed_step("bake_colours_and_sh_fit", step_seconds):
         decoder, appearance_weight = load_upstream_rgb_decoder(tensors["pipeline_state"], settings)
         appearance_vector = appearance_weight[camera_sensor_index(camera_names, camera_names[0])].numpy()
-        # M = oversampling * (degree+1)^2 directions: the SH basis has (degree+1)^2 unknowns per channel.
+        # D = oversampling * (degree+1)^2 directions: the SH basis has (degree+1)^2 unknowns per channel.
         direction_count = DIRECTION_OVERSAMPLING_FACTOR * (rest_per_channel + 1)
         directions_map = fibonacci_sphere_directions(direction_count)
         rotation_map_to_dataparser = dataparser_transform[:3, :3]
+        # The decoder still gets A d_map (the checkpoint's frame); only the SH fit sees the PLY frame's
+        # directions: M d_map for the viewer frame, d_map itself for the map frame.
+        fit_directions = rotate_directions_to_viewer(directions_map) if frame == FRAME_VIEWER else directions_map
         sh_dc, sh_rest = bake_sh_colours(decoder, features_dc_kept, features_rest_kept, appearance_vector,
-                                         directions_map, rotation_map_to_dataparser, sh_degree)
-    # Step 8: rotations -> quaternions, scales -> log; opacity logits are the stored ones.
+                                         directions_map, rotation_map_to_dataparser, sh_degree,
+                                         directions_fit=fit_directions)
+    # Step 8: rotations -> quaternions, scales -> log; opacity logits are the stored ones. Then the
+    # PLY and the sidecar, in the order documented below.
     with timed_step("quaternions_and_write", step_seconds):
         quaternions = rotations_to_quaternions_wxyz(principal_axes_kept)
         log_scales = np.log(axis_std_kept)
@@ -535,13 +724,30 @@ def export_run(run_dir: Path, dataset_dir: Optional[Path], sh_degree: int, crop:
             bytes_written = projected_bytes
         else:
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            bytes_written = write_supersplat_ply(output_path, means_kept, opacity_logits_kept, log_scales,
-                                                 quaternions, sh_dc, sh_rest)
+            # Order (so that SIGTERM or a crash never pairs a new PLY with a sidecar of another export):
+            # (1) stage the NEW sidecar in a temp file beside its target, recording the PLY's exact size;
+            # (2) write the PLY (its own atomic replace); (3) move the sidecar into place. A crash between
+            # (2) and (3) leaves the OLD sidecar, whose ply_bytes no longer matches the new PLY (the sizes
+            # differ whenever the row count or width does), which ``check_record_matches_ply`` reports.
+            # A crash before (2) leaves both old files; the staged temp is removed on any exit.
+            staged_record_path = stage_viewer_frame_record(
+                frame_record_path, frame_origin, frame_rotation, crop_record,
+                frame_name=FRAME_RECORD_NAMES[frame], ply_bytes=projected_bytes, vertex_count=kept_count)
+            try:
+                bytes_written = write_supersplat_ply(output_path, means_kept, opacity_logits_kept, log_scales,
+                                                     quaternions, sh_dc, sh_rest)
+                if bytes_written != projected_bytes:
+                    raise RuntimeError(f"wrote {bytes_written} bytes but the sidecar records {projected_bytes}")
+                os.replace(staged_record_path, frame_record_path)
+            except BaseException:
+                staged_record_path.unlink(missing_ok=True)
+                raise
     # Step 9: report.
     total_seconds = sum(step_seconds.values())
     peak_bytes = peak_rss_bytes()
     print(f"{run_dir.name}: step {tensors['step']}, kept {kept_count}, dropped {total_count - kept_count} "
-          f"of {total_count} (crop={crop}), degree {sh_degree}, {direction_count} directions")
+          f"of {total_count} (crop={crop_mode or CROP_MODE_NONE}, frame={frame}), degree {sh_degree}, "
+          f"{direction_count} directions")
     for step_name, seconds in step_seconds.items():
         print(f"  {step_name}: {seconds:.2f} s")
     action = "dry run, would write" if dry_run else "wrote"
@@ -550,7 +756,7 @@ def export_run(run_dir: Path, dataset_dir: Optional[Path], sh_degree: int, crop:
           f"({peak_bytes / BYTES_PER_MIB:.0f} MiB)")
     return {"output_path": output_path, "bytes": bytes_written, "kept": kept_count,
             "dropped": total_count - kept_count, "step_seconds": step_seconds,
-            "peak_rss_bytes": peak_bytes, "dry_run": dry_run}
+            "peak_rss_bytes": peak_bytes, "dry_run": dry_run, "crop_mode": crop_mode, "frame": frame}
 
 
 def discover_runs(runs_root: Path, overwrite: bool = False, dry_run: bool = False) -> Tuple[List[Path], List[Tuple[Path, str]]]:
@@ -599,7 +805,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
                         help="Dataset of one --run-dir (default data/intermediate/<session>); not with --all.")
     parser.add_argument("--sh-degree", type=int, default=DEFAULT_SH_DEGREE, choices=range(MAX_SH_DEGREE + 1),
                         help=f"SH degree 0..{MAX_SH_DEGREE} (0 = one colour per Gaussian).")
-    parser.add_argument("--no-crop", action="store_true", help="Keep every Gaussian.")
+    parser.add_argument("--crop-mode", choices=CROP_MODES, default=DEFAULT_CROP_MODE,
+                        help="corridor: within the train sensor path's corridor (default); box: the "
+                             "train lidar's bounding box (reaches the lidar's maximum range).")
+    parser.add_argument("--no-crop", action="store_true",
+                        help="Keep every Gaussian (overrides --crop-mode).")
+    parser.add_argument("--frame", choices=FRAMES, default=DEFAULT_FRAME,
+                        help="viewer: recentred on the train path with up = -y, as SuperSplat expects, "
+                             "plus supersplat_frame.json (default; needs the dataset); map: the map frame (also with a sidecar).")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing supersplat.ply.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Do everything except the write; print the projected size and peak memory.")
@@ -623,12 +836,13 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     # Step 1: each --all run derives its own session dataset, so one shared dataset is a mistake.
     if arguments.all and arguments.dataset_dir is not None:
         parser.error("--dataset-dir cannot be used with --all (each run uses its own session dataset)")
-    crop = not arguments.no_crop
+    # --no-crop overrides the mode.
+    crop_mode = None if arguments.no_crop else arguments.crop_mode
     # Step 2: one run. Errors propagate; only the disk guard is reported as an exit code.
     if not arguments.all:
         try:
-            export_run(arguments.run_dir, arguments.dataset_dir, arguments.sh_degree, crop,
-                       arguments.overwrite, arguments.dry_run)
+            export_run(arguments.run_dir, arguments.dataset_dir, arguments.sh_degree, crop_mode,
+                       arguments.overwrite, arguments.dry_run, frame=arguments.frame)
         except InsufficientDiskSpaceError as error:
             print(f"stopping: {error}")
             return 1
@@ -644,7 +858,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     disk_stopped = False
     for run_dir in to_export:
         try:
-            export_run(run_dir, None, arguments.sh_degree, crop, arguments.overwrite, arguments.dry_run)
+            export_run(run_dir, None, arguments.sh_degree, crop_mode, arguments.overwrite, arguments.dry_run,
+                       frame=arguments.frame)
         except InsufficientDiskSpaceError as error:
             print(f"stopping: {run_dir.name}: {error}")
             disk_stopped = True

@@ -71,6 +71,7 @@ uv run python scripts/slurm/submit_run.py fetch <run_id>
 It rsyncs the whole run folder, `rerenders/` included (checkpoints excluded, as always). On a successful render job, fetch without asking. On a failed one, read the log over ssh and report instead.
 
 Render-only jobs do not re-export the SuperSplat PLY: the training run's `renders/supersplat.ply` stays valid, since it comes from the same checkpoint.
+The PLY is in the SuperSplat viewer frame (recentred on the train path, up = -y, as SuperSplat expects) with `renders/supersplat_frame.json` beside it (frame, origin, rotation, crop, PLY size; the default crop is the driven-path corridor, `--crop-mode box` the older box); `--frame map` writes the map frame with an identity record. If SuperSplat opens far from the scene or sideways, check that this file exists and says `supersplat_viewer`.
 
 ## Outputs (`runs/<run_id>/rerenders/<label>/`)
 | file | content |

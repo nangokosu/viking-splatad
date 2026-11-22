@@ -83,6 +83,10 @@
     "T84",
     "T85",
     "T86",
+    "T87",
+    "T88",
+    "T89",
+    "T90",
     "T9a",
     "T9b"
   ],
@@ -418,6 +422,22 @@
     {
       "id": "T86",
       "qualified_name": "viking_splatad.export.crop.observed_bounds_from_lidar"
+    },
+    {
+      "id": "T87",
+      "qualified_name": "viking_splatad.export.crop.corridor_crop_mask"
+    },
+    {
+      "id": "T88",
+      "qualified_name": "viking_splatad.export.viewer_frame.map_to_viewer_frame"
+    },
+    {
+      "id": "T89",
+      "qualified_name": "viking_splatad.export.viewer_frame.viewer_to_map_points"
+    },
+    {
+      "id": "T90",
+      "qualified_name": "viking_splatad.export.viewer_frame.rotate_directions_to_viewer"
     },
     {
       "id": "T9a",

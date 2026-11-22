@@ -322,3 +322,12 @@ def test_export_script_loader_is_cached_and_default_output_dir_is_anchored_to_th
     assert SCRIPT.load_export_script_module() is SCRIPT.load_export_script_module()
     assert SCRIPT.PROJECT_ROOT == Path(__file__).resolve().parents[2]
     assert (SCRIPT.PROJECT_ROOT / SCRIPT.DEFAULT_OUTPUT_RELATIVE_DIR).is_absolute()
+
+
+def test_require_frame_record_refuses_a_missing_sidecar_and_accepts_a_present_one(tmp_path):
+    """The CLI entry check exits telling to re-export when no sidecar sits beside the PLY."""
+    ply_path = tmp_path / "supersplat.ply"
+    with pytest.raises(SystemExit, match="re-export"):
+        SCRIPT.require_frame_record(ply_path)
+    (tmp_path / SCRIPT.VIEWER_FRAME_FILE_NAME).write_text("{}")
+    SCRIPT.require_frame_record(ply_path)

@@ -1,0 +1,42 @@
+{
+  "run_dir": "runs/june_tall_grass-june_scene_a_radar_init_loss_cam_30k-20261119-133010-d51a4d6",
+  "corridor_width_m": 32.22024917602539,
+  "corridor_returns": 44839598,
+  "gaussians": 4814096,
+  "gaussian_z_percentiles": {
+    "0.001": -1.3284370202422535,
+    "0.01": -0.5776003015757,
+    "0.1": 0.3714106469630802,
+    "1": 0.6086613409995639,
+    "99": 12.344803469705539,
+    "99.9": 17.182212913560935,
+    "99.99": 25.1891409063811,
+    "99.999": 35.07874427362884
+  },
+  "candidates_by_tail_percent": {
+    "0.0": {
+      "z_lower": -1.483412265777588,
+      "z_upper": 43.56875991821289,
+      "gaussians_below": 0,
+      "gaussians_above": 0
+    },
+    "0.001": {
+      "z_lower": 0.15267358720302582,
+      "z_upper": 21.78455352783203,
+      "gaussians_below": 1760,
+      "gaussians_above": 1313
+    },
+    "0.01": {
+      "z_lower": 0.2595948278903961,
+      "z_upper": 19.784791946411133,
+      "gaussians_below": 2451,
+      "gaussians_above": 2121
+    },
+    "0.1": {
+      "z_lower": 0.34482643008232117,
+      "z_upper": 17.22871971130371,
+      "gaussians_below": 3898,
+      "gaussians_above": 4723
+    }
+  }
+}

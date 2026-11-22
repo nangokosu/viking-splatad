@@ -21,6 +21,8 @@ from viking_splatad.export.supersplat_ply import read_supersplat_ply
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "22_export_supersplat_ply.py"
 RANDOM_SEED = 4321
+# File name of the synthetic checkpoint (step 5, as nerfstudio zero-pads it); shared with the other export tests.
+CHECKPOINT_FILE_NAME = "step-000000005.ckpt"
 GAUSSIAN_COUNT = 7
 # Model sizes of the real May config (features_dc is 3 wide, features_rest is feature_dim wide).
 FEATURE_DIM, APPEARANCE_DIM, HIDDEN_DIM, KERNEL_SIZE, HIDDEN_BLOCKS = 13, 8, 32, 3, 1
@@ -98,7 +100,7 @@ def build_synthetic_run(run_dir: Path, zero_decoder: bool, decoder_weight_std=No
     pipeline_state["_model.gauss_params.features_dc"] = torch.from_numpy(features_dc)
     pipeline_state["_model.gauss_params.features_rest"] = torch.from_numpy(features_rest)
     pipeline_state["_model.dynamic_actors.actor_sizes"] = torch.zeros(0, 3)  # 0 actors
-    torch.save({"step": 5, "pipeline": pipeline_state}, train_dir / "nerfstudio_models" / "step-000000005.ckpt")
+    torch.save({"step": 5, "pipeline": pipeline_state}, train_dir / "nerfstudio_models" / CHECKPOINT_FILE_NAME)
     # Step 3: config.yml with the sections the settings reader walks (python tags as in real runs).
     camera_lines = "".join(f"      - {name}\n" for name in CAMERA_NAMES)
     (train_dir / "config.yml").write_text(
@@ -127,7 +129,7 @@ def build_synthetic_run(run_dir: Path, zero_decoder: bool, decoder_weight_std=No
 def test_export_roundtrip_geometry_opacity_and_exact_colour(tmp_path):
     """Zero decoder: colour is the albedo, so 0.5 + C0 * f_dc must equal it; geometry is A^T (mu - t)."""
     truth = build_synthetic_run(tmp_path, zero_decoder=True)
-    assert load_script_module().main(["--run-dir", str(tmp_path), "--no-crop"]) == 0
+    assert load_script_module().main(["--run-dir", str(tmp_path), "--no-crop", "--frame", "map"]) == 0
     ply = read_supersplat_ply(tmp_path / "renders" / "supersplat.ply")
     # Row count = N (no crop).
     assert len(ply["x"]) == GAUSSIAN_COUNT
@@ -151,14 +153,14 @@ def test_export_random_decoder_degree_one_is_finite_and_refuses_overwrite(tmp_pa
     """Random weights and degree 1 write a finite ply with 3 f_rest per channel; a second run needs --overwrite."""
     build_synthetic_run(tmp_path, zero_decoder=False)
     script_module = load_script_module()
-    assert script_module.main(["--run-dir", str(tmp_path), "--no-crop", "--sh-degree", "1"]) == 0
+    assert script_module.main(["--run-dir", str(tmp_path), "--no-crop", "--frame", "map", "--sh-degree", "1"]) == 0
     ply = read_supersplat_ply(tmp_path / "renders" / "supersplat.ply")
     # Degree 1: (1+1)^2 - 1 = 3 higher-order coefficients per channel, 9 f_rest columns.
     assert sum(name.startswith("f_rest_") for name in ply) == 3 * ((1 + 1) ** 2 - 1)
     assert all(np.isfinite(column).all() for column in ply.values())
     with pytest.raises(FileExistsError):
-        script_module.main(["--run-dir", str(tmp_path), "--no-crop", "--sh-degree", "1"])
-    assert script_module.main(["--run-dir", str(tmp_path), "--no-crop", "--overwrite"]) == 0
+        script_module.main(["--run-dir", str(tmp_path), "--no-crop", "--frame", "map", "--sh-degree", "1"])
+    assert script_module.main(["--run-dir", str(tmp_path), "--no-crop", "--frame", "map", "--overwrite"]) == 0
 
 
 # ---------------------------------------------------------------------------------------------
@@ -222,7 +224,7 @@ def test_exported_sh_is_in_the_map_frame_direction_convention(tmp_path):
     rotation = Rotation.from_euler("xyz", DIRECTION_TEST_EULER_RAD).as_matrix()
     build_synthetic_run(tmp_path, zero_decoder=False, decoder_weight_std=DIRECTION_TEST_WEIGHT_STD,
                         dataparser_rotation=rotation)
-    assert load_script_module().main(["--run-dir", str(tmp_path), "--no-crop",
+    assert load_script_module().main(["--run-dir", str(tmp_path), "--no-crop", "--frame", "map",
                                       "--sh-degree", str(DIRECTION_TEST_SH_DEGREE)]) == 0
     coefficients = read_ply_coefficients(read_supersplat_ply(tmp_path / PLY_RELATIVE_PATH),
                                          DIRECTION_TEST_SH_DEGREE)
@@ -233,7 +235,7 @@ def test_exported_sh_is_in_the_map_frame_direction_convention(tmp_path):
     exported = SH_COLOUR_OFFSET + np.einsum("dk,nck->ndc", basis, coefficients)
     # Step 2: fresh bakes from the checkpoint at the right and the two wrong directions.
     train_dir = tmp_path / "train" / SESSION / METHOD / RUN_ID
-    checkpoint = torch.load(train_dir / "nerfstudio_models" / "step-000000005.ckpt")["pipeline"]
+    checkpoint = torch.load(train_dir / "nerfstudio_models" / CHECKPOINT_FILE_NAME)["pipeline"]
     settings = model_settings_from_config_yml(train_dir / "config.yml")
     decoder, appearance_weight = load_upstream_rgb_decoder(checkpoint, settings)
     appearance_vector = appearance_weight[camera_sensor_index(settings["cameras"], settings["cameras"][0])].numpy()
@@ -309,7 +311,8 @@ def test_crop_path_keeps_exactly_the_gaussians_inside_the_train_box(tmp_path):
     expected_keep = (((expected_means >= lower_corner) & (expected_means <= upper_corner)).all(axis=1)
                      & (activated >= CONFIG_MIN_OPACITY))
     assert 0 < expected_keep.sum() < GAUSSIAN_COUNT
-    assert load_script_module().main(["--run-dir", str(run_dir), "--dataset-dir", str(dataset_dir)]) == 0
+    assert load_script_module().main(["--run-dir", str(run_dir), "--dataset-dir", str(dataset_dir),
+                                      "--crop-mode", "box", "--frame", "map"]) == 0
     ply = read_supersplat_ply(run_dir / PLY_RELATIVE_PATH)
     assert len(ply["x"]) == expected_keep.sum()
     np.testing.assert_allclose(np.stack([ply["x"], ply["y"], ply["z"]], axis=1), expected_means[expected_keep],
@@ -326,7 +329,8 @@ def test_crop_keeping_nothing_raises_instead_of_writing_a_header_only_ply(tmp_pa
 
     dataset_dir, run_dir, _, _, _ = build_crop_run(tmp_path, far_box)
     with pytest.raises(ValueError, match="keeps 0"):
-        load_script_module().main(["--run-dir", str(run_dir), "--dataset-dir", str(dataset_dir)])
+        load_script_module().main(["--run-dir", str(run_dir), "--dataset-dir", str(dataset_dir),
+                                      "--crop-mode", "box", "--frame", "map"])
     assert not (run_dir / PLY_RELATIVE_PATH).exists()
 
 
@@ -356,11 +360,11 @@ def test_all_skips_existing_and_overwrite_reexports(tmp_path, capsys):
     for ply_path in ply_paths:
         ply_path.write_bytes(OLD_PLY_SENTINEL)
     # Step 1: plain --all leaves the old files alone and says why.
-    assert script_module.main(["--all", "--runs-root", str(tmp_path), "--no-crop"]) == 0
+    assert script_module.main(["--all", "--runs-root", str(tmp_path), "--no-crop", "--frame", "map"]) == 0
     assert all(ply_path.read_bytes() == OLD_PLY_SENTINEL for ply_path in ply_paths)
     assert "supersplat.ply exists" in capsys.readouterr().out
     # Step 2: --overwrite re-exports both.
-    assert script_module.main(["--all", "--runs-root", str(tmp_path), "--no-crop", "--overwrite"]) == 0
+    assert script_module.main(["--all", "--runs-root", str(tmp_path), "--no-crop", "--frame", "map", "--overwrite"]) == 0
     assert all(len(read_supersplat_ply(ply_path)["x"]) == GAUSSIAN_COUNT for ply_path in ply_paths)
     assert f"exported {len(ALL_RUN_NAMES)}, skipped 0, failed 0" in capsys.readouterr().out
 
@@ -370,7 +374,7 @@ def test_all_records_a_failing_run_and_continues(tmp_path, capsys):
     script_module = load_script_module()
     failing_dir, good_dir = build_batch_runs(tmp_path)
     (failing_dir / "train" / SESSION / METHOD / RUN_ID / "dataparser_transforms.json").unlink()
-    assert script_module.main(["--all", "--runs-root", str(tmp_path), "--no-crop"]) == 1
+    assert script_module.main(["--all", "--runs-root", str(tmp_path), "--no-crop", "--frame", "map"]) == 1
     output = capsys.readouterr().out
     assert f"FAILED {failing_dir.name}" in output and "FileNotFoundError" in output
     assert "exported 1, skipped 0, failed 1" in output
@@ -386,13 +390,13 @@ def test_disk_guard_stops_the_batch_and_counts_the_margin(tmp_path, monkeypatch,
     assert not (first_dir / PLY_RELATIVE_PATH).exists()  # a dry run writes nothing
     needed_bytes = projected_bytes + script_module.DISK_SAFETY_MARGIN_BYTES
     monkeypatch.setattr(script_module, "free_bytes_at", lambda path: needed_bytes - 1)
-    assert script_module.main(["--all", "--runs-root", str(tmp_path), "--no-crop"]) == 1
+    assert script_module.main(["--all", "--runs-root", str(tmp_path), "--no-crop", "--frame", "map"]) == 1
     output = capsys.readouterr().out
     assert "stopping" in output and f"not attempted {len(ALL_RUN_NAMES)}" in output
     assert not (first_dir / PLY_RELATIVE_PATH).exists()
-    assert script_module.main(["--run-dir", str(first_dir), "--no-crop"]) == 1  # --run-dir mode is guarded too
+    assert script_module.main(["--run-dir", str(first_dir), "--no-crop", "--frame", "map"]) == 1  # --run-dir mode is guarded too
     monkeypatch.setattr(script_module, "free_bytes_at", lambda path: needed_bytes)
-    assert script_module.main(["--run-dir", str(first_dir), "--no-crop"]) == 0
+    assert script_module.main(["--run-dir", str(first_dir), "--no-crop", "--frame", "map"]) == 0
     # The projection is exact: header + rows.
     assert (first_dir / PLY_RELATIVE_PATH).stat().st_size == projected_bytes
 
@@ -521,9 +525,9 @@ def test_dry_run_neither_refuses_nor_skips_runs_that_already_have_a_ply(tmp_path
     for ply_path in ply_paths:
         ply_path.write_bytes(OLD_PLY_SENTINEL)
     # Step 1: one run, dry: no FileExistsError.
-    assert script_module.main(["--run-dir", str(run_dirs[0]), "--no-crop", "--dry-run"]) == 0
+    assert script_module.main(["--run-dir", str(run_dirs[0]), "--no-crop", "--frame", "map", "--dry-run"]) == 0
     # Step 2: --all dry: every run is exported (dry), none skipped.
-    assert script_module.main(["--all", "--runs-root", str(tmp_path), "--no-crop", "--dry-run"]) == 0
+    assert script_module.main(["--all", "--runs-root", str(tmp_path), "--no-crop", "--frame", "map", "--dry-run"]) == 0
     assert f"exported {len(ALL_RUN_NAMES)}, skipped 0, failed 0" in capsys.readouterr().out
     # Step 3: nothing was written.
     assert all(ply_path.read_bytes() == OLD_PLY_SENTINEL for ply_path in ply_paths)
@@ -551,3 +555,32 @@ def test_rotate_directions_renormalises_a_scaled_transform():
     rotated = script_module.rotate_directions_to_dataparser(directions, 3.0 * rotation)
     np.testing.assert_allclose(np.linalg.norm(rotated, axis=1), 1.0)
     np.testing.assert_allclose(rotated, directions @ rotation.T)
+
+
+@pytest.mark.covers("T86")
+def test_wrong_dataset_raises_before_the_checkpoint_is_loaded(tmp_path, monkeypatch):
+    """A dataset whose hashes differ from split.json is refused before the slow checkpoint load."""
+    def around_every_mean(means):
+        """Box around every mean (its content is irrelevant here: the run must fail before using it)."""
+        return means.min(axis=0) - CROP_TEST_MARGIN, means.max(axis=0) + CROP_TEST_MARGIN
+
+    dataset_dir, run_dir, _, _, _ = build_crop_run(tmp_path, around_every_mean)
+    # Step 1: the recorded manifest hash no longer matches the dataset on disk.
+    split_path = run_dir / "split.json"
+    split_record = json.loads(split_path.read_text())
+    split_record["dataset"]["manifest_sha256"] = "0" * len(split_record["dataset"]["manifest_sha256"])
+    split_path.write_text(json.dumps(split_record))
+
+    class CheckpointLoadReached(Exception):
+        """Sentinel: the script got as far as the checkpoint load."""
+
+    def fail_on_load(_checkpoint_path):
+        """Stand-in for load_checkpoint_tensors."""
+        raise CheckpointLoadReached
+
+    script_module = load_script_module()
+    monkeypatch.setattr(script_module, "load_checkpoint_tensors", fail_on_load)
+    # Step 2: the identity error, not the sentinel.
+    with pytest.raises(ValueError, match="not the dataset the run trained on"):
+        script_module.main(["--run-dir", str(run_dir), "--dataset-dir", str(dataset_dir),
+                            "--crop-mode", "box", "--frame", "map"])

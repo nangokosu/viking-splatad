@@ -1,0 +1,107 @@
+{
+  "run_dir": "runs/may_short_grass-may_scene_a_radar_init_loss_30k-20261119-132048-d51a4d6",
+  "frame_index": 1200,
+  "hole_alpha": 0.5,
+  "downscale": 4,
+  "variants": [
+    {
+      "variant": "box (current PLY)",
+      "gaussians_kept": 4801958,
+      "kept_extent_min": [
+        -238.3000030517578,
+        -227.89999389648438,
+        -128.5
+      ],
+      "kept_extent_max": [
+        178.0,
+        113.5999984741211,
+        147.60000610351562
+      ],
+      "hole_fraction": 3.54421407052986e-05,
+      "abs_error_median": 0.146705901053226,
+      "abs_error_p90": 0.47423738426290807
+    },
+    {
+      "variant": "corridor p95",
+      "gaussians_kept": 4473384,
+      "kept_extent_min": [
+        -92.9000015258789,
+        -89.5999984741211,
+        -1.0
+      ],
+      "kept_extent_max": [
+        20.799999237060547,
+        -16.0,
+        64.0999984741211
+      ],
+      "hole_fraction": 0.03940659730133415,
+      "abs_error_median": 0.14687250661281157,
+      "abs_error_p90": 0.5161946081840495,
+      "width_m": 17.39344604783809,
+      "z_lower": -1.0455817403814487,
+      "z_upper": 67.78817240528467
+    },
+    {
+      "variant": "corridor p99",
+      "gaussians_kept": 4676202,
+      "kept_extent_min": [
+        -102.5,
+        -99.30000305175781,
+        -72.0999984741211
+      ],
+      "kept_extent_max": [
+        30.600000381469727,
+        -6.400000095367432,
+        64.0999984741211
+      ],
+      "hole_fraction": 0.010976937292726766,
+      "abs_error_median": 0.14704552838552953,
+      "abs_error_p90": 0.4863506860718642,
+      "width_m": 27.170386646434338,
+      "z_lower": -76.01128343385217,
+      "z_upper": 67.78817240528467
+    },
+    {
+      "variant": "corridor p99.9",
+      "gaussians_kept": 4785844,
+      "kept_extent_min": [
+        -112.4000015258789,
+        -109.0999984741211,
+        -72.0999984741211
+      ],
+      "kept_extent_max": [
+        40.5,
+        3.200000047683716,
+        72.5
+      ],
+      "hole_fraction": 0.0072555125186704135,
+      "abs_error_median": 0.14676358197759337,
+      "abs_error_p90": 0.481051158435726,
+      "width_m": 37.09163960613047,
+      "z_lower": -76.01128343385217,
+      "z_upper": 72.47865655205797
+    },
+    {
+      "variant": "corridor p100",
+      "gaussians_kept": 4801851,
+      "kept_extent_min": [
+        -238.3000030517578,
+        -227.5,
+        -128.5
+      ],
+      "kept_extent_max": [
+        176.89999389648438,
+        113.5999984741211,
+        147.60000610351562
+      ],
+      "hole_fraction": 3.54421407052986e-05,
+      "abs_error_median": 0.14671307167746028,
+      "abs_error_p90": 0.474247789672792,
+      "width_m": 187.00043523664735,
+      "z_lower": -139.17284468111654,
+      "z_upper": 149.03740250991268
+    }
+  ],
+  "image": "docs/research/supersplat_export/corridor_width_render_sweep_may_output.png",
+  "panel_order": "row 1: photo, box, p95; row 2: p99, p99.9, p100"
+}

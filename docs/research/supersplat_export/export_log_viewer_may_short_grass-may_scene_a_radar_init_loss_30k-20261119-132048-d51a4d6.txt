@@ -1,0 +1,10 @@
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+  corridor: width 37.09 m, z in [-0.92, 22.49] m (2171 path points)
+may_short_grass-may_scene_a_radar_init_loss_30k-20261119-132048-d51a4d6: step 30000, kept 4782636, dropped 217364 of 5000000 (crop=corridor, frame=viewer), degree 0, 8 directions
+  load_checkpoint: 5.23 s
+  map_frame_geometry: 3.78 s
+  sensor_positions: 0.29 s
+  crop: 46.15 s
+  bake_colours_and_sh_fit: 96.37 s
+  quaternions_and_write: 31.52 s
+  total: 183.35 s; wrote runs/may_short_grass-may_scene_a_radar_init_loss_30k-20261119-132048-d51a4d6/renders/supersplat.ply (267827979 bytes, 255.42 MiB); peak RSS 4674297856 bytes (4458 MiB)
