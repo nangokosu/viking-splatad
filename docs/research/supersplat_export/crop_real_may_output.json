@@ -1,0 +1,42 @@
+{
+  "inputs": {
+    "run_dir": "runs/may_short_grass-may_scene_a-20261116-135432-17bb7a1",
+    "dataset_dir": "data/intermediate/may_short_grass",
+    "min_opacity": 0.005,
+    "percentile_bounds_percent": [
+      0.1,
+      99.9
+    ]
+  },
+  "observed_box": {
+    "lower": [
+      -239.40378620701202,
+      -228.82280200396235,
+      -139.17284468111654
+    ],
+    "upper": [
+      178.64877537946364,
+      113.73246775487962,
+      149.03740250991268
+    ],
+    "runtime_seconds": 5.2298733339994214,
+    "kept": 2435942,
+    "total": 5000000,
+    "kept_fraction": 0.4871884
+  },
+  "percentile_box": {
+    "lower": [
+      -93.40191650390625,
+      -91.86090850830078,
+      -0.25324559211730957
+    ],
+    "upper": [
+      11.547892570495605,
+      -14.996439933776855,
+      16.83091163635254
+    ],
+    "lidar_point_count": 37067664,
+    "kept": 2245491,
+    "kept_fraction": 0.4490982
+  }
+}

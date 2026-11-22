@@ -159,6 +159,7 @@ R must beat B on at least one of them on blocked and no-return cells (below), an
   - o = sigmoid(opacities);
   - means and Σ to the map frame with the same `inv(w2m)` as P1.
   - Write `gaussians.npz` next to the lidar renders (`scripts/10_export_gaussians.py`, a job step after `08`).
+  - Job step (e4), between `split_render_check` (match) and `end_utc` (it needs the split record for its crop): `scripts/22_export_supersplat_ply.py` writes `renders/supersplat.ply`, the same checkpoint as a SuperSplat-ready 3DGS PLY (viewer product, non-fatal).
 - **T57, grid:** Gaussian k's 3-D alpha is α_k(x) = o_k·exp(−½(x−μ_k)ᵀΣ_k⁻¹(x−μ_k)), the 3-D form of the alpha the rasteriser uses.
   - Voxel occupancy = 1 − ∏_k(1 − α_k(x)) at the voxel centre, visiting only voxels inside each Gaussian's 3σ ellipsoid.
 - **T81, peak alpha in the voxel (binding estimator, user's decision 2026-11-16):** the centre sample alone misses SplatAD's Gaussians. They are thin discs (May stock run 17bb7a1: median smallest axis std 2 mm, median largest 5 cm) far smaller than the 0.52 m GT voxel, so almost none reach a voxel centre. On that run T57 marked 8% of the seen trunk cells occupied while the lidar hit 82%.

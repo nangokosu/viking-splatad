@@ -1,0 +1,127 @@
+{
+  "run_id": "may_short_grass-may_scene_a-20261116-135432-17bb7a1",
+  "frame": {
+    "sensor": "ids_camera",
+    "split": "test",
+    "frame_index": 1203,
+    "timestamp_ns": 1714572005136525399,
+    "file": "camera/ids_camera/001203_1714572005136525399.jpg",
+    "selection_rule": "median element (len // 2) of test camera frames sorted by frame_index"
+  },
+  "resolution": {
+    "dataset_image_hw": [
+      1541,
+      2055
+    ],
+    "manifest_camera_hw": [
+      1541,
+      2055
+    ],
+    "render_hw": [
+      1541,
+      2055
+    ],
+    "photo_hw": [
+      1541,
+      2055
+    ],
+    "render_over_manifest_scale_hw": [
+      1.0,
+      1.0
+    ],
+    "dataset_image_minus_photo_mean_abs": 0.0016619144256481686,
+    "derived_resize_factor": 1.0,
+    "resize_factor_note": "derived.json resize_factor is 1.0; coordinates are scaled by the render/manifest size ratio (1.0)"
+  },
+  "opacity_threshold": 0.5,
+  "counts": {
+    "gaussians_in_ply": 2435942,
+    "above_opacity_threshold": 337010,
+    "in_front_and_in_image": 61375,
+    "pixels_after_zbuffer": 48061
+  },
+  "checkpoint_row_match": {
+    "method": "recomputed the export's crop (train_lidar_bounds_map + crop_mask, same inputs); kept checkpoint row k is PLY row k; verified by comparing every mean and opacity logit",
+    "rows_kept": 2435942,
+    "max_abs_mean_difference": 7.629092692695849e-06,
+    "mean_tolerance_float32": 5.705565107616899e-05,
+    "max_abs_logit_difference": 0.0,
+    "logit_tolerance_float32": 2.775679831756861e-06
+  },
+  "bake": {
+    "direction": "d_map = normalize(mean - camera_centre_map) per Gaussian, rotated by the dataparser rotation (renormalised), camera->scene sign",
+    "camera_centre_map": [
+      -51.854495620850855,
+      -54.33310701714321,
+      1.6444638865395147
+    ],
+    "appearance": "ids_camera",
+    "appearance_row": 0
+  },
+  "absolute_error_vs_photo": {
+    "a_ply_colour_degree0": {
+      "r_median": 0.14521492077962483,
+      "r_p90": 0.5637408453127362,
+      "g_median": 0.1488613570490822,
+      "g_p90": 0.5643941763081269,
+      "b_median": 0.14913020732582927,
+      "b_p90": 0.5470802949438299,
+      "all_channels_median": 0.14760421293755782,
+      "all_channels_p90": 0.5590043243975656
+    },
+    "b_baked_at_camera_direction": {
+      "r_median": 0.12394007666438234,
+      "r_p90": 0.6274509803921569,
+      "g_median": 0.12400035086800071,
+      "g_p90": 0.646955310830883,
+      "b_median": 0.11086056156485691,
+      "b_p90": 0.5905552934197819,
+      "all_channels_median": 0.11971609288570928,
+      "all_channels_p90": 0.6215098257625804
+    },
+    "c_splatad_render_at_same_pixels": {
+      "r_median": 0.050980392156862744,
+      "r_p90": 0.25098039215686274,
+      "g_median": 0.05098039215686273,
+      "g_p90": 0.25882352941176473,
+      "b_median": 0.05098039215686273,
+      "b_p90": 0.2313725490196079,
+      "all_channels_median": 0.05098039215686273,
+      "all_channels_p90": 0.24705882352941178
+    },
+    "d_splatad_render_whole_image": {
+      "r_median": 0.03921568627450983,
+      "r_p90": 0.20392156862745098,
+      "g_median": 0.03921568627450982,
+      "g_p90": 0.20784313725490197,
+      "b_median": 0.039215686274509776,
+      "b_p90": 0.18039215686274512,
+      "all_channels_median": 0.0392156862745098,
+      "all_channels_p90": 0.19607843137254902
+    }
+  },
+  "colour_difference_between_variants_mean_abs": {
+    "a_vs_b": 0.11572937106936282,
+    "b_vs_c": 0.18657425027665384,
+    "a_vs_c": 0.2073223118419854
+  },
+  "interpretation_rule": "closeness: |x - y| <= 0.1 * max(x, y). If (b) ~ (a), H1 (averaging over all sphere directions) is not the cause. If (b) ~ (c), the export's per-Gaussian decoding is as good as possible for this direction. If (b) is far from (c), H2 (decoding alpha-blended features vs single Gaussians) dominates.",
+  "interpretation": {
+    "all_channels_median": {
+      "b_close_to_a": false,
+      "b_close_to_c": false,
+      "fraction_of_a_to_c_gap_closed_by_b": 0.2886257221720261,
+      "h1_sphere_averaging_is_not_the_cause": false,
+      "per_gaussian_decoding_is_as_good_as_possible": false,
+      "h2_blended_decoding_dominates": true
+    },
+    "all_channels_p90": {
+      "b_close_to_a": false,
+      "b_close_to_c": false,
+      "fraction_of_a_to_c_gap_closed_by_b": -0.20037314592151526,
+      "h1_sphere_averaging_is_not_the_cause": false,
+      "per_gaussian_decoding_is_as_good_as_possible": false,
+      "h2_blended_decoding_dominates": true
+    }
+  }
+}

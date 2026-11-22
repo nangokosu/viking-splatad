@@ -1,0 +1,61 @@
+{
+  "settings": {
+    "random_seed": 20260121,
+    "function_count": 200,
+    "source_degree": 4,
+    "fit_degree": 3,
+    "decay_per_degree": 0.5,
+    "evaluation_direction_count": 20000
+  },
+  "signal_rms": 0.4279389757286437,
+  "rows": [
+    {
+      "oversampling_factor": 1,
+      "direction_count": 16,
+      "rms_residual": 0.12712369791506803,
+      "relative_residual": 0.297060340668005
+    },
+    {
+      "oversampling_factor": 2,
+      "direction_count": 32,
+      "rms_residual": 0.05406556606073183,
+      "relative_residual": 0.12633942951486343
+    },
+    {
+      "oversampling_factor": 4,
+      "direction_count": 64,
+      "rms_residual": 0.05368175912150204,
+      "relative_residual": 0.1254425564535203
+    },
+    {
+      "oversampling_factor": 8,
+      "direction_count": 128,
+      "rms_residual": 0.05365946747564033,
+      "relative_residual": 0.12539046574169915
+    },
+    {
+      "oversampling_factor": 16,
+      "direction_count": 256,
+      "rms_residual": 0.05365812948942621,
+      "relative_residual": 0.1253873391598966
+    },
+    {
+      "oversampling_factor": 32,
+      "direction_count": 512,
+      "rms_residual": 0.053657948795698795,
+      "relative_residual": 0.12538691691808723
+    },
+    {
+      "oversampling_factor": 64,
+      "direction_count": 1024,
+      "rms_residual": 0.0536579263773111,
+      "relative_residual": 0.1253868645312074
+    },
+    {
+      "oversampling_factor": 256,
+      "direction_count": 4096,
+      "rms_residual": 0.05365792486662441,
+      "relative_residual": 0.12538686100106228
+    }
+  ]
+}

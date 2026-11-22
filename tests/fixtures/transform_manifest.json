@@ -78,6 +78,11 @@
     "T8",
     "T80",
     "T81",
+    "T82",
+    "T83",
+    "T84",
+    "T85",
+    "T86",
     "T9a",
     "T9b"
   ],
@@ -393,6 +398,26 @@
     {
       "id": "T81",
       "qualified_name": "viking_splatad.eval.hidden_geometry.peak_alpha_voxel_occupancy"
+    },
+    {
+      "id": "T82",
+      "qualified_name": "viking_splatad.export.supersplat_ply.write_supersplat_ply"
+    },
+    {
+      "id": "T83",
+      "qualified_name": "viking_splatad.export.supersplat_ply.rotations_to_quaternions_wxyz"
+    },
+    {
+      "id": "T84",
+      "qualified_name": "viking_splatad.export.spherical_harmonics.fit_sh_coefficients"
+    },
+    {
+      "id": "T85",
+      "qualified_name": "viking_splatad.export.splatad_colours.bake_gaussian_colours"
+    },
+    {
+      "id": "T86",
+      "qualified_name": "viking_splatad.export.crop.observed_bounds_from_lidar"
     },
     {
       "id": "T9a",

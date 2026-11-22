@@ -5,6 +5,8 @@ description: Use when submitting render-only jobs for an existing successful Spl
 
 # Rendering more frames from a finished run's checkpoint
 
+`<ssh_host>` below = `ssh_host` in `configs/slurm.yaml` (currently `comps1.cs.toronto.edu`; any of comps0-3 works, so a host swap is one line there).
+
 ## Overview
 A run renders only its **test** split: an evenly spaced 10% of its held-out instants (T72; full May run: 25 camera frames, 25 lidar sweeps). The other held-out frames are **guard**: never trained on, never rendered. (Block runs from before 2026-11-01: the test split is the T62 cores and the guard the rest of each T60 block.) `submit_run.py render` submits `scripts/slurm/render_only.sbatch`, which renders chosen guard frames from the run's own `config.yml` and latest checkpoint. There is no training. Outputs go to `<stage root>/runs/<run_id>/rerenders/<label>/`.
 
@@ -20,7 +22,7 @@ Only **guard** frames of that run. `split.json` (written by `scripts/09_extract_
 # Fetched copy:
 python -c "import json; frames = json.load(open('runs/<run_id>/split.json'))['frames']; [print(kind, [f['frame_index'] for f in frames if f['kind'] == kind and f['split'] == 'guard']) for kind in ('camera', 'lidar')]"
 # On the cluster (no fetch needed):
-ssh comps0.cs.toronto.edu "python3 -c \"import json; frames = json.load(open('/w/20262/\$USER/viking-splatad/runs/<run_id>/split.json'))['frames']; [print(kind, [f['frame_index'] for f in frames if f['kind'] == kind and f['split'] == 'guard']) for kind in ('camera', 'lidar')]\""
+ssh <ssh_host> "python3 -c \"import json; frames = json.load(open('/w/20262/\$USER/viking-splatad/runs/<run_id>/split.json'))['frames']; [print(kind, [f['frame_index'] for f in frames if f['kind'] == kind and f['split'] == 'guard']) for kind in ('camera', 'lidar')]\""
 ```
 Full May run: camera 216 guard frames, lidar 216. Held-out instants are every 10th sweep; every 10th of those (e.g. lidar 10, 110, 210, …) is `test`, not guard, and the 9 held-out instants between two of them are guard.
 
@@ -55,7 +57,7 @@ uv run python scripts/slurm/submit_run.py render <run_id> --camera-frames <guard
 ## Wait, then check
 Start a background wait right after `render` (same loop as the running skill's "Fetch"):
 ```bash
-until queue=$(ssh -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 comps0.cs.toronto.edu 'squeue -h -u $USER -o %i') && ! grep -qxE '<job1>|<job2>' <<<"$queue"; do sleep 300; done; echo jobs-left-queue
+until queue=$(ssh -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 <ssh_host> 'squeue -h -u $USER -o %i') && ! grep -qxE '<job1>|<job2>' <<<"$queue"; do sleep 300; done; echo jobs-left-queue
 ```
 - A failed ssh fails the `queue=$(...)` assignment, so the loop keeps waiting. Never pipe ssh into `grep` instead: a failure then looks like an empty queue.
 - `squeue -u`, not `-j`: `-j` errors once Slurm purges the job, and the loop would never end.
@@ -67,6 +69,8 @@ until queue=$(ssh -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveC
 uv run python scripts/slurm/submit_run.py fetch <run_id>
 ```
 It rsyncs the whole run folder, `rerenders/` included (checkpoints excluded, as always). On a successful render job, fetch without asking. On a failed one, read the log over ssh and report instead.
+
+Render-only jobs do not re-export the SuperSplat PLY: the training run's `renders/supersplat.ply` stays valid, since it comes from the same checkpoint.
 
 ## Outputs (`runs/<run_id>/rerenders/<label>/`)
 | file | content |

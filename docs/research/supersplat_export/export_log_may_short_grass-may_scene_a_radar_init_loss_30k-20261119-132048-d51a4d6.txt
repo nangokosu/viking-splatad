@@ -1,0 +1,30 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 11.8.0
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+WARNING: The NVIDIA Driver was not detected.  GPU functionality will not be available.
+   Use the NVIDIA Container Toolkit to start this container with GPU support; see
+   https://docs.nvidia.com/datacenter/cloud-native/ .
+
+py123d dataparser has missing dependencies; install py123d to enable py123d-data.
+Waymo dataparser has missing dependencies, please following installation instructions in README.md
+Info: Loading method viking-data from environment variable
+Could not load tinycudann: Unknown compute capability. Ensure PyTorch with CUDA support is installed.
+may_short_grass-may_scene_a_radar_init_loss_30k-20261119-132048-d51a4d6: step 30000, kept 4801958, dropped 198042 of 5000000 (crop=True), degree 0, 8 directions
+  load_checkpoint: 11.86 s
+  map_frame_geometry: 8.36 s
+  crop: 13.71 s
+  bake_colours_and_sh_fit: 101.68 s
+  quaternions_and_write: 48.55 s
+  total: 184.16 s; wrote runs/may_short_grass-may_scene_a_radar_init_loss_30k-20261119-132048-d51a4d6/renders/supersplat.ply (268910011 bytes, 256.45 MiB); peak RSS 4685541376 bytes (4468 MiB)

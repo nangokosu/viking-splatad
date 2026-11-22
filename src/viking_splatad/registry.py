@@ -47,6 +47,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # P2 peak-alpha voxel occupancy (eval/hidden_geometry.py): replaces T57's centre sample,
         # which misses SplatAD's thin Gaussians at the GT voxel size.
         "T81",
+        # SuperSplat export (export/): PLY writer, principal axes -> quaternion, SH basis/fit,
+        # per-Gaussian colour baked with the upstream RGBDecoderCNN, observed-scene crop box.
+        "T82", "T83", "T84", "T85", "T86",
         # A run's exact train/test frames rebuilt without torch (dataset/run_split.py,
         # scripts/09_extract_run_split.py): neurad's time window and per-sensor LINSPACE split.
         "T58", "T59",

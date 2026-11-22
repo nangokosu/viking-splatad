@@ -18,19 +18,21 @@ Jobs run the **committed** code at HEAD. They need a built env: if `submit` says
 To render more frames of a finished run (its guard frames) from its checkpoint without retraining, use the `rendering-splatad-checkpoints` skill (`submit_run.py render`).
 
 ## One-time setup (each user, on your own machine)
+`<ssh_host>` below = `ssh_host` in `configs/slurm.yaml` (currently `comps1.cs.toronto.edu`; any of comps0-3 works, so a host swap is one line there).
+
 Everyone uses their **own** CS Lab account. Your username and password never go into repo files, commits, env files or scripts. The repo stores only the host (`ssh_host` in `configs/slurm.yaml`).
 
 1. **Tell ssh who you are.** In `~/.ssh/config` (local, never committed):
    ```
-   Host comps0.cs.toronto.edu
+   Host <ssh_host>   # or a pattern covering every login host: Host comps*.cs.toronto.edu
      User <your CS username>
      ControlMaster auto
      ControlPath ~/.ssh/cm-%r@%h:%p
      ControlPersist 30m
    ```
    `submit_run.py` sshes to the bare host, so ssh takes `User` from this block. Alternatively, `export VIKING_SLURM_USER=<your CS username>` in your shell profile (`submit_run.py` then uses `<user>@host`). In the commands below, `<user>` means your own username.
-2. **Avoid password prompts.** `submit_run.py` opens many ssh/rsync connections per command. Either install an ssh key (`ssh-keygen -t ed25519`, then `ssh-copy-id comps0.cs.toronto.edu`, typing your password once), or rely on the ControlMaster block above: run `ssh comps0.cs.toronto.edu` once, type the password, and keep that session open. Never use `sshpass` or store the password in a file.
-3. **Check your workdisk directory.** `ssh comps0.cs.toronto.edu 'ls -d /w/*/$USER'`. The code expects `<workdisk_root>/<user>/` with `workdisk_root: /w/20262` in `configs/slurm.yaml`, and it creates `viking-splatad/` inside it. If your directory is on a different disk, tell the team before changing the shared config. If you have none, ask CS Lab support.
+2. **Avoid password prompts.** `submit_run.py` opens many ssh/rsync connections per command. Either install an ssh key (`ssh-keygen -t ed25519`, then `ssh-copy-id <ssh_host>`, typing your password once), or rely on the ControlMaster block above: run `ssh <ssh_host>` once, type the password, and keep that session open. Never use `sshpass` or store the password in a file.
+3. **Check your workdisk directory.** `ssh <ssh_host> 'ls -d /w/*/$USER'`. The code expects `<workdisk_root>/<user>/` with `workdisk_root: /w/20262` in `configs/slurm.yaml`, and it creates `viking-splatad/` inside it. If your directory is on a different disk, tell the team before changing the shared config. If you have none, ask CS Lab support.
 4. **Your stage root is your own.** Code, data, the environment (`envs/`) and runs live under *your* workdisk directory, so each user stages data and builds the env once (`building-splatad-cluster-env`). `runs/submitted.tsv` is your local, gitignored ledger.
 
 ## Submit (local machine, repo root)
@@ -147,7 +149,7 @@ Training evaluates held-out data throughout, and the job plots train against tes
 
 **The progress table often stops appearing in the log while training is healthy.** It was seen right after `Caching eval lidars`, the step-500 eval, with 5+ silent minutes. A silent log is NOT evidence of a hang, so check the job itself before any `scancel`:
 ```bash
-ssh <user>@comps0.cs.toronto.edu "srun --jobid=<job> --overlap -n1 -c1 bash -c \
+ssh <user>@<ssh_host> "srun --jobid=<job> --overlap -n1 -c1 bash -c \
  'nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader; \
   ls -la --time-style=+%T <run dir>/train/*/splatad/*/ <...>/nerfstudio_models/'"
 ```
@@ -180,7 +182,7 @@ Remove every artifact of them (cluster run dir, fetched copy, ledger row) with t
 ## Fetch (automatic after every successful run)
 **Fetching is part of every run: don't ask first.** Right after `submit`, start a background wait (run in the background, one per batch of jobs) for the jobs to leave `squeue`:
 ```bash
-until queue=$(ssh -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 comps0.cs.toronto.edu 'squeue -h -u $USER -o %i') && ! grep -qxE '<job1>|<job2>' <<<"$queue"; do sleep 300; done; echo jobs-left-queue
+until queue=$(ssh -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 <ssh_host> 'squeue -h -u $USER -o %i') && ! grep -qxE '<job1>|<job2>' <<<"$queue"; do sleep 300; done; echo jobs-left-queue
 ```
 - A failed ssh fails the `queue=$(...)` assignment, so the loop keeps waiting. Never pipe ssh into `grep` instead: a failure then looks like an empty queue (that falsely reported 222951/222952 done).
 - `squeue -u`, not `-j`: `-j` errors once Slurm purges the job, and the loop would never end. The ssh options make a hung connection fail instead of blocking.
@@ -196,9 +198,12 @@ Result on your machine in `runs/<run_id>/`. Every file and key of every run fold
 - `renders/test/{rgb,gt-rgb}/*.jpg`: one per test camera pose; file names are frame index + timestamp. (`renders/train/` exists only in runs from before 2026-10-26, which rendered `train+test`.)
 - `renders/test/lidar/<idx>_<ts_ns>.npz`: one per test lidar pose, named exactly like the input sweep `data/intermediate/<session>/lidar/<sensor>/<idx>_<ts_ns>.npy`.
 - `renders/test/lidar_metrics.json`: SplatAD's built-in per-scan lidar metrics, with `mean` and `per_scan` (depth_median_l2, intensity_rmse, ray_drop_accuracy, chamfer_distance, ...).
+- `renders/supersplat.ply`: the run's Gaussians as a SuperSplat-ready 3DGS PLY (job step e4, `scripts/22_export_supersplat_ply.py`, run after the split check matched and before `end_utc`). Open it in SuperSplat. Colour is baked per Gaussian from SplatAD's upstream `RGBDecoderCNN` (SplatAD stores no per-Gaussian RGB), cropped to the train-lidar box, and approximate where semi-transparent Gaussians overlap. Colours are a viewer approximation, not an evaluation input: decoding each Gaussian alone cannot reproduce SplatAD's decoding of blended features, so backlit trunks come out too bright (May stock, test frame 1203: median abs error vs the photo 0.148 against 0.051 for SplatAD's own render; `scripts/23_check_supersplat_colours.py --diagnose-test-frame`, output in `reports/supersplat_colour_check/`, summary in `docs/research/supersplat_export/README.md`). Kept as is by the user's choice (2026-11-21).
 - `train/.../config.yml`, the latest `step-*.ckpt`, `job_info.txt`, and the Slurm log.
 - `overfitting/overfitting_curves.png` and `.csv`: train-vs-test curves (see "Overfitting monitor").
 - `split.json` and `split_frames.csv`: the exact train/test frames. They exist only for successful runs (see "Train/test split record").
+
+Also read `supersplat_export:` in `job_info.txt`. It does not decide success (the PLY is a viewer product), but if it says `FAILED (exit N; see Slurm log)` (exit 124 = the time cap) or `skipped (...)`, fetch the run, make the PLY on the Mac and report the failure: `VIKING_WRITABLE_DIR=runs/<run_id>/renders scripts/test_in_image.sh python scripts/22_export_supersplat_ply.py --run-dir runs/<run_id>`. Runs that predate the step have no PLY: backfill them with the same command using `--all` instead of `--run-dir` (it exports every fetched run without one, and stops when the disk would not fit).
 
 A complete smoke run renders only its test-core frames: ~6 camera frames and ~6 lidar sweeps (runs before 2026-10-27: 1 of each). Check `overfitting_plot: written`, `split_render_check: match` and `end_utc` in `job_info.txt` instead of counting files by hand. A run without them failed: don't document it.
 
@@ -229,5 +234,5 @@ Read the clouds with these limits in mind:
 - Never use `ns-render --render-point-clouds` for SplatAD. It calls `get_outputs_for_lidar`, which fails with "Unknown sensor type", and it writes only PNG plots. Lidar goes through `08_render_lidar_pointcloud.py`.
 - In that script, train scans are rasterised with `is_eval=True`. Without it, `_lidar_to_raster_pts` shuffles the points and keeps one per raster cell, and some returns get no ray.
 - If the lidar step fails, the camera renders and the checkpoints are already in the run dir.
-- `sacct` may fail from comps0 with `Connection refused`. Use `squeue` and `job_info.txt` instead.
+- `sacct` may fail from <ssh_host> with `Connection refused`. Use `squeue` and `job_info.txt` instead.
 - Runs from before 2026-10-26 wrote to scratch first; their leftovers there are lost when the scratch dir expires.

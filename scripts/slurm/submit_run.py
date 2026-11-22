@@ -136,7 +136,7 @@ RESUME_DIRECTORY_NAME = "resume"
 # started, ..., end_utc = every step finished.
 RUN_MILESTONE_KEYS = ("start_utc", "gpu_check", "train_start_epoch_s", "train_elapsed_s", "overfitting_plot",
                       "render_elapsed_s", "lidar_render_elapsed_s", "gaussian_export_elapsed_s",
-                      "split_render_check", "end_utc")
+                      "supersplat_export_elapsed_s", "split_render_check", "end_utc")
 # job_info.txt's overfitting_plot value when the figure was written (splatad_run.sbatch).
 WRITTEN_PLOT_VALUE = "written"
 # squeue -o fields for `runs`: job id, state, pending reason, (estimated) start time, batch script

@@ -424,10 +424,86 @@ GAUSSIAN_EXPORT_END_SECONDS=$(date +%s)
 # end_utc is written only for a complete, consistent run.
 if python "$CODE_DIR/scripts/09_extract_run_split.py" --run-dir "$RUN_DIR" --dataset-dir "$STAGE_ROOT/data/$SESSION"; then
   echo "split_render_check: match" >> "$JOB_INFO"
+  # ---- (e4) export the SuperSplat PLY ----------------------------------------------------------
+  # renders/supersplat.ply: the same checkpoint as a SuperSplat-ready 3DGS PLY (script 22; colour baked
+  # per Gaussian from the RGB decoder, cropped to the train-lidar box). The crop reads split.json and
+  # split_frames.csv, which 09 has just written, so this step runs only after a matching split check.
+  # It is a viewer product, not an evaluation input: a failure or timeout is recorded in job_info.txt
+  # (never silent) and the job goes on to the end_utc gate.
+  # --overwrite: a resume job (RESUME_AFTER_TRAINING) re-runs this step in a run that may hold a PLY.
+  #
+  # Time budget (CPU bake; a slow export must not let Slurm kill the job before end_utc):
+  #   fixed cap     = measured export time x safety factor. Measured total (script 22, per-step seconds in
+  #                   the saved logs, 30k radar init + loss runs):
+  #                   docs/research/supersplat_export/export_log_may_short_grass-may_scene_a_radar_init_loss_30k-20261119-132048-d51a4d6.txt  184.16 s (4,801,958 of 5,000,000 kept)
+  #                   docs/research/supersplat_export/export_log_june_tall_grass-june_scene_a_radar_init_loss_cam_30k-20261119-133010-d51a4d6.txt  174.46 s
+  #                   The larger total (184.16 s, rounded up to 185) is used. Every run has the MCMC cap of
+  #                   5,000,000 Gaussians (mcmc_cap_max, docs/research/splatad_extension_points.md 1.4), so
+  #                   the export time is bounded by that of a run at the cap, which these two are.
+  #                   Both were measured in the amd64 image emulated on the Mac, slower than a native node,
+  #                   so the figure is an upper bound; the factor 4 only absorbs a node that is still
+  #                   slower, without allowing a runaway.
+  #   remaining cap = seconds left of the job's Slurm limit minus a reserve for the steps after this one
+  #                   (overfitting gate, end_utc, summary: file reads and echoes, seconds in practice;
+  #                   the reserve is generous because a kill here loses end_utc, and it also covers the
+  #                   kill grace below).
+  #   limit         = the smaller of the two. Slurm's end time comes from squeue (%e, ISO local time);
+  #                   when squeue gives nothing or a non-date ("UNLIMITED", "N/A"), only the fixed cap applies.
+  #   kill grace    = timeout sends SIGTERM at the limit (script 22 then removes its temp file) and SIGKILL
+  #                   this many seconds later. 30 s: unlinking one temp PLY (<= ~1 GiB) takes well under that.
+  SUPERSPLAT_MEASURED_EXPORT_SECONDS=185
+  SUPERSPLAT_SAFETY_FACTOR=4
+  SUPERSPLAT_RESERVE_SECONDS=300
+  SUPERSPLAT_KILL_GRACE_SECONDS=30
+  SUPERSPLAT_END_TIME_PATTERN='^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+  # BEGIN supersplat_time_budget (the unit test sources this function)
+  # Prints the export's timeout in seconds. Uses the globals above; calls squeue and date.
+  supersplat_time_budget_seconds() {
+    local fixed_cap_seconds=$((SUPERSPLAT_MEASURED_EXPORT_SECONDS * SUPERSPLAT_SAFETY_FACTOR))
+    local job_end_text job_end_seconds remaining_budget_seconds
+    job_end_text="$(squeue -h -j "${SLURM_JOB_ID:-}" -o %e 2>/dev/null || true)"
+    # date -d runs only on an ISO timestamp: date -d "" means midnight, which would give a bogus negative budget.
+    if [[ "$job_end_text" =~ $SUPERSPLAT_END_TIME_PATTERN ]]; then
+      job_end_seconds="$(date -d "$job_end_text" +%s 2>/dev/null || true)"
+      if [ -n "$job_end_seconds" ]; then
+        remaining_budget_seconds=$((job_end_seconds - $(date +%s) - SUPERSPLAT_RESERVE_SECONDS))
+        if [ "$remaining_budget_seconds" -lt "$fixed_cap_seconds" ]; then
+          fixed_cap_seconds="$remaining_budget_seconds"
+        fi
+      fi
+    fi
+    echo "$fixed_cap_seconds"
+  }
+  # END supersplat_time_budget
+  SUPERSPLAT_TIMEOUT_SECONDS="$(supersplat_time_budget_seconds)"
+  SUPERSPLAT_EXPORT_START_SECONDS=$(date +%s)
+  echo "supersplat_export_start_epoch_s: $SUPERSPLAT_EXPORT_START_SECONDS" >> "$JOB_INFO"
+  if [ "$SUPERSPLAT_TIMEOUT_SECONDS" -lt 1 ]; then
+    # No time left after the reserve: do not start an export that Slurm would kill.
+    echo "supersplat_export: skipped (no job time left)" >> "$JOB_INFO"
+  elif timeout -k "$SUPERSPLAT_KILL_GRACE_SECONDS" "$SUPERSPLAT_TIMEOUT_SECONDS" python "$CODE_DIR/scripts/22_export_supersplat_ply.py" \
+      --run-dir "$RUN_DIR" --dataset-dir "$STAGE_ROOT/data/$SESSION" --overwrite; then
+    echo "supersplat_export: written" >> "$JOB_INFO"
+  else
+    # $? here is the exit code of the condition: the export script's, or 124 when timeout killed it.
+    SUPERSPLAT_EXIT_CODE=$?
+    if [ "$SUPERSPLAT_EXIT_CODE" -eq 124 ]; then
+      echo "supersplat_export: FAILED (exit 124 timeout after ${SUPERSPLAT_TIMEOUT_SECONDS} s; see Slurm log)" >> "$JOB_INFO"
+    else
+      echo "supersplat_export: FAILED (exit $SUPERSPLAT_EXIT_CODE; see Slurm log)" >> "$JOB_INFO"
+    fi
+  fi
+  SUPERSPLAT_EXPORT_END_SECONDS=$(date +%s)
+  {
+    echo "supersplat_export_end_epoch_s: $SUPERSPLAT_EXPORT_END_SECONDS"
+    echo "supersplat_export_elapsed_s: $((SUPERSPLAT_EXPORT_END_SECONDS - SUPERSPLAT_EXPORT_START_SECONDS))"
+  } >> "$JOB_INFO"
 else
   # $? here is the script's exit code: 1 = renders or train fractions disagree, 2 = outputs missing.
   SPLIT_EXIT_CODE=$?
   echo "split_render_check: FAILED (exit $SPLIT_EXIT_CODE; no split record written; reason in the Slurm log)" >> "$JOB_INFO"
+  # (e4) needs the split record, so it did not run.
+  echo "supersplat_export: skipped (no split record)" >> "$JOB_INFO"
   exit 1
 fi
 # The figure is part of a complete run: no end_utc without it.

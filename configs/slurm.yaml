@@ -4,7 +4,8 @@
 # (User for this host) or from the VIKING_SLURM_USER environment variable.
 
 # Login node used to submit jobs (comps0-3 are equivalent; never compute there).
-ssh_host: comps0.cs.toronto.edu
+# comps1 since 2026-11-21: comps0 is down for OS maintenance.
+ssh_host: comps1.cs.toronto.edu
 
 # The only partition with GPUs (CLAUDE.md "GPU training on Slurm", step 5).
 partition: gpunodes

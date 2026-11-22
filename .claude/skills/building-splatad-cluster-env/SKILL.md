@@ -5,6 +5,8 @@ description: Use when the SplatAD native environment on the CS Lab Slurm cluster
 
 # Building the SplatAD cluster environment
 
+`<ssh_host>` below = `ssh_host` in `configs/slurm.yaml` (currently `comps1.cs.toronto.edu`; any of comps0-3 works, so a host swap is one line there).
+
 ## Overview
 CS Lab GPU nodes have **no container runtime** and block user namespaces, so SplatAD runs in a native env that `scripts/slurm/build_env.sbatch` replays from `docker/Dockerfile.splatad`. The env is named `splatad-<12-hex hash of the recipe files>` and lives, with its marker, in `<stage root>/envs/` on the persistent MSCAC workdisk (`workdisk_root` in `configs/slurm.yaml`; currently `/w/20262/<user>/viking-splatad`). Never install anything by hand on the cluster.
 
@@ -25,13 +27,13 @@ uv run python scripts/slurm/submit_run.py build-env
 ```
 Prints the job id and log path `<stage root>/envs/logs/splatad-<hash>-<job>.out`. Re-running prints `environment already built` when the marker exists. The build's pytest runs HEAD's `src/`, so a broken commit fails the build.
 
-**Monitor:** `submit_run.py status <job>`, and `ssh <user>@comps0.cs.toronto.edu "grep -nE 'Successfully|passed|ERROR|Traceback|complete' <log> | tail"`.
+**Monitor:** `submit_run.py status <job>`, and `ssh <user>@<ssh_host> "grep -nE 'Successfully|passed|ERROR|Traceback|complete' <log> | tail"`.
 
 **Duration:** ~35 min on an A6000 node (job 222558: 17:28→18:03 UTC) plus queue. Order: micromamba env → torch → tiny-cuda-nn (long compile) → neurad-studio/gsplat/pandaset wheels → ~300-package install (silent up to ~10 min; not stuck) → splatad kernels → repo + pytest pin → viser client (yarn errors here) → checks. Silence >20 min with the job RUNNING: check the node (`srun --jobid=<job> --overlap -n1 top -bn1 | head`) before cancelling.
 
 **Done when** the log ends with `== environment complete: ...` after `GPU import check OK` and a pytest summary, and `<stage root>/envs/splatad-<hash>.marker` exists. Then:
 ```bash
-scp '<user>@comps0.cs.toronto.edu:/w/20262/<user>/viking-splatad/envs/splatad-<hash>-locks/*' docker/cluster-locks/
+scp '<user>@<ssh_host>:/w/20262/<user>/viking-splatad/envs/splatad-<hash>-locks/*' docker/cluster-locks/
 ```
 (quote the glob — zsh expands it locally otherwise), check the log's `pip drift` block (expected: only the `pytest` final-step pin and `packaging` from conda), grep the locks for your username/home path (they must contain neither), commit locks + a note in `docker/README.md`. Locks are records, not recipe inputs: committing them does not change the hash.
 
@@ -40,13 +42,13 @@ scp '<user>@comps0.cs.toronto.edu:/w/20262/<user>/viking-splatad/envs/splatad-<h
 | Symptom | Cause | Fix |
 |---|---|---|
 | Job PENDING `user_env_retrieval_failed_requeued_held` | `sbatch --export=...,K=V` or `--get-user-env` | Export vars inside the batch script (submit_run.py writes a `job.sbatch` with `export` lines). `scancel` the held job |
-| Job dies in seconds, or an rsync/write fails, with no error in the log | Home is at its 10 GB MSCAC quota (CS Lab support, 2026-10-26; jobs 222534, 222633) | `ssh <user>@comps0... 'du -sh ~/* ~/.[!.]*'`; move project files to the workdisk. Jobs write only under the stage root |
+| Job dies in seconds, or an rsync/write fails, with no error in the log | Home is at its 10 GB MSCAC quota (CS Lab support, 2026-10-26; jobs 222534, 222633) | `ssh <user>@<ssh_host> 'du -sh ~/* ~/.[!.]*'`; move project files to the workdisk. Jobs write only under the stage root |
 | `cannot find -lcuda` linking tiny-cuda-nn | No driver lib at link time | `LIBRARY_PATH=$ENV_PREFIX/lib/stubs` (link-time only, never in activate script) |
 | pip `ResolutionImpossible` on pytest | Global pin vs neurad `[dev]` pytest==7.1.2 | Keep pytest only as `# final-step-pin:` in constraints.txt |
 | viser `ESOCKETTIMEDOUT` / `tsc: not found` | yarn downloads time out on nodes | Harmless: build continues; only the interactive viewer needs it; runs use `--vis tensorboard` |
 | `Error unknown MAMBA_EXE ... must be mamba or micromamba` early in log | Versioned binary name | Harmless; build continues |
-| `No space left on device` during build | Workdisk full (1.5 TB, shared by MSCAC users); env ~15-20 GB | `df -h /w/20262` on comps0; delete old runs and old `envs/splatad-*` under the stage root |
-| `cd: /w/<disk>/<user>: No such file` from `submit_run.py` | Wrong `workdisk_root`, or the per-user dir does not exist | Check `ls -d /w/*/$USER` on comps0; ask CS Lab support for the dir |
+| `No space left on device` during build | Workdisk full (1.5 TB, shared by MSCAC users); env ~15-20 GB | `df -h /w/20262` on <ssh_host>; delete old runs and old `envs/splatad-*` under the stage root |
+| `cd: /w/<disk>/<user>: No such file` from `submit_run.py` | Wrong `workdisk_root`, or the per-user dir does not exist | Check `ls -d /w/*/$USER` on <ssh_host>; ask CS Lab support for the dir |
 
 Kernels compile for the node's GPU (`nvidia-smi compute_cap`); the build always requests the top-level `gres` (`gpu:rtx_a6000:1`, sm_86). A profile or `render_only` may set its own `gres` only for another sm_86 GPU (the RTX A4500 is one); any other GPU type needs a rebuild.
 

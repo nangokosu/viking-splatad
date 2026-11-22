@@ -1,0 +1,35 @@
+{
+  "run_id": "may_short_grass-may_scene_a-20261116-135432-17bb7a1",
+  "ply": "runs/may_short_grass-may_scene_a-20261116-135432-17bb7a1/renders/supersplat.ply",
+  "dataset": "/workspace/viking-splatad/data/intermediate/may_short_grass",
+  "frame": {
+    "sensor": "ids_camera",
+    "frame_index": 1200,
+    "timestamp_ns": 1714572004836549599,
+    "file": "camera/ids_camera/001200_1714572004836549599.jpg",
+    "selection_rule": "median element (len // 2) of train camera frames sorted by frame_index",
+    "image_size_hw": [
+      1541,
+      2055
+    ]
+  },
+  "opacity_threshold": 0.5,
+  "colour_decode": "0.5 + C0 * f_dc, C0 = 1/(2 sqrt(pi)), clipped to [0,1]; alpha = sigmoid(opacity)",
+  "counts": {
+    "gaussians_total": 2435942,
+    "above_opacity_threshold": 337010,
+    "in_front_and_in_image": 63171,
+    "pixels_after_zbuffer": 49415
+  },
+  "absolute_error_baked_colour_vs_image": {
+    "r_median": 0.14417622200942792,
+    "r_p90": 0.5573570936337272,
+    "g_median": 0.14865234677862285,
+    "g_p90": 0.558076497573073,
+    "b_median": 0.1512548887963664,
+    "b_p90": 0.5434385313557045,
+    "all_channels_median": 0.14815560623245638,
+    "all_channels_p90": 0.5533933188125869
+  },
+  "baseline_raw_features_dc": "skipped: gaussians.npz has no colours; needs the torch checkpoint"
+}
