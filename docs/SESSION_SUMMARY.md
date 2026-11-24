@@ -35,7 +35,11 @@ Branch `radar-init-loss-merge`, one commit on top of d2137d9: "Hidden-voxel eval
 - **Not committed:** the user's `.claude/settings.json` and `reports/gaussian_occupancy/with_older_code/` (old reports, carrying an absolute path).
 
 ## Next steps
-1. **Fix m:** bound the T92 neighbour reach by half a GT voxel (0.26 m), with a test. Rebuild H for both sessions (script 24), rerun script 25, re-score the 30 runs (script 19), then scripts 20 and 21. Watch the disk and stop below 3 GB.
-2. Fix the review findings above, or file them.
-3. PR review and merge to main (user's call). The PR lists the earlier branch commits that removed tests, with their reasons.
-4. Consider more repeats or a wider near band only if the H_near counts stay this small after the margin fix.
+1. **Before the re-run, clear out past run results to free disk (user's instruction, 2026-11-24).**
+   - **Delete:** the 14 run folders in `runs/` that are not part of the 30-run repeat campaign, 35 GB measured with `du`. They are the smoke runs, the older single runs, and the six `*_30k` presentation runs (their SuperSplat PLYs go with them). Use `submit_run.py clean <run_id> ...` (the `cleaning-up-splatad-runs` skill): dry run first, show the user the list, then `--yes`.
+   - **Keep the 30 campaign runs:** re-scoring reads their `train/` checkpoints and `renders/`. Their old `eval/` outputs (4.4 MB each) are overwritten by script 19.
+   - **Campaign runs** (5 per arm): June `june_scene_a{,_radar_init,_radar_init_loss}_cam-20261116-13*` plus `-20261118-032048` and `-20261118-211540`; May `may_scene_a{,_radar_init,_radar_init_loss}-20261116-13*`.
+2. **Fix m:** bound the T92 neighbour reach by half a GT voxel (0.26 m), with a test. Rebuild H for both sessions (script 24), rerun script 25, re-score the 30 runs (script 19), then scripts 20 and 21. Watch the disk and stop below 3 GB.
+3. Fix the review findings above, or file them.
+4. PR review and merge to main (user's call). The PR lists the earlier branch commits that removed tests, with their reasons.
+5. Consider more repeats or a wider near band only if the H_near counts stay this small after the margin fix.
