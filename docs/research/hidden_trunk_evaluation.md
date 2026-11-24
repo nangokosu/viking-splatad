@@ -32,16 +32,26 @@ The same committed probability threshold, 0.5, binds P1 and P2. Overlapping
 Gaussians accumulate log survival; alpha is not added or counted multiple times.
 P2 is independent of first-surface rendering and can expose geometry behind grass.
 
-Recorded held-out beams are intersected with GT-grid cells. Evidence distinguishes
-returns in the cell, nearer returns (blocked), explicitly recorded no-returns,
-returns beyond the cell (passed-through), and no intersecting recorded ray
-(unobserved). Evidence flags are retained even when several types occur. The
-exclusive report priority is seen, blocked, no-return, passed-through, unobserved.
-A nearer return is **not independently identified as grass**, and camera
-occlusion is not classified. These limits must accompany any result.
+Hidden space (`scripts/24_build_hidden_space.py`, T91, T92). Every recorded Ouster
+sweep of the session (train, guard and test, about 2000) is intersected with the
+GT-grid cells, with a range margin m measured from the data (95th percentile of
+cross-sweep point-to-plane residuals on near planar returns). A cell is seen
+(a return within [entry - m, exit + m]), blocked (a return shorter than
+entry - m) or passed (a return beyond exit + m). The hidden space is
+H = not seen, blocked, not passed; no-return beams do not affect it. It is built
+once per session and stored in `data/gt/<session>/hidden_space.{npz,json}` with
+input hashes. The headline band H_near is H within `hidden_space.near_band_m`
+(20 m) horizontal distance of the nearest sweep origin; full H is reported beside
+it. `scripts/25_hidden_label_transitions.py` shows how GT cells move from the
+earlier test-sweep labels (seen, blocked, no-return, passed-through, unobserved)
+to H (`reports/hidden_space/<session>/label_transitions.md`). A nearer return is
+**not independently identified as grass**, and camera occlusion is not classified.
+These limits must accompany any result; the full list is in
+`docs/research/evaluation_caveats.md` §6-§7.
 
-Reports include P1/P2 voxel recall, precision and IoU, recall within every evidence
-stratum, off-trunk occupied cells, per-trunk P2 occupied fractions, and P2 cells
+Reports include P1/P2 voxel recall, precision and IoU, recall_H, precision_H and
+IoU_H on H_near and full H (class `obstacles` first, then each class), off-trunk
+occupied cells, per-trunk P2 occupied fractions, and P2 cells
 present in the model but absent from its P1 render. Off-trunk occupancy in the
 frozen trunk neighbourhood is a false-positive proxy; it is not a count of
 unmatched trunk-like objects throughout the forest. No radius/threshold is tuned
@@ -77,7 +87,7 @@ Gaussian whose float32 covariance becomes singular.
 
 ## Interpretation and current gate
 
-A blocked/no-return recall gain with preserved precision would be positive pilot
+A recall_H gain on H_near with preserved precision would be positive pilot
 evidence of stronger hidden geometry. A precision loss must be reported beside
 any gain. No gain is a valid result. One B/L pair cannot establish a repeatable
 research conclusion: matched repeats and their spread remain necessary.

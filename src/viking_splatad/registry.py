@@ -90,6 +90,12 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # every ~1/(1-f)-th lidar sweep is test and every sensor holds out the same instants (T71);
         # only an evenly spaced fraction of those is rendered test, the rest is guard (T72).
         "T71", "T72",
+        # Session-wide hidden space (evaluation only): the hidden-voxel label from T78 flags with a
+        # range margin (T91, eval/hidden_geometry.py), the margin measured as cross-sweep
+        # point-to-plane residuals (T92, eval/range_margin.py), one recorded sweep as map-frame rays
+        # (T93, eval/session_rays.py), and the hidden metrics pooled over voxels (T94) and averaged
+        # over objects (T95, eval/hidden_metrics.py).
+        "T91", "T92", "T93", "T94", "T95",
     }
 )
 

@@ -1,5 +1,5 @@
 # Isolated environment for the run viewer: PyVista (scripts/15_view_pose_pyvista.py, launched by
-# scripts/13). PyVista is kept out of the root project because the root pyproject.toml is a
+# scripts/13 and scripts/19). PyVista is kept out of the root project because the root pyproject.toml is a
 # Docker/cluster recipe file (a change forces rebuilds).
 [project]
 name = "viking-splatad-viz"

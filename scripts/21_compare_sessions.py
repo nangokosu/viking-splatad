@@ -6,8 +6,13 @@ profile names differ between sessions. Per session and method pair it reports:
 - the P1/P2 voxel gaps from scripts/20 (gap = later arm - earlier arm, so a radar gain is positive
   for higher-is-better metrics; the JSON also holds counts such as present_but_hidden, where it is negative),
   beside both arms' ranges and the "separated" flag (the arms' [min, max] do not overlap);
-- the scripts/13 P1 cuboid metrics (ungated detection rate T45 and point precision T46), pooled over
-  the same runs with the same statistics (eval/p2_repeats.py);
+- the hidden-voxel metrics (T94/T95) of scripts/20 for the group ``obstacles`` and each class: P2
+  recall, precision and IoU on H_near (headline, ``_Hnear``) and on the full H (``_H``), pooled and
+  mean over objects, at each P2 threshold; the whole-neighbourhood P2 baseline; and the lidar view
+  (P1 recall, precision, recall_Hnear, recall_H);
+- optionally, when every run of an arm has a scripts/13 report: the P1 cuboid metrics (ungated
+  detection rate T45 and point precision T46), pooled over the same runs with the same statistics
+  (eval/p2_repeats.py);
 - the difference of the gaps between sessions (last session given - first session given; sessions in
   between are reported per session but do not enter the difference).
   The claim expects a radar gain in June (tall grass occludes trunks), and none in May.
@@ -25,12 +30,13 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from viking_splatad.config import find_project_root
+from viking_splatad.viz.pyvista_scene import repo_relative
 from viking_splatad.eval.p2_repeats import arm_pairs, compare_arms, describe_arm
 
-SUMMARY_SCHEMA = "viking-splatad/gaussian-occupancy-summary/1"
+SUMMARY_SCHEMA = "viking-splatad/gaussian-occupancy-summary/2"
 SEMANTIC_REPORT_SCHEMA = "viking-splatad/semantic-occupancy/1"
 SEMANTIC_REPORT_RELATIVE_PATH = Path("eval") / "semantic_occupancy.json"
 RUNS_DIR_NAME = "runs"
@@ -47,13 +53,41 @@ METHOD_LABELS = {"splatad": "stock", "splatad-radar-init": "radar init",
                  "splatad-radar-init-lidar": "radar init + loss"}
 # P1 is read ungated: the binding P1 form (PLAN §5); the gated set is SplatAD's sensor-faithful view.
 P1_POINT_SET = "ungated"
-# Metrics shown in the markdown (the JSON holds every scripts/20 metric). Classes: trunks are the
-# claim; rocks and bushes are the other scored GT classes, read as controls.
-HEADLINE_CLASSES = ("tree_trunk", "rock", "bush_or_small_tree")
-HEADLINE_METRICS = ("P1cuboid/detection_rate", "P1cuboid/point_precision", "P1/recall", "P2/recall",
-                    "P1/recall_blocked", "P2/recall_blocked", "P1/precision", "P2/precision", "P2/iou")
+# Metrics shown in the markdown (the JSON holds every scripts/20 metric). Classes: the group of all
+# obstacles first, then trunks (the claim), then rocks and bushes, read as controls.
+HEADLINE_CLASSES = ("obstacles", "tree_trunk", "rock", "bush_or_small_tree")
+# Keys after ``<class>/`` (flatten_hidden_metrics); ``{threshold}`` is a P2 threshold key of the summary.
+# Headline H_near (``_Hnear``: hidden within the near band of the path) P2 recall / precision / IoU (pooled and
+# mean over objects), then the same for the full H (``_H``). Primary recall / precision, summary IoU; then the P2 baseline
+# over the whole neighbourhood, then the lidar view P1 (pooled).
+THRESHOLD_METRIC_SUFFIXES = ("P2@{threshold}/recall_Hnear/pooled", "P2@{threshold}/recall_Hnear/mean",
+                             "P2@{threshold}/precision_Hnear/pooled", "P2@{threshold}/precision_Hnear/mean",
+                             "P2@{threshold}/iou_Hnear/pooled", "P2@{threshold}/iou_Hnear/mean",
+                             "P2@{threshold}/recall_H/pooled", "P2@{threshold}/recall_H/mean",
+                             "P2@{threshold}/precision_H/pooled", "P2@{threshold}/precision_H/mean",
+                             "P2@{threshold}/iou_H/pooled", "P2@{threshold}/iou_H/mean",
+                             "P2@{threshold}/recall/pooled", "P2@{threshold}/precision/pooled",
+                             "P2@{threshold}/iou/pooled")
+LIDAR_VIEW_METRIC_SUFFIXES = ("P1/recall/pooled", "P1/precision/pooled", "P1/recall_Hnear/pooled", "P1/recall_H/pooled")
+# Optional rows: they exist only when the arms' runs have scripts/13 reports.
+OPTIONAL_METRIC_SUFFIXES = ("P1cuboid/detection_rate", "P1cuboid/point_precision")
 # Decimal places in the markdown tables (metrics are fractions in [0, 1]; 3 places resolve 0.1 %).
 TABLE_DECIMALS = 3
+
+
+def headline_metric_suffixes(threshold_texts: Sequence[str]) -> List[str]:
+    """Headline metric keys after the class prefix: each threshold's P2 rows, the P1 rows, then the optional rows.
+
+    Args:
+        threshold_texts: P2 threshold keys of the summaries (e.g. "0.5", "0.8").
+
+    Returns:
+        Suffixes in table order.
+    """
+    suffixes: List[str] = []
+    for threshold_text in threshold_texts:
+        suffixes += [template.format(threshold=threshold_text) for template in THRESHOLD_METRIC_SUFFIXES]
+    return suffixes + list(LIDAR_VIEW_METRIC_SUFFIXES) + list(OPTIONAL_METRIC_SUFFIXES)
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -111,10 +145,11 @@ def session_arms(summary: Dict[str, Any], project_root: Path) -> Dict[str, Dict[
 
     Returns:
         method -> {"profile", "run_ids", "metrics"}; metrics merge scripts/20's descriptions with the
-        scripts/13 cuboid metrics described over the same runs.
+        scripts/13 cuboid metrics described over the same runs (absent when the arm has no scripts/13 reports).
 
     Raises:
-        ValueError: Two arms of one method (ambiguous match across sessions) or a bad scripts/13 report.
+        ValueError: Two arms of one method (ambiguous match across sessions), a bad scripts/13 report,
+            or scripts/13 reports for only some runs of an arm.
     """
     session = summary["session"]
     arms_by_method: Dict[str, Dict[str, Any]] = {}
@@ -127,9 +162,14 @@ def session_arms(summary: Dict[str, Any], project_root: Path) -> Dict[str, Dict[
         run_ids = [run_entry["run_id"] for run_entry in arm["runs"]]
         if not run_ids:
             raise ValueError(f"{session}: arm {profile} has no runs")
-        # scripts/13 cuboid metrics over exactly the runs scripts/20 pooled for this arm.
-        cuboid_descriptions = describe_arm([semantic_run_metrics(project_root / RUNS_DIR_NAME / run_id, session)
-                                            for run_id in run_ids])
+        # scripts/13 cuboid metrics over exactly the runs scripts/20 pooled for this arm, when they exist.
+        run_dirs = [project_root / RUNS_DIR_NAME / run_id for run_id in run_ids]
+        runs_with_report = [run_dir for run_dir in run_dirs if (run_dir / SEMANTIC_REPORT_RELATIVE_PATH).exists()]
+        if runs_with_report and len(runs_with_report) != len(run_dirs):
+            raise ValueError(f"{session}: arm {profile} has scripts/13 reports for only {len(runs_with_report)} of its "
+                             f"{len(run_dirs)} runs (run scripts/13 on all or none)")
+        cuboid_descriptions = (describe_arm([semantic_run_metrics(run_dir, session) for run_dir in run_dirs])
+                               if runs_with_report else {})
         arms_by_method[method] = {"profile": profile, "run_ids": run_ids,
                                   "metrics": {**arm["metrics"], **cuboid_descriptions}}
     return arms_by_method
@@ -238,7 +278,8 @@ def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, 
              "(gain positive for higher-is-better metrics). `sep` = the two arms' [min, max] do not overlap; `n/a` = an arm has fewer than 2 repeats (no spread). "
              f"Δ = gap in {session_names[-1]} - gap in {session_names[0]}. "
              f"P1cuboid = scripts/13 {P1_POINT_SET} cuboid detection rate (T45) and point precision (T46); "
-             "P1/P2 = scripts/19 voxel metrics on the rendered lidar (P1) and the Gaussians (P2).", ""]
+             "P1/P2 = scripts/19 voxel metrics on the rendered lidar (P1) and the Gaussians (P2); `_Hnear` = restricted to the hidden cells within the near band of the path (headline), `_H` = to all "
+             "hidden cells, pooled over cells or mean over objects; P2@t = Gaussians occupied at probability >= t.", ""]
     # Arm membership, so every number traces to its runs.
     for entry in sessions:
         lines.append(f"## {entry['session']}: arms")
@@ -249,11 +290,13 @@ def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, 
                          + ", ".join(arm["run_ids"]))
         lines.append("")
     # Per class: each arm's mean ± std per session.
+    metric_suffixes = headline_metric_suffixes(sessions[0]["p2_thresholds"])
     for class_name in HEADLINE_CLASSES:
         lines += [f"## {class_name}: arm values", ""]
+        # Columns: metric, session, then one per method of METHOD_ORDER (hence the "+ 2" in the rule row).
         header = "| metric | session | " + " | ".join(METHOD_LABELS[method] for method in METHOD_ORDER) + " |"
         lines += [header, "|" + "---|" * (len(METHOD_ORDER) + 2)]
-        for metric_suffix in HEADLINE_METRICS:
+        for metric_suffix in metric_suffixes:
             metric_key = f"{class_name}/{metric_suffix}"
             for entry in sessions:
                 cells = [format_description(entry["arms"][method]["metrics"][metric_key])
@@ -266,10 +309,11 @@ def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, 
         later_label = METHOD_LABELS.get(comparison["later"], comparison["later"])
         earlier_label = METHOD_LABELS.get(comparison["earlier"], comparison["earlier"])
         lines += [f"## Gap: {later_label} - {earlier_label}", ""]
+        # Columns: metric, one gap per session, then Δ (hence the "+ 2" in the rule row).
         header = ("| metric | " + " | ".join(f"{session} gap (sep)" for session in session_names) + " | Δ |")
         lines += [header, "|" + "---|" * (len(session_names) + 2)]
         for class_name in HEADLINE_CLASSES:
-            for metric_suffix in HEADLINE_METRICS:
+            for metric_suffix in metric_suffixes:
                 metric_key = f"{class_name}/{metric_suffix}"
                 if metric_key not in comparison["metrics"]:
                     continue
@@ -298,9 +342,12 @@ def main() -> int:
             summary = json.loads(summary_path.read_text())
             if summary.get("schema") != SUMMARY_SCHEMA:
                 raise ValueError(f"{summary_path}: schema {summary.get('schema')!r}, need {SUMMARY_SCHEMA!r}")
-            sessions.append({"session": summary["session"], "summary_path": str(summary_path.resolve()),
+            sessions.append({"session": summary["session"], "summary_path": repo_relative(str(summary_path.resolve()), project_root),
+                             "p2_thresholds": summary["p2_thresholds"],
                              "arms": session_arms(summary, project_root)})
         session_names = [entry["session"] for entry in sessions]
+        if any(entry["p2_thresholds"] != sessions[0]["p2_thresholds"] for entry in sessions):
+            raise ValueError("sessions were summarized with different P2 thresholds (rerun scripts/20)")
         if len(session_names) < MINIMUM_SESSION_COUNT or len(set(session_names)) != len(session_names):
             raise ValueError(f"need at least {MINIMUM_SESSION_COUNT} distinct sessions, got {session_names}")
         # Step 2: gaps per session and their differences (compare_arms raises KeyError, hence a refusal,

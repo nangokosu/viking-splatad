@@ -87,6 +87,11 @@
     "T88",
     "T89",
     "T90",
+    "T91",
+    "T92",
+    "T93",
+    "T94",
+    "T95",
     "T9a",
     "T9b"
   ],
@@ -438,6 +443,26 @@
     {
       "id": "T90",
       "qualified_name": "viking_splatad.export.viewer_frame.rotate_directions_to_viewer"
+    },
+    {
+      "id": "T91",
+      "qualified_name": "viking_splatad.eval.hidden_geometry.hidden_space_mask"
+    },
+    {
+      "id": "T92",
+      "qualified_name": "viking_splatad.eval.range_margin.cross_sweep_plane_residuals"
+    },
+    {
+      "id": "T93",
+      "qualified_name": "viking_splatad.eval.session_rays.sweep_rays_in_map"
+    },
+    {
+      "id": "T94",
+      "qualified_name": "viking_splatad.eval.hidden_metrics.pooled_hidden_metrics"
+    },
+    {
+      "id": "T95",
+      "qualified_name": "viking_splatad.eval.hidden_metrics.per_object_hidden_metrics"
     },
     {
       "id": "T9a",
