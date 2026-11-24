@@ -1,4 +1,4 @@
-# Evaluation settings shared by every session (read by scripts/13_eval_semantic_occupancy.py).
+# Evaluation settings shared by every session (read by scripts/13, 15, 19, 20 and 24).
 # Session-specific inputs (GT folder, labels sample) come from configs/sessions/<session>.yaml.
 eval:
   # PLAN §5 P1 ungated extraction: a rendered ray gives a point when its accumulation
@@ -28,13 +28,61 @@ eval:
   # fraction is a step function of whole cells, so a finer grid adds rows, not information, for
   # cuboids of ~10 GT cells; scripts/20 bands the repeats on this same grid.
   p2_f_min_grid_points: 11
-  # P2 threshold sweep (caveats §5: floaters/haze can cross one cut): occupancy thresholds on an
-  # evenly spaced grid over [0, 1] with this many points; render_accumulation_threshold stays the
-  # binding cut. 11 points = steps of 0.1, which includes 0.5 exactly.
-  p2_threshold_sweep_points: 11
+  # P2 (Gaussian occupancy) is scored at exactly these thresholds, ascending; the 11-point sweep is
+  # retired (a smaller report: two explicit evaluations). 0.5 is binding and must equal
+  # render_accumulation_threshold (even odds, shared with P1). 0.8 is a strictness check: it was
+  # lowered from 0.9 because radar seeds are expected to add faint Gaussians that a stricter cut
+  # would erase. 0.8 can weaken a claim made at 0.5, never replace it.
+  p2_thresholds: [0.5, 0.8]
+  # Class groups reported before the single classes (ids must be values of scored_class_ids).
+  # obstacles = tree_trunk (1) + rock (3) + bush_or_small_tree (4): the headline group, the objects
+  # a robot could collide with.
+  class_groups:
+    obstacles: [1, 3, 4]
   # T57 working batch (Gaussians per KD-tree batch): a CPU memory policy only, results do not depend
   # on it. The same value the radar opacity loss uses for its gate batches (radar_lidar_gate_chunk_size).
   gaussian_occupancy_chunk_size: 4096
   # Scored class names scripts/15 draws (a list of names from scored_class_ids); null = all scored
   # classes. Override per run with --classes (scripts/15) or --viz-classes (scripts/13).
   viz_classes: null
+  # Session-wide hidden space H (scripts/24_build_hidden_space.py): space no recorded lidar sweep
+  # could see, built from all sweeps with a range margin m measured from the data (cross-sweep
+  # point-to-plane residuals on static surfaces).
+  hidden_space:
+    # The margin m is this quantile of the residuals, so it covers 95% of measured static-surface
+    # residuals while the worst 5% (mismatched planes, moving points) do not inflate it.
+    margin_quantile: 0.95
+    # Sweeps between the two sweeps of a residual pair. Sweep period ~0.102 s (manifest
+    # lidar.sweep_period): 10 sweeps = ~1.02 s apart. A different viewpoint is wanted so that
+    # pose error enters the residual, not only sensor noise.
+    margin_sweep_gap: 10
+    # First sweeps of pairs are taken every this many sweeps: 100 gives ~20 pairs over ~2000
+    # sweeps, deterministic coverage of the whole drive.
+    margin_sweep_stride: 100
+    # Neighbours per plane fit: 10 is the smallest neighbourhood that gives a stable 3x3
+    # covariance (9 values from 3 unknown directions) with some redundancy.
+    margin_neighbour_count: 10
+    # Minimum planarity (l2 - l3) / l1 of the neighbourhood covariance eigenvalues for a point to
+    # count as planar; 0.5 is the usual cut in the dimensionality-features literature (Weinmann
+    # et al.), separating planes from edges and scattered returns.
+    margin_planarity_min: 0.5
+    # Only returns up to this range (m) are used: at 20 m the beam spacing at 0.35 deg azimuth
+    # (0.0061359 rad) is 20 * 0.0061359 = 0.123 m (~12 cm), so the plane fit stays local.
+    margin_max_range_m: 20.0
+    # Share of all real returns within the scored range limit, the range that decides which boxes are
+    # scored (a box is scored when its centre is within this range and the FOV of some sweep). The
+    # old rule, the farthest single return, is set by strays over ~2000 sweeps: on June 99.99 % of
+    # 49.8 M returns lie within 40.2 m, 99.999 % within 86.8 m, the farthest at 201 m. 0.9999 keeps
+    # all but one return in 10^4 (diagnostic: range percentiles over all June sweeps). The per-sweep
+    # reach cull of the evidence keeps the exact farthest return, so no evidence is lost.
+    scored_range_quantile: 0.9999
+    # Headline hidden space H_near = H within this horizontal distance (m) of the nearest sweep origin
+    # (the driven path). User's decision at the hidden-space gate (2026-11-24): most of H lies 30 m or
+    # more from the path (reports/hidden_space/<session>/label_transitions.md, distance table), where
+    # "hidden" means distant occlusion rather than grass next to the robot; the research question is
+    # about the latter. 20 m equals margin_max_range_m, the range within which the plane fits behind the
+    # range margin are local. One value for both sessions, so May and June compare like for like. Full
+    # H is reported beside it.
+    near_band_m: 20.0
+    # CPU workers; null = all CPU cores. Compute policy only, results do not depend on it.
+    worker_count: null

@@ -1,36 +1,41 @@
-# Last session summary (2026-11-22)
+# Last session summary (2026-11-24)
 
 ## Done
-Branch `radar-init-loss-merge` (not pushed). One commit: "SuperSplat export: viewer frame and driven-path corridor crop" (the commit carrying this file), on top of 0dbf4f6.
-- **The PLYs looked broken in SuperSplat; their content was fine.**
-  - `docs/research/supersplat_export/render_ply_view.py` renders a PLY with the 3DGS image model from a train camera, and the old PLYs showed the scene that way.
-  - The cause was how SuperSplat placed them. SuperSplat expects up = -y (it rotates 180° about z at load); the map frame has up = +z and is far from the origin. The T86 box spanned ±200 m, so a sparse background shell set the viewer's framing.
-- **Fix, now the defaults of `scripts/22_export_supersplat_ply.py`:**
-  - **T88 viewer frame:** `p' = M (p_map - o)`, with `M = [[1,0,0],[0,0,-1],[0,1,0]]` and `o` the mean train sensor position.
-  - **T89 / T90:** the inverse for points, and directions into the viewer frame.
-  - **T87 corridor crop:** width = p99.9 horizontal lidar range; z = the 0.001 / 99.999 percentiles of the corridor lidar.
-  - **Sidecar:** `renders/supersplat_frame.json` is always written (frame, origin, rotation, crop, PLY size). Script 23 replays the crop from it and refuses a PLY without one.
-  - **Old behaviour still available:** `--frame map`, `--crop-mode box`.
-  - **Measurements:** in `docs/research/supersplat_export/README.md`, section "Viewer fix". Corridor widths compared by render: p95 left 3.9% holes, p99.9 0.73% with the same error as the box.
-- **Re-exported:** May 30k radar init + loss (4,782,636 Gaussians, 255 MiB) and June 30k radar init + loss cam (4,811,023, 257 MiB). The old May stock 20k PLY was deleted (user's request, to save disk).
-- **Job step (`splatad_run.sbatch`):**
-  - The time cap now comes from the new logs: 191.08 s rounded up to 192 s, ×4.
-  - Temp PLY/sidecar files are removed after a failed or killed export.
-  - The skills and the glossary describe the viewer frame and the sidecar.
+Branch `radar-init-loss-merge`, one commit on top of d2137d9: "Hidden-voxel evaluation: session hidden space, H_near headline, re-scored repeats" (the commit carrying this file). Pushed, with a PR to main.
+- **New headline metric: P2 hidden recall / precision / IoU.**
+  - **Hidden space H:** built once per session over all ~2000 recorded Ouster sweeps (`scripts/24_build_hidden_space.py`). A cell is in H when it is never seen, blocked at least once, and never passed through, with a range margin m measured from the data (T91, T92, T93; T78 gained `range_margin` and is vectorised, bit-identical).
+  - **Headline band H_near:** H within `hidden_space.near_band_m` = 20 m of the driven path. This was the user's decision, because most of H lies 30 m or more away.
+  - **Classes:** `obstacles` (trunk + rock + bush) first, then each class, with the other-class mask.
+  - **Averaging:** pooled and mean over objects (T94/T95; overlaps count against each object).
+  - **Thresholds:** P2 at 0.5 and 0.8; the threshold sweep is retired.
+  - **Image check:** PSNR/SSIM/LPIPS (`eval/run_quality.py`).
+  - **Scored range:** the 0.9999 quantile of return ranges instead of the farthest return, which was a 201 m stray.
+- **Label transitions:** `scripts/25_hidden_label_transitions.py` → `reports/hidden_space/<session>/label_transitions.md` shows how GT cells moved from the old test-sweep labels into H.
+- **Scripts 19/20/21:** schemas are now `/2`. Script 15 has `--p2-hidden [--hidden-band near|full]`. Docs updated (PLAN §5, evaluation_caveats §5–7, hidden_trunk_evaluation, pyvista_viewer, glossary).
+- **Re-scored:** all 30 repeat runs. Reports are in `reports/gaussian_occupancy/{june_tall_grass,may_short_grass}/gaussian_occupancy_summary.md` and `session_comparison.md`.
+  - **Radar init + loss** beats stock on P2 recall_Hnear (mean over objects), separated in both sessions: June 0.215 vs 0.115, May 0.358 vs 0.082.
+  - **Weak spots:** pooled recall and precision are not separated. At 0.8 June is not separated. May hidden precision falls (within spread).
+  - **Radar init alone** is at or below stock everywhere.
+  - **Thin evidence:** H_near holds June 276 cells / 14 objects, May 137 / 7.
+- Full suite in the image: 1753 passed, 1 skip (traceability "0 transforms pending").
 
 ## Current state
-- **The two PLYs are not yet checked in SuperSplat by the user.** The render check (train camera, viewer frame) matches the old box render: June median abs error vs the photo 0.114, May 0.145.
-- **The job step has not run on the cluster yet.** Stage the code (`submit_run.py stage`) before the next job.
-- **Old test edits need reasons in the PR:** the `affected_tests.py` audit still flags earlier branch commits (7dce3fb, fe84c70, 46765ea). This session's existing-test edits:
-  - CLI flags added so old tests keep testing the map frame / box: `--frame map`, `--crop-mode box`.
-  - `STUB_MEASURED_SECONDS` 185 -> 192, mirroring the sbatch.
-  - Added `covers` markers.
-- **Research scripts that need the old map-frame box PLY:** `corridor_crop_measure.py` and `corridor_width_render_sweep.py` (and `ply_sanity.py` / `crop_real_may.py` for the May stock run). Re-export with `--crop-mode box --frame map` before rerunning them.
-- **Not in this commit:** the user's uncommitted `.claude/settings.json`, `reports/gaussian_occupancy/` and `scripts/21_compare_sessions.py`.
+- **Open issue, results affected: m is inflated by plane-fit error.** The T92 neighbour search has no distance limit. June m = 0.398 m unbounded, but 0.103 m when the neighbours must lie within 0.25 m (`docs/research/hidden_space/margin_neighbour_extent.py`; evaluation_caveats §6). A large m makes H too small. The committed results use the unbounded m.
+- **Disk:** the Mac has little free space (~6 GB). macOS swap (up to 8 GB while scoring) and Docker's disk file use it.
+  - Freed this session: `data/images/*.tar` deleted (rebuild the image from the recipe if needed); Docker build cache pruned and trimmed.
+  - A Docker Desktop auto-update download (~2.4 GB) is still on disk.
+- **Hidden-space files:** `data/gt/<session>/hidden_space.{npz,json}` are gitignored (`data/`). Teammates rebuild them with script 24 (about a minute per session).
+- **Known review findings, not fixed:**
+  - script 21: a scripts/13 report on only one arm breaks the comparison;
+  - script 25: an empty old archive gives an IndexError;
+  - script 24: an `--output-dir` outside the repo breaks after the npz is written;
+  - `hidden_space.npz` sha256 includes zip timestamps;
+  - the reach cull also drops no_return flags (H is unaffected);
+  - refactor candidates: scripts/15 (1236 lines) and hidden_geometry (duplicate slab function).
+- **Not committed:** the user's `.claude/settings.json` and `reports/gaussian_occupancy/with_older_code/` (old reports, carrying an absolute path).
 
 ## Next steps
-1. Open the two PLYs in SuperSplat. If they still open badly, say how (orientation, framing, holes).
-2. Before the next cluster job: `submit_run.py stage`, then check that `job_info.txt` shows `supersplat_export: written` and that `renders/supersplat_frame.json` exists.
-3. Export other runs when wanted: `VIKING_WRITABLE_DIR=runs/<run>/renders scripts/test_in_image.sh python scripts/22_export_supersplat_ply.py --run-dir runs/<run>`.
-4. Run script 13 over the repeat campaign: compare the gap between arms with the spread within arms, June first.
-5. Push the branch and open a PR to main (user's call), stating the reasons for the old test removals.
+1. **Fix m:** bound the T92 neighbour reach by half a GT voxel (0.26 m), with a test. Rebuild H for both sessions (script 24), rerun script 25, re-score the 30 runs (script 19), then scripts 20 and 21. Watch the disk and stop below 3 GB.
+2. Fix the review findings above, or file them.
+3. PR review and merge to main (user's call). The PR lists the earlier branch commits that removed tests, with their reasons.
+4. Consider more repeats or a wider near band only if the H_near counts stay this small after the margin fix.

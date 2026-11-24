@@ -142,7 +142,7 @@ Extra June runs with camera training on (`train-lidar-only False`) need your app
 - **P1, rendered lidar** asks what a lidar at the eval poses would see.
 - **P2, Gaussian occupancy** asks what the model contains.
 
-R must beat B on at least one of them on blocked and no-return cells (below), and must not lose precision on either.
+R must beat B on at least one of them on hidden-space cells (H_near first, below), and must not lose precision on either.
 
 **P1, rendered lidar point cloud** (`08_render_lidar_pointcloud.py`, in the SplatAD job on Slurm). For each eval lidar pose:
 1. call `get_lidar_outputs` on the scan's rays;
@@ -166,16 +166,32 @@ R must beat B on at least one of them on blocked and no-return cells (below), an
   - Gaussian k adds its peak σ(o_k) to the voxel holding its mean, and the T57 tail o_k·exp(−½d²) at every other scored centre within 3σ. Combined by the product rule.
   - Same run: seen-trunk P2 recall 0.807 vs P1 0.819 (the arms should agree on seen cells).
   - A voxel is occupied if occupancy ≥ `eval.render_accumulation_threshold`, the same value as P1. So the two grids differ only by visibility.
-- **Scripts:** `scripts/19_eval_gaussian_occupancy.py` scores one run (P1 and P2 on the same cells, T78 evidence strata, T79 detection curve, T80 present-but-hidden, threshold sweep) into `<run>/eval/gaussian_occupancy.{json,md}` and `gaussian_occupancy_cells.npz`. Its picture comes from `scripts/15 --p2`. `scripts/20_summarize_gaussian_occupancy.py` groups a session's runs by profile and compares the arms over their repeats (descriptive: each gap beside the spread within both arms).
-- **Scored cells:** only cells within lidar range and FOV of at least one eval pose (T32). P2 also counts Gaussians in space no sensor saw (e.g. SplatAD's random init points).
+- **Thresholds:** P2 is scored at `eval.p2_thresholds: [0.5, 0.8]`. 0.5 is binding. 0.8 is a strictness check (lowered from 0.9 because radar adds faint Gaussians); it can weaken a result but never replace 0.5. The 11-point sweep is retired. P1 occupied = an ungated rendered point in the cell.
+- **Scripts:**
+  - `scripts/24_build_hidden_space.py` builds the session's hidden space H once (below) into `data/gt/<session>/hidden_space.{npz,json}`. `scripts/25_hidden_label_transitions.py` reports how GT cells move from the old test-sweep labels to H (`reports/hidden_space/<session>/label_transitions.md`); it is the first step before re-scoring.
+  - `scripts/19_eval_gaussian_occupancy.py` scores one run (P1 and P2 on the same cells, restricted to H and H_near, T79 detection curve, T80 present-but-hidden) into `<run>/eval/gaussian_occupancy.{json,md}` (schema `gaussian-occupancy/2`, with `hidden_near` and `hidden` blocks) and `gaussian_occupancy_cells.npz`. The archive holds `hidden`, `hidden_near`, `gt_class_ids`, `p2_thresholds` and the per-object CSR arrays. Its pictures come from `scripts/15 --p2` and `scripts/15 --p2-hidden`.
+  - `scripts/20_summarize_gaussian_occupancy.py` (summary schema `/2`) groups a session's runs by profile and compares the arms over their repeats (descriptive: each gap beside the spread within both arms). It recomputes the hidden blocks from the archive and adds the guard and report-only tables. `scripts/21_compare_sessions.py` puts the sessions side by side with the headline class `obstacles` first.
+- **Scored cells:** only cells within the scored range and FOV of at least one recorded sweep of the session (T32; train, guard and test sweeps, not only the test sweeps). The scored range is the `hidden_space.scored_range_quantile` (0.9999) of all return ranges, because the farthest single return is a stray (`data/gt/<session>/hidden_space.json`: `max_range_m` vs `scored_range_m`). P2 also counts Gaussians in space no sensor saw (e.g. SplatAD's random init points).
 - **Precision is essential here:** P2 exposes radar-invented trunks that a render could hide behind grass.
 
-**Why the lidar missed each GT cell.** Every metric is reported per GT cell class, from the recorded June scans at the eval poses:
-- **seen:** returns inside the cuboid;
-- **blocked:** rays towards it returned from something nearer;
-- **no return:** rays towards it got no echo (the `lidar_no_return/` files).
+**Why the lidar missed each GT cell: the hidden space H** (`scripts/24_build_hidden_space.py`, T91, T92; once per session, over ALL recorded Ouster sweeps: train, guard and test, about 2000). With a range margin m, a cell is:
+- **seen:** a return within [entry − m, exit + m] of the cell;
+- **blocked:** a return shorter than entry − m;
+- **passed:** a return beyond exit + m.
 
-The radar claim concerns blocked and no-return cells. B and R should agree on seen cells.
+**H = ¬seen ∧ blocked ∧ ¬passed.** No-return beams do not affect H. The margin m (T92, T78 `range_margin`) is the 95th percentile of cross-sweep point-to-plane residuals on near planar returns, measured from the data (June 0.398 m, May 0.460 m: `hidden_space.json`). H is stored with its input hashes in `data/gt/<session>/hidden_space.{npz,json}`.
+
+**Headline band H_near:** H within `hidden_space.near_band_m` (20 m) horizontal distance of the nearest sweep origin (the driven path). User's decision at the gate, 2026-11-24: most of H lies 30 m or more from the path (distance tables in `reports/hidden_space/<session>/label_transitions.md`), which is distant occlusion rather than grass next to the robot. Full H is reported beside it.
+
+The radar claim concerns H and H_near cells. B and R should agree on cells the lidar saw.
+
+**Classes and metrics** (O occupied, G GT in the neighbourhood N, H the hidden band):
+- Classes: `obstacles` (tree_trunk + rock + bush_or_small_tree, the objects a robot could collide with) first, then each class. In every class row, cells on another annotated class's GT count neither for nor against.
+- recall_H = |O∩G∩H|/|G∩H|; precision_H = |O∩G∩H|/|O∩N∩H|; IoU_H = |O∩G∩H|/|(O∪G)∩N∩H| (T94, pooled).
+- Per object k with grown box N_k (T95): the same ratios averaged over the objects where they are defined, with the count; an occupied cell in several N_k counts against each object.
+- Baseline: the same ratios without H.
+
+**Picture:** `scripts/15 --p2-hidden [--hidden-band near|full] [--hidden-class obstacles] [--hidden-threshold t]` writes `eval/viz_p2/p2_hidden_<band>_<class>_<t>_<view>.png` (green = O∩G∩H, translucent red = O∩N∩H∖G, grey = G∩H missed, faint grey = H∩N); `scripts/19` launches it.
 
 **Ground truth: files and frame** (evaluation only; never a SplatAD input, seed, seed filter or loss target, CLAUDE.md rule 6).
 - **Source labels:** `short_and_tall_grass_labels.json`. This is one file, with byte-identical copies at `data/raw/{may_short_grass,june_tall_grass}/extracted/ros2_jazzy/cuboid_labels/` (config `session.labels_json`). It holds two samples:
@@ -191,18 +207,20 @@ The radar claim concerns blocked and no-return cells. B and R should agree on se
   As of 2026-10-26 only `data/gt/may_short_grass/` exists; the June GT must be generated before evaluation.
 - **Frame:** the label file carries no frame information. Before evaluation, the June check (§1 step 5) must confirm that the June label map frame equals the June `/icp_odom` map frame. P1 and P2 both land in that frame via `inv(w2m)`.
 - **Classes scored:** tree_trunk (1), bush_or_small_tree (4, young trees) and rock (3). Not scored: canopy (2), car, building, lamp/sign and ignore (8); grass has no class.
-- **Kept cuboids:** only those within lidar range and FOV of at least one eval pose (T32). Objects this traversal's lidar never saw are kept on purpose, because that is where radar should help.
+- **Kept cuboids:** only those whose centre is within the scored range and FOV of any recorded sweep (T32). Objects this traversal's lidar never saw are kept on purpose, because that is where radar should help.
 
 | metric | definition | role / expectation |
 |---|---|---|
-| **Detection rate per class (T45)**, P1 and P2, per seen / blocked / no-return | P1 (`scripts/13_eval_semantic_occupancy.py`, done without the seen / blocked / no-return split): fraction of kept cuboids with ≥ n_min ungated rendered points inside, plus the curve over n; n_min per class = lower quartile (`configs/eval.yaml`) of the real test sweeps' point counts in the class's hit cuboids, same session, same poses. P2: fraction of kept cuboids whose occupied-voxel fraction is ≥ f_min, reported as a curve over f_min (no single threshold tuned on GT) | **primary**: R > B on blocked/no-return in P1 or P2; R ≈ B on seen |
+| **Detection rate per class (T45)**, P1 and P2, on H and H_near | P1 (`scripts/13_eval_semantic_occupancy.py`, done without the hidden-space restriction): fraction of kept cuboids with ≥ n_min ungated rendered points inside, plus the curve over n; n_min per class = lower quartile (`configs/eval.yaml`) of the real test sweeps' point counts in the class's hit cuboids, same session, same poses. P2: fraction of kept cuboids whose occupied-voxel fraction is ≥ f_min, reported as a curve over f_min (no single threshold tuned on GT) | **primary**: R > B on H_near (then H) in P1 or P2; R ≈ B on seen cells |
 | **Trunk precision / false-positive trunks (T46)**, P1 and P2 | (a) fraction of rendered points (P1) or occupied voxels (P2) near a class's cuboids (each grown horizontally by the class's median half-footprint, same z span; the hill rules out one global height band) that fall inside one (P1 done in scripts/13, per scored class, with voxel IoU/P/R in the same region); (b) trunk-like vertical clusters matching no cuboid | **primary**: R ≥ B on both (radar must not invent trunks) |
-| Present but hidden | per GT cell: occupied in P2 but no rendered point in P1 | explains P1 vs P2; expected larger for R (trunks behind grass Gaussians) |
+| Present but hidden | per GT cell: occupied in P2 but no rendered point in P1 (P1 recall_H should be near zero for a faithful lidar model: the evidence that lidar-only evaluation is inadequate) | explains P1 vs P2; expected larger for R (trunks behind grass Gaussians) |
 | Gated P1 metrics | as T45/T46 with SplatAD's ray-drop gate | report (sensor-faithful view) |
-| Lidar depth / Chamfer / ray-drop | SplatAD built-in, on eval lidars | report |
-| Camera PSNR / SSIM / LPIPS | extension runs only: full frame and inside the trunk-above-grass mask (§4.3) | R+cam ≈ B+cam (radar must not hurt) |
+| Lidar depth / Chamfer / ray-drop | SplatAD built-in, on eval lidars | report only |
+| Camera PSNR / SSIM / LPIPS | final test-view values (training-eval split = test + guard frames) as a guard; extension runs also inside the trunk-above-grass mask (§4.3) | R+cam ≈ B+cam (radar must not hurt) |
 
 **Reading the results:**
+- **Headline:** class `obstacles`, June, P2 recall_H_near and precision_H_near at 0.5, pooled and mean over objects side by side. A result needs the variant gap to exceed the spread between repeats (n = 5) without losing precision. 0.8 can weaken but never replace 0.5. May is the low-grass comparison.
+- **Caveats to state:** unannotated objects lower precision; box GT caps recall; pooled values are dominated by large objects (hence the per-object mean); the radar response differs by class; bushes are porous (cells a beam passed through are excluded from H: quote the `passed_through_not_seen` counts); H_near is small, so per-object counts are low (quote `hidden_near_gt_cell_count_by_class` of both sessions); May's near band has almost no hidden trunk cells, consistent with short grass. Details: `docs/research/evaluation_caveats.md` §6–§7.
 - **R > B in P2 but not in P1:** the radar trunks exist in the model but are hidden behind grass from these poses. The claim "radar puts trunks into the reconstruction" holds. Showing them in a render needs other views: the backtrack split, or an approved raised-sensor extension (`evaluation_caveats.md` §4).
 - **R > B in P1 too:** visible gain.
 - **R > B in neither:** no gain.
@@ -210,7 +228,7 @@ The radar claim concerns blocked and no-return cells. B and R should agree on se
 
 **Figures (`09_compare_runs.py`):**
 - **BEV** (T47): rendered points B | R | GT June lidar, with cuboid outlines;
-- occupancy grids against `data/gt/june_tall_grass/occupancy.npz`: P1 and P2 for B and R, coloured seen / blocked / no return;
+- occupancy grids against `data/gt/june_tall_grass/occupancy.npz`: P1 and P2 for B and R, with the hidden-space cells (H_near, H) marked;
 - zooms on trunks that B misses and R recovers.
 
 ## 6. New transforms and tests (one known-answer test each; add tests, never edit existing ones)

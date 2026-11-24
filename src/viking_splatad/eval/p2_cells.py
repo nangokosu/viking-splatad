@@ -172,3 +172,70 @@ def p2_cell_outcomes(cells: Mapping[str, np.ndarray], class_names: Sequence[str]
         scored |= class_neighbourhood
         on_ground_truth |= np.asarray(cells[f"{TRUTH_KEY_PREFIX}{class_name}"], dtype=bool) & class_neighbourhood
     return {"occupied": occupied, "scored": scored, "on_ground_truth": on_ground_truth}
+
+
+# Archive key of the session-wide hidden flag H per cell (hidden-voxel evaluation).
+HIDDEN_KEY = "hidden"
+# The near-path hidden flag (H_near = H within the near band of the driven path), the headline mask.
+HIDDEN_NEAR_KEY = "hidden_near"
+# Hidden-band choices of hidden_cell_outcomes -> the archive key holding that band's hidden flag.
+HIDDEN_BAND_NEAR, HIDDEN_BAND_FULL = "near", "full"
+HIDDEN_KEY_BY_BAND = {HIDDEN_BAND_NEAR: HIDDEN_NEAR_KEY, HIDDEN_BAND_FULL: HIDDEN_KEY}
+# Archive key of the P2 thresholds the hidden metric was evaluated at.
+P2_THRESHOLDS_KEY = "p2_thresholds"
+
+
+def hidden_cell_outcomes(cells: Mapping[str, np.ndarray], class_name: str, threshold: float,
+                         band: str = HIDDEN_BAND_NEAR) -> Dict[str, np.ndarray]:
+    """Classify the scored cells of one class (or group) on the hidden space with the P2 hidden metric's sets.
+
+    With O = occupancy >= threshold (same inclusive cut as ``p2_cell_outcomes``), G = ``truth_<name>``
+    (GT inside the neighbourhood), N = ``neighbourhood_<name>`` and H = the band's hidden flag (``hidden_near`` for band "near", ``hidden`` for "full"):
+        recall_H    = |O & G & H| / |G & H|
+        precision_H = |O & G & H| / |O & N & H|
+    The returned sets are exactly the terms of those ratios:
+        context     = H & N              (every scored hidden cell of the class)
+        hit         = O & G & H          (true positives of both ratios)
+        false_alarm = O & N & H & ~G     (false positives of precision_H)
+        missed      = G & H & ~O         (false negatives of recall_H)
+    so recall_H = |hit| / (|hit| + |missed|) and precision_H = |hit| / (|hit| + |false_alarm|).
+
+    Args:
+        cells: Arrays of ``gaussian_occupancy_cells.npz``: ``occupancy``, the band's hidden flag
+            (``hidden_near`` or ``hidden``), ``p2_thresholds``
+            and ``neighbourhood_<name>`` / ``truth_<name>`` (V,) bool (name = a class or a group such as ``obstacles``).
+        class_name: Class or group name.
+        threshold: Occupancy cut; must be one of the archive's ``p2_thresholds``.
+        band: "near" (H_near, default) or "full" (H).
+
+    Returns:
+        {"context", "hit", "false_alarm", "missed"}: (V,) bool each.
+
+    Raises:
+        KeyError: If the archive lacks the band's hidden key (``hidden_near`` / ``hidden``), ``p2_thresholds`` or the name's arrays (it predates the hidden evaluation).
+        ValueError: If ``threshold`` is not an evaluated threshold of the archive, or ``band`` is unknown.
+    """
+    # Step 0: the band picks the hidden flag.
+    if band not in HIDDEN_KEY_BY_BAND:
+        raise ValueError(f"band {band!r} is not one of {sorted(HIDDEN_KEY_BY_BAND)}")
+    hidden_key = HIDDEN_KEY_BY_BAND[band]
+    # Step 1: every required key must exist; an old archive is reported by key name.
+    required_keys = (hidden_key, P2_THRESHOLDS_KEY, f"{NEIGHBOURHOOD_KEY_PREFIX}{class_name}", f"{TRUTH_KEY_PREFIX}{class_name}")
+    for key in required_keys:
+        if key not in cells:
+            raise KeyError(f"cells archive has no '{key}': it predates the hidden evaluation (re-run scripts/19)")
+    # Step 2: pictures exist only for thresholds the metric was evaluated at.
+    evaluated_thresholds = np.asarray(cells[P2_THRESHOLDS_KEY], dtype=float).reshape(-1)
+    matching_thresholds = evaluated_thresholds[np.isclose(evaluated_thresholds, float(threshold))]
+    if not len(matching_thresholds):
+        raise ValueError(f"threshold {threshold} was not evaluated; archive has {evaluated_thresholds.tolist()}")
+    # Step 3: the set algebra of the docstring, cut at the archived value scripts/19 scored with (not the
+    # caller's float, which may differ by rounding and would move cells sitting exactly on the cut).
+    occupied = np.asarray(cells["occupancy"]) >= matching_thresholds[0]
+    hidden = np.asarray(cells[hidden_key], dtype=bool)
+    neighbourhood = np.asarray(cells[f"{NEIGHBOURHOOD_KEY_PREFIX}{class_name}"], dtype=bool)
+    truth = np.asarray(cells[f"{TRUTH_KEY_PREFIX}{class_name}"], dtype=bool)
+    return {"context": hidden & neighbourhood,
+            "hit": occupied & truth & hidden,
+            "false_alarm": occupied & neighbourhood & hidden & ~truth,
+            "missed": truth & hidden & ~occupied}

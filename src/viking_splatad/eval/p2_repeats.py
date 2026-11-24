@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 import numpy as np
 
 from viking_splatad.eval.hidden_geometry import EVIDENCE_NAMES, exclusive_evidence_labels
+from viking_splatad.eval.run_quality import IMAGE_METRIC_NAMES, IMAGE_RESULT_KEY, LIDAR_RESULT_KEY, REPORTED_LIDAR_METRICS
 
 # Point-metric names read from occupied_cell_metrics per test, and the evidence strata whose recall
 # is reported (the radar claim concerns blocked and no-return cells; seen cells should agree).
@@ -53,6 +54,100 @@ def flatten_run_metrics(report: Mapping[str, Any]) -> Dict[str, Optional[float]]
         for f_min, rate in zip(curve["f_min"], curve["detection_rate"]):
             # repr of the float is unique per grid value (a fixed decimal count could merge fine grids).
             flat[f"{class_name}/P2/detection_rate@{f_min!r}"] = rate
+    return flat
+
+
+# Metric-name suffix of the two variants in a scripts/19 ``hidden`` test block: "_H" restricts to the
+# hidden cells, no suffix is the whole-neighbourhood baseline.
+HIDDEN_METRIC_SUFFIX = "_H"
+# Suffix of the same metrics restricted to the near-path hidden cells (H_near, the headline hidden mask).
+HIDDEN_NEAR_METRIC_SUFFIX = "_Hnear"
+BASELINE_METRIC_SUFFIX = ""
+# Keys of a scripts/19 class report holding the full-H block and the H_near block, and their flat-key segments.
+HIDDEN_BLOCK_KEY, HIDDEN_NEAR_BLOCK_KEY = "hidden", "hidden_near"
+# Key segments of the flattened hidden metrics.
+POOLED_SEGMENT, MEAN_SEGMENT, N_DEFINED_SEGMENT = "pooled", "mean", "n_defined"
+P1_TEST_NAME, P2_TEST_NAME = "P1", "P2"
+# First key segment of the per-run quality metrics.
+QUALITY_KEY_PREFIX = "quality"
+
+
+def _flatten_hidden_test_block(prefix: str, test_block: Mapping[str, Any], hidden_suffix: str = HIDDEN_METRIC_SUFFIX,
+                               include_baseline: bool = True) -> Dict[str, Optional[float]]:
+    """One test's (P1 or one P2 threshold) hidden and baseline metrics, pooled and averaged over objects.
+
+    Args:
+        prefix: Key prefix, ``<class>/<P1|P2@<threshold>>``.
+        test_block: {pooled, per_object, baseline_pooled, baseline_per_object} from scripts/19.
+        hidden_suffix: Metric-name suffix of the hidden variant (``_H`` or ``_Hnear``).
+        include_baseline: Also flatten the whole-neighbourhood baseline (identical for every hidden mask, so once).
+
+    Returns:
+        ``<prefix>/<metric><hidden_suffix or empty>/<pooled|mean|n_defined>`` -> value (None where undefined).
+    """
+    flat: Dict[str, Optional[float]] = {}
+    # Hidden variant reads pooled/per_object; baseline variant reads the baseline_ pair.
+    variants = [(hidden_suffix, "pooled", "per_object")]
+    if include_baseline:
+        variants.append((BASELINE_METRIC_SUFFIX, "baseline_pooled", "baseline_per_object"))
+    for suffix, pooled_name, per_object_name in variants:
+        pooled, per_object = test_block[pooled_name], test_block[per_object_name]
+        for metric_name in POINT_METRIC_NAMES:
+            key_base = f"{prefix}/{metric_name}{suffix}"
+            flat[f"{key_base}/{POOLED_SEGMENT}"] = pooled[metric_name]
+            flat[f"{key_base}/{MEAN_SEGMENT}"] = per_object[f"mean_{metric_name}"]
+            flat[f"{key_base}/{N_DEFINED_SEGMENT}"] = per_object["defined_counts"][metric_name]
+    return flat
+
+
+def flatten_hidden_metrics(report: Mapping[str, Any]) -> Dict[str, Optional[float]]:
+    """One run's hidden-voxel metrics (scripts/19 schema 2) as flat keys.
+
+    Keys: ``<class>/<P1|P2@<t>>/<recall_H|precision_H|iou_H|recall|precision|iou>/<pooled|mean|n_defined>``
+    (``n_defined`` = objects defining the mean), plus ``<class>/hidden/gt_cells`` and
+    ``<class>/hidden/objects_with_hidden_gt``. The near-path block (``hidden_near``) adds the same keys with
+    ``_Hnear`` metric names and ``<class>/hidden_near/gt_cells`` / ``objects_with_hidden_gt`` (its baseline
+    equals the full-H one and is not repeated). Ratios and means are None where undefined.
+
+    Args:
+        report: A scripts/19 schema-2 report (each class has a ``hidden`` block).
+
+    Returns:
+        Flat mapping; the same keys for every run scored with the same settings.
+    """
+    flat: Dict[str, Optional[float]] = {}
+    for class_name, class_report in report["classes"].items():
+        hidden_block = class_report[HIDDEN_BLOCK_KEY]
+        near_block = class_report[HIDDEN_NEAR_BLOCK_KEY]
+        # Step 1: context counts (occupancy-independent).
+        flat[f"{class_name}/hidden/gt_cells"] = hidden_block["context"]["hidden_gt_cells"]
+        flat[f"{class_name}/hidden/objects_with_hidden_gt"] = hidden_block["context"]["objects_with_hidden_gt"]
+        flat[f"{class_name}/{HIDDEN_NEAR_BLOCK_KEY}/gt_cells"] = near_block["context"]["hidden_gt_cells"]
+        flat[f"{class_name}/{HIDDEN_NEAR_BLOCK_KEY}/objects_with_hidden_gt"] = near_block["context"]["objects_with_hidden_gt"]
+        # Step 2: the lidar view, then each P2 threshold in report order; full H (with baseline), then H_near.
+        flat.update(_flatten_hidden_test_block(f"{class_name}/{P1_TEST_NAME}", hidden_block["P1"]))
+        flat.update(_flatten_hidden_test_block(f"{class_name}/{P1_TEST_NAME}", near_block["P1"], HIDDEN_NEAR_METRIC_SUFFIX, False))
+        for threshold_text, test_block in hidden_block["P2"].items():
+            test_prefix = f"{class_name}/{P2_TEST_NAME}@{threshold_text}"
+            flat.update(_flatten_hidden_test_block(test_prefix, test_block))
+            flat.update(_flatten_hidden_test_block(test_prefix, near_block["P2"][threshold_text], HIDDEN_NEAR_METRIC_SUFFIX, False))
+    return flat
+
+
+def flatten_quality_metrics(quality: Mapping[str, Mapping[str, Any]]) -> Dict[str, Optional[float]]:
+    """One run's image-guard and lidar-render metrics as ``quality/<image|lidar_render>/<name>`` keys.
+
+    Args:
+        quality: ``run_quality`` output ({"image": {psnr, ssim, lpips, step}, "lidar_render": {...}}).
+
+    Returns:
+        Flat mapping of psnr/ssim/lpips and the reported lidar metrics (the image ``step`` is not a metric).
+    """
+    flat: Dict[str, Optional[float]] = {}
+    for image_metric_name in IMAGE_METRIC_NAMES:
+        flat[f"{QUALITY_KEY_PREFIX}/{IMAGE_RESULT_KEY}/{image_metric_name}"] = quality[IMAGE_RESULT_KEY][image_metric_name]
+    for lidar_metric_name in REPORTED_LIDAR_METRICS:
+        flat[f"{QUALITY_KEY_PREFIX}/{LIDAR_RESULT_KEY}/{lidar_metric_name}"] = quality[LIDAR_RESULT_KEY][lidar_metric_name]
     return flat
 
 
