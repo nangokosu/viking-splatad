@@ -22195,6 +22195,17 @@
   "0.5",
   "0.8"
  ],
+ "provenance": {
+  "margin_m_by_class": {
+   "bush_or_small_tree": 0.952789125,
+   "rock": 0.665,
+   "tree_trunk": 0.52193275
+  },
+  "max_range_m": 200.9852282422347,
+  "near_band_m": 20.0,
+  "vertical_half_fov_rad": 0.7824318055209671,
+  "voxel_size_m": 0.52193275
+ },
  "schema": "viking-splatad/gaussian-occupancy-summary/2",
  "session": "june_tall_grass",
  "settings": {

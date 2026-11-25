@@ -1,11 +1,11 @@
-"""Check that the figure suite's printed numbers equal scripts/19's report for every drawn run.
+"""Check that the figure suite's whole-scene threshold curves equal scripts/19's report for every drawn run.
 
 For each session's cross-arm manifest (reports/gaussian_occupancy/figures/<session>/figures_manifest.json,
 written by scripts/26) and each arm, at the binding threshold t = p2_thresholds[0]:
-    1. the mean over defined objects of the gallery captions' recall_H equals the drawn run's
-       ``classes.<class>.hidden_near.P2.<t>.per_object.mean_recall`` in eval/gaussian_occupancy.json;
-    2. the number of objects with a defined recall_H equals ``per_object.defined_counts.recall``;
-    3. the H_near threshold curve at t equals that block's pooled recall / precision and per-object means.
+    the whole-scene threshold curve of ``reported_numbers.threshold_curves_scene`` at t equals the
+    whole-scene block of the drawn run's eval/gaussian_occupancy.json (the ``baseline_pooled`` and
+    ``baseline_per_object`` blocks under ``classes.<class>.hidden_near.P2.<t>``): pooled recall / precision
+    and the per-object means.
 Values must agree to floating-point tolerance (they come from the same T94/T95 functions).
 
 Usage:
@@ -25,14 +25,15 @@ FIGURES_ROOT = PROJECT_ROOT / "reports" / "gaussian_occupancy" / "figures"
 RUNS_ROOT = PROJECT_ROOT / "runs"
 MANIFEST_NAME = "figures_manifest.json"
 REPORT_RELATIVE_PATH = Path("eval") / "gaussian_occupancy.json"
-# Row title of the H_near band in the manifest's threshold_curves block (scripts/26 CURVE_BANDS).
-NEAR_BAND_TITLE = "H_near"
 # Relative and absolute tolerance: both sides are float64 ratios of the same integer counts.
 RELATIVE_TOLERANCE = 1e-12
 ABSOLUTE_TOLERANCE = 1e-12
-# Curve key -> (report block, report key) of the same quantity.
-CURVE_TO_REPORT = {"pooled_recall": ("pooled", "recall"), "pooled_precision": ("pooled", "precision"),
-                   "mean_recall": ("per_object", "mean_recall"), "mean_precision": ("per_object", "mean_precision")}
+# Curve key -> (report block, report key) of the same quantity; the whole-scene blocks of scripts/19 are the
+# ``baseline_*`` ones (the same metrics without the hidden-space restriction).
+CURVE_TO_REPORT = {"pooled_recall": ("baseline_pooled", "recall"),
+                   "pooled_precision": ("baseline_pooled", "precision"),
+                   "mean_recall": ("baseline_per_object", "mean_recall"),
+                   "mean_precision": ("baseline_per_object", "mean_precision")}
 
 
 def values_agree(first: Optional[float], second: Optional[float]) -> bool:
@@ -70,7 +71,7 @@ def threshold_report_key(report_block: Dict, threshold: float) -> str:
 
 
 def check_session(session: str) -> List[str]:
-    """Compare one session's manifest numbers with its drawn runs' reports.
+    """Compare one session's whole-scene curve numbers with its drawn runs' reports.
 
     Args:
         session: Session name.
@@ -81,8 +82,7 @@ def check_session(session: str) -> List[str]:
     manifest = json.loads((FIGURES_ROOT / session / MANIFEST_NAME).read_text())
     class_name = manifest["class"]
     binding_threshold = float(manifest["binding_threshold"])
-    gallery = manifest["reported_numbers"]["trunk_gallery_objects"]
-    curves = manifest["reported_numbers"]["threshold_curves"]
+    curves = manifest["reported_numbers"]["threshold_curves_scene"]
     curve_grid = curves["curve_grid"]
     # Step 1: the grid index of the binding threshold (scripts/26 snaps it to the archived value).
     grid_index = next(index for index, value in enumerate(curve_grid)
@@ -92,16 +92,10 @@ def check_session(session: str) -> List[str]:
         report = json.loads((RUNS_ROOT / arm_record["drawn_run_id"] / REPORT_RELATIVE_PATH).read_text())
         near_p2 = report["classes"][class_name]["hidden_near"]["P2"]
         report_block = near_p2[threshold_report_key(near_p2, binding_threshold)]
-        # Step 2: gallery captions -> mean over objects with a defined recall_H (T95's mean rule).
-        defined_recalls = [entry[arm]["recall_H"] for entry in gallery.values()
-                           if arm in entry and entry[arm]["recall_H"] is not None]
-        gallery_mean = sum(defined_recalls) / len(defined_recalls) if defined_recalls else None
-        comparisons = [("gallery mean recall_H", gallery_mean, report_block["per_object"]["mean_recall"]),
-                       ("gallery defined objects", len(defined_recalls),
-                        report_block["per_object"]["defined_counts"]["recall"])]
-        # Step 3: the H_near curve point at the binding threshold.
+        # Step 2: the whole-scene curve point at the binding threshold against scripts/19's whole-scene block.
+        comparisons = []
         for curve_key, (block_name, report_key) in CURVE_TO_REPORT.items():
-            curve_value = curves["drawn_curves"][NEAR_BAND_TITLE][arm][curve_key][grid_index]
+            curve_value = curves["drawn_curves"][arm][curve_key][grid_index]
             comparisons.append((f"curve {curve_key}", curve_value, report_block[block_name][report_key]))
         for label, figure_value, report_value in comparisons:
             status = "OK" if values_agree(figure_value, report_value) else "MISMATCH"

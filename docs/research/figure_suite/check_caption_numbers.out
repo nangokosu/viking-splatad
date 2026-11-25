@@ -1,37 +1,25 @@
-OK june_tall_grass radar_init gallery mean recall_H: figure 0.08045184588294983 report 0.08045184588294985
-OK june_tall_grass radar_init gallery defined objects: figure 21 report 21
-OK june_tall_grass radar_init curve pooled_recall: figure 0.06927710843373494 report 0.06927710843373494
-OK june_tall_grass radar_init curve pooled_precision: figure 0.5897435897435898 report 0.5897435897435898
-OK june_tall_grass radar_init curve mean_recall: figure 0.08045184588294985 report 0.08045184588294985
-OK june_tall_grass radar_init curve mean_precision: figure 0.5603174603174603 report 0.5603174603174603
-OK june_tall_grass radar_init_loss gallery mean recall_H: figure 0.21012751489269207 report 0.21012751489269213
-OK june_tall_grass radar_init_loss gallery defined objects: figure 21 report 21
-OK june_tall_grass radar_init_loss curve pooled_recall: figure 0.14759036144578314 report 0.14759036144578314
-OK june_tall_grass radar_init_loss curve pooled_precision: figure 0.5384615384615384 report 0.5384615384615384
-OK june_tall_grass radar_init_loss curve mean_recall: figure 0.21012751489269213 report 0.21012751489269213
-OK june_tall_grass radar_init_loss curve mean_precision: figure 0.41517925247902365 report 0.41517925247902365
-OK june_tall_grass stock gallery mean recall_H: figure 0.13036126819700625 report 0.13036126819700627
-OK june_tall_grass stock gallery defined objects: figure 21 report 21
-OK june_tall_grass stock curve pooled_recall: figure 0.16566265060240964 report 0.16566265060240964
-OK june_tall_grass stock curve pooled_precision: figure 0.36666666666666664 report 0.36666666666666664
-OK june_tall_grass stock curve mean_recall: figure 0.13036126819700627 report 0.13036126819700627
-OK june_tall_grass stock curve mean_precision: figure 0.44931871053506145 report 0.44931871053506145
-OK may_short_grass radar_init gallery mean recall_H: figure 0.2178062678062678 report 0.21780626780626777
-OK may_short_grass radar_init gallery defined objects: figure 13 report 13
-OK may_short_grass radar_init curve pooled_recall: figure 0.07253886010362694 report 0.07253886010362694
-OK may_short_grass radar_init curve pooled_precision: figure 0.6666666666666666 report 0.6666666666666666
-OK may_short_grass radar_init curve mean_recall: figure 0.21780626780626777 report 0.21780626780626777
-OK may_short_grass radar_init curve mean_precision: figure 0.6833333333333333 report 0.6833333333333333
-OK may_short_grass radar_init_loss gallery mean recall_H: figure 0.36737891737891737 report 0.36737891737891737
-OK may_short_grass radar_init_loss gallery defined objects: figure 13 report 13
-OK may_short_grass radar_init_loss curve pooled_recall: figure 0.21243523316062177 report 0.21243523316062177
-OK may_short_grass radar_init_loss curve pooled_precision: figure 0.5616438356164384 report 0.5616438356164384
-OK may_short_grass radar_init_loss curve mean_recall: figure 0.36737891737891737 report 0.36737891737891737
-OK may_short_grass radar_init_loss curve mean_precision: figure 0.46268176268176264 report 0.46268176268176264
-OK may_short_grass stock gallery mean recall_H: figure 0.18133903133903134 report 0.18133903133903134
-OK may_short_grass stock gallery defined objects: figure 13 report 13
-OK may_short_grass stock curve pooled_recall: figure 0.32642487046632124 report 0.32642487046632124
-OK may_short_grass stock curve pooled_precision: figure 0.875 report 0.875
-OK may_short_grass stock curve mean_recall: figure 0.18133903133903134 report 0.18133903133903134
-OK may_short_grass stock curve mean_precision: figure 0.5116666666666667 report 0.5116666666666667
-36 OK, 0 mismatch
+OK june_tall_grass radar_init curve pooled_recall: figure 0.3144951525183258 report 0.3144951525183258
+OK june_tall_grass radar_init curve pooled_precision: figure 0.7880703140430575 report 0.7880703140430575
+OK june_tall_grass radar_init curve mean_recall: figure 0.3574374801988744 report 0.3574374801988744
+OK june_tall_grass radar_init curve mean_precision: figure 0.6472761309667947 report 0.6472761309667947
+OK june_tall_grass radar_init_loss curve pooled_recall: figure 0.3761330495783085 report 0.3761330495783085
+OK june_tall_grass radar_init_loss curve pooled_precision: figure 0.7895433487756452 report 0.7895433487756452
+OK june_tall_grass radar_init_loss curve mean_recall: figure 0.4331917963201462 report 0.4331917963201462
+OK june_tall_grass radar_init_loss curve mean_precision: figure 0.66598210142227 report 0.66598210142227
+OK june_tall_grass stock curve pooled_recall: figure 0.3513044849058091 report 0.3513044849058091
+OK june_tall_grass stock curve pooled_precision: figure 0.7826163301141352 report 0.7826163301141352
+OK june_tall_grass stock curve mean_recall: figure 0.39695898102667543 report 0.39695898102667543
+OK june_tall_grass stock curve mean_precision: figure 0.6505290955960865 report 0.6505290955960865
+OK may_short_grass radar_init curve pooled_recall: figure 0.21841836734693879 report 0.21841836734693879
+OK may_short_grass radar_init curve pooled_precision: figure 0.8121798520204895 report 0.8121798520204895
+OK may_short_grass radar_init curve mean_recall: figure 0.34053691506438116 report 0.34053691506438116
+OK may_short_grass radar_init curve mean_precision: figure 0.6696793207839389 report 0.6696793207839389
+OK may_short_grass radar_init_loss curve pooled_recall: figure 0.37357142857142855 report 0.37357142857142855
+OK may_short_grass radar_init_loss curve pooled_precision: figure 0.7488238903661281 report 0.7488238903661281
+OK may_short_grass radar_init_loss curve mean_recall: figure 0.5172179133774297 report 0.5172179133774297
+OK may_short_grass radar_init_loss curve mean_precision: figure 0.6837046369537092 report 0.6837046369537092
+OK may_short_grass stock curve pooled_recall: figure 0.2829591836734694 report 0.2829591836734694
+OK may_short_grass stock curve pooled_precision: figure 0.8377643504531722 report 0.8377643504531722
+OK may_short_grass stock curve mean_recall: figure 0.42045718241368374 report 0.42045718241368374
+OK may_short_grass stock curve mean_precision: figure 0.7038821594202179 report 0.7038821594202179
+24 OK, 0 mismatch

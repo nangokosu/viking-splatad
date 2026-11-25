@@ -46,18 +46,21 @@ scripts/19 has scored the session's campaign runs:
 - **Which run:** one per arm, the median repeat on `eval.figures.representative_metric` (`--run` overrides).
   The footer of every cross-arm figure says the run is illustrative; the threshold curves draw the arm's
   5-repeat min–max band behind it.
-- **Per run** (`<run>/eval/viz_figures/`): `occupancy_bev.png` (column-max occupancy, GT boxes, driven path,
-  H_near outline), `occupancy_outcomes_3d.png` (hit / false alarm / missed, seen vs hidden),
-  `gaussian_density_bev.png` (opacity-weighted Gaussian density; radar arms add a seed-density panel).
-- **Across arms** (`reports/gaussian_occupancy/figures/<session>/`): `arms_hidden_near_3d.png`,
-  `arms_scene_3d.png` (per-arm outcomes plus hits only init + loss / only stock / both), `trunk_gallery_pNN.png`
-  (H_near objects × arms, occupancy-coloured hidden GT cells, per-object recall_H and whole-box baseline),
-  `occlusion_sections.png` (vertical slice along the sensor ray through each trunk: evidence class per cell,
-  occupancy as shading, Gaussian means, radar seeds), `threshold_curves.png`, `occupancy_histograms.png`,
-  `hidden_near_heat_bev.png`.
+- **Figures** (`reports/gaussian_occupancy/figures/<session>/`, whole scene only for now; the H_near versions
+  take the same form and come in a later round):
+  - `arms_scene_3d.png`: a 2 × 3 grid. Top: the scored obstacle boxes coloured by class (frame of reference) and
+    the hits only radar init + loss / only stock / both. Bottom: stock, radar init, radar init + loss, with hit /
+    false alarm / missed cells. One camera fitted to the cells and boxes (`camera_framing.tight_oblique_camera`),
+    every panel cropped by the same content box.
+  - `threshold_curves_scene.png`: recall | precision for t in [0.2, 0.9] (`eval.figures.threshold_curve_*`),
+    pooled and mean over objects, with the 5-repeat min–max band.
+  - Dropped on 2026-11-25: the per-run figures, the H_near panels, the trunk gallery, the occlusion sections, the
+    occupancy histograms/boxplots (bimodal values; the share above t is pooled recall) and the heat maps.
 - **Audit:** `figures_manifest.json` beside each set records the input sha256s, git state, the representative
   metric of every repeat, every caption number, and each figure's status. A failed figure is printed and
   recorded and the exit code is 1.
-- **Code:** data preparation in `src/viking_splatad/viz/figure_{grids,metrics,sections,runs}.py` (tested in the
+- **Code:** data preparation in `src/viking_splatad/viz/figure_{grids,metrics,runs}.py`, `camera_framing.py`, `scored_boxes.py` (tested in the
   image); drawing in `figures_mpl.py` and `figures_pyvista.py` (PyVista passed in, never imported by `src/`).
-  Settings live in `configs/eval.yaml` → `eval.figures`.
+  Settings live in `configs/eval.yaml` → `eval.figures`. The reports' definitions come from
+  `src/viking_splatad/eval/evaluation_terminology.py`, the glossary from `terminology_glossary.py`, and the
+  report opening from `report_opening.py`.

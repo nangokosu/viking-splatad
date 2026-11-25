@@ -162,6 +162,8 @@ R must beat B on at least one of them on hidden-space cells (H_near first, below
   - Job step (e4), between `split_render_check` (match) and `end_utc` (it needs the split record for its crop): `scripts/22_export_supersplat_ply.py` writes `renders/supersplat.ply`, the same checkpoint as a SuperSplat-ready 3DGS PLY (viewer product, non-fatal).
 - **T57, grid:** Gaussian k's 3-D alpha is α_k(x) = o_k·exp(−½(x−μ_k)ᵀΣ_k⁻¹(x−μ_k)), the 3-D form of the alpha the rasteriser uses.
   - Voxel occupancy = 1 − ∏_k(1 − α_k(x)) at the voxel centre, visiting only voxels inside each Gaussian's 3σ ellipsoid.
+  - **Source of the product rule:** it is SplatAD's own α-blending read at a cell. SplatAD (arXiv:2411.16816) blends the Gaussians along a lidar ray with weights α_i ∏_{j<i}(1 − α_j) (Eq. 4, used for lidar in §3.3). It places a rendered point at the median range, "the first Gaussian that satisfies ∏_{j=1}^{i}(1−α_j) < 0.5" (§3.3), i.e. where 1 − ∏(1 − α) passes 0.5. The weights sum to 1 − ∏(1 − α) by telescoping, and the product does not depend on the order, so one number per cell needs no ray direction. That is why the binding P2 cut-off is 0.5. Lineage: 3DGS (Kerbl et al., TOG 42(4) 2023, §2.3, Eqs. 1–3) uses the same blending and equates it to NeRF-style volume rendering.
+  - **Difference from SplatAD's α:** SplatAD evaluates each Gaussian projected on the sensor plane with an EWA blur term (Eq. 5); P2 evaluates the 3-D Gaussian at one point per cell and combines every Gaussian touching it. So occupancy is a blocking probability at a point, not a filled volume. General reference for Gaussians → 3-D occupancy (not the source of this rule): GaussianFormer (arXiv:2405.17429, §3.3), which sums contributions instead. Full text, with the quotes and the check date (2026-11-25): `reports/gaussian_occupancy/terminology.md`.
 - **T81, peak alpha in the voxel (binding estimator, user's decision 2026-11-16):** the centre sample alone misses SplatAD's Gaussians. They are thin discs (May stock run 17bb7a1: median smallest axis std 2 mm, median largest 5 cm) far smaller than the 0.52 m GT voxel, so almost none reach a voxel centre. On that run T57 marked 8% of the seen trunk cells occupied while the lidar hit 82%.
   - Gaussian k adds its peak σ(o_k) to the voxel holding its mean, and the T57 tail o_k·exp(−½d²) at every other scored centre within 3σ. Combined by the product rule.
   - Same run: seen-trunk P2 recall 0.807 vs P1 0.819 (the arms should agree on seen cells).
@@ -227,12 +229,14 @@ The radar claim concerns H and H_near cells. B and R should agree on cells the l
 - **R precision < B in either test:** radar invents geometry.
 
 **Figures (`scripts/26_occupancy_figures.py`, viz env; the planned `09_compare_runs.py` was never written):**
-one run per arm, the arm's median repeat on P2 recall_Hnear (mean over objects, binding threshold), so the
-pictures illustrate and the repeat spread decides. Per run: column-max occupancy BEV, 3D hit/false-alarm/miss
-strata split by seen vs hidden, Gaussian and radar-seed density. Across arms: H_near and whole-scene 3D panels
-with a hit-difference panel, a per-object gallery of the H_near objects, occlusion sections through the trunks
-with the most hidden GT cells (evidence, occupancy, Gaussians, radar seeds), recall/precision against threshold
-with the 5-repeat band, occupancy histograms, and H_near heat maps. See `docs/research/pyvista_viewer.md`.
+whole scene only for now (user's decision 2026-11-25; the H_near versions take the same form and come next).
+One run per arm, the arm's median repeat on P2 recall_Hnear (mean over objects, binding threshold), so the
+pictures illustrate and the repeat spread decides. `arms_scene_3d.png`: a GT-box panel and the hit-difference
+panel on top, the three arms' hit / false alarm / missed cells below, one shared camera, cropped to content.
+`threshold_curves_scene.png`: recall and precision for t in [0.2, 0.9] with the 5-repeat band. The per-run
+figures, gallery, occlusion sections, histograms/boxplots and heat maps were dropped (2026-11-25). Both reports
+(scripts/20 and 21) open with the definitions and a whole-scene section embedding the figures; every term is
+defined in `reports/gaussian_occupancy/terminology.md` (written by scripts/21). See `docs/research/pyvista_viewer.md`.
 
 ## 6. New transforms and tests (one known-answer test each; add tests, never edit existing ones)
 | id | what | known-answer test |

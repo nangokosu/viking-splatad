@@ -143,12 +143,12 @@ def test_real_representative_metric_is_a_flat_metric_key():
 
 
 def test_threshold_curve_points_parsed_and_grid_contains_p2_thresholds():
-    """The committed point count parses, and its [0, 1] grid contains every p2 threshold exactly."""
+    """The committed point count parses, and its [min, max] grid contains every p2 threshold exactly."""
     import numpy as np
     section = _real_eval_section()
     settings = load_figure_settings(section)
     assert settings.threshold_curve_points == section["figures"]["threshold_curve_points"]
-    grid = np.linspace(0.0, 1.0, settings.threshold_curve_points)
+    grid = np.linspace(settings.threshold_curve_min, settings.threshold_curve_max, settings.threshold_curve_points)
     for p2_threshold in section["p2_thresholds"]:
         assert np.isclose(grid, p2_threshold).any()
 
@@ -167,4 +167,21 @@ def test_missing_threshold_curve_points_rejected():
     section = copy.deepcopy(_real_eval_section())
     del section["figures"]["threshold_curve_points"]
     with pytest.raises(ValueError, match="threshold_curve_points"):
+        load_figure_settings(section)
+
+
+def test_curve_range_settings_parsed():
+    """The grid ends parse to the committed values."""
+    section = _real_eval_section()
+    settings = load_figure_settings(section)
+    assert settings.threshold_curve_min == section["figures"]["threshold_curve_min"]
+    assert settings.threshold_curve_max == section["figures"]["threshold_curve_max"]
+
+
+@pytest.mark.parametrize("key, bad_value", [("threshold_curve_min", 0.95), ("threshold_curve_max", 0.1)])
+def test_bad_curve_range_settings_rejected(key, bad_value):
+    """An inverted grid range is refused, naming the entry."""
+    section = copy.deepcopy(_real_eval_section())
+    section["figures"][key] = bad_value
+    with pytest.raises(ValueError, match="threshold_curve"):
         load_figure_settings(section)

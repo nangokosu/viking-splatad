@@ -7,8 +7,7 @@ import pytest
 import yaml
 
 from viking_splatad.eval.hidden_metrics import csr_from_lists, hidden_class_report, threshold_key
-from viking_splatad.viz.figure_metrics import (class_ids_for_name, object_tiles, occupancy_samples,
-                                               threshold_curves)
+from viking_splatad.viz.figure_metrics import class_ids_for_name, occupancy_samples, threshold_curves
 
 TOLERANCE = 1e-12
 EVAL_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "eval.yaml"
@@ -58,47 +57,6 @@ def expected_recall_precision(occupied, truth, neighbourhood, hidden, cell_set):
     true_positive = np.count_nonzero(occupied & truth & hidden & scored)
     return (true_positive / np.count_nonzero(truth & hidden & scored),
             true_positive / np.count_nonzero(occupied & neighbourhood & hidden & scored))
-
-
-@pytest.mark.covers("T95")
-def test_object_tiles_known_answer_near_band():
-    """At t=0.5 on H_near: object 10 has recall 1/2, precision 1/2; object 11 has recall 1, precision 2/3."""
-    cells = build_cells()
-    tiles = object_tiles(cells, GROUP_NAME, OBSTACLE_CLASS_IDS, 0.5, "near")
-    # The other-class object is excluded; order follows the archive.
-    assert [tile["box_id"] for tile in tiles] == [10, 11]
-    assert [tile["class_id"] for tile in tiles] == [1, 3]
-    # Occupied set at 0.5: {0,1,3,5,6,7,8}. Object 10: G_k={0,1,2}, H={1,2,3}, G_k n H={1,2}, TP={1}; O n H={1,3}.
-    assert tiles[0]["recall_H"] == pytest.approx(1 / 2, abs=TOLERANCE)
-    assert tiles[0]["precision_H"] == pytest.approx(1 / 2, abs=TOLERANCE)
-    assert tiles[0]["hidden_gt_cell_count"] == 2
-    # Object 11: G_k={5,6}, H={5,6,7}, TP={5,6}; O n H={5,6,7}.
-    assert tiles[1]["recall_H"] == pytest.approx(1.0, abs=TOLERANCE)
-    assert tiles[1]["precision_H"] == pytest.approx(2 / 3, abs=TOLERANCE)
-    assert tiles[1]["hidden_gt_cell_count"] == 2
-    # Baseline (all cells): object 10 G_k={0,1,2}, O={0,1} -> 2/3; object 11 G_k={5,6}, both occupied -> 1.
-    assert tiles[0]["baseline_recall"] == pytest.approx(2 / 3, abs=TOLERANCE)
-    assert tiles[1]["baseline_recall"] == pytest.approx(1.0, abs=TOLERANCE)
-    assert list(tiles[0]["cells"]) == [0, 1, 2, 3]
-
-
-def test_object_tiles_inside_cells_are_the_objects_own_box_cells():
-    """inside_cells = grown-box cells flagged inside the object's own box (the cells G_k is made of)."""
-    tiles = object_tiles(build_cells(), GROUP_NAME, OBSTACLE_CLASS_IDS, 0.5, "near")
-    # Object 10: grown cells 0-3, inside flags T T T F; object 11: all four cells inside.
-    assert list(tiles[0]["inside_cells"]) == [0, 1, 2]
-    assert list(tiles[1]["inside_cells"]) == [4, 5, 6, 7]
-    assert set(tiles[0]["inside_cells"]) <= set(tiles[0]["cells"])
-
-
-def test_object_tiles_geometry():
-    """Centre is the mean of inside cells; the extent is the cell-centre box widened by half a voxel."""
-    tiles = object_tiles(build_cells(), GROUP_NAME, OBSTACLE_CLASS_IDS, 0.5, "near")
-    half_voxel = VOXEL_EDGE_M / 2
-    # Object 10 inside cells 0,1,2 -> mean x = 1; all cells 0..3 -> x in [0 - half, 3 + half].
-    assert tiles[0]["centre"] == pytest.approx([1.0, 0.0, 0.0], abs=TOLERANCE)
-    assert tiles[0]["extent_min"] == pytest.approx([0 - half_voxel, -half_voxel, -half_voxel], abs=TOLERANCE)
-    assert tiles[0]["extent_max"] == pytest.approx([3 + half_voxel, half_voxel, half_voxel], abs=TOLERANCE)
 
 
 def test_threshold_curves_known_answer():
@@ -153,7 +111,7 @@ def test_class_ids_for_name_reads_eval_config():
 
 @pytest.mark.parametrize("band,hidden_key", [("near", "hidden_near"), ("full", "hidden")])
 def test_consistent_with_hidden_class_report(band, hidden_key):
-    """Curves and tiles at each p2 threshold equal what scripts/19's hidden_class_report records."""
+    """Curves at each p2 threshold equal what scripts/19's hidden_class_report records."""
     cells = build_cells()
     class_ids = OBSTACLE_CLASS_IDS
     objects = {key: cells[key] for key in ("object_box_ids", "object_class_ids", "object_cell_offsets", "object_cells", "object_inside")}
@@ -166,7 +124,3 @@ def test_consistent_with_hidden_class_report(band, hidden_key):
         assert curves["pooled_precision"][threshold_index] == pytest.approx(block["pooled"]["precision"], abs=TOLERANCE)
         assert curves["mean_recall"][threshold_index] == pytest.approx(block["per_object"]["mean_recall"], abs=TOLERANCE)
         assert curves["mean_precision"][threshold_index] == pytest.approx(block["per_object"]["mean_precision"], abs=TOLERANCE)
-        # Tiles: defined recalls average to the report's per-object mean.
-        tiles = object_tiles(cells, GROUP_NAME, class_ids, threshold, band)
-        defined_recalls = [tile["recall_H"] for tile in tiles if tile["recall_H"] is not None]
-        assert np.mean(defined_recalls) == pytest.approx(block["per_object"]["mean_recall"], abs=TOLERANCE)

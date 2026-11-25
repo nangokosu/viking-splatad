@@ -68,37 +68,6 @@ def test_threshold_grid_contains_p2_thresholds_or_raises():
         script.threshold_grid(20, [0.5])
 
 
-def test_in_window_membership_is_closed_on_both_bounds():
-    """Window = projected extent padded by metres; membership is closed on both bounds."""
-    script = load_script()
-    corners = np.array([[1.0, 2.0], [3.0, 6.0], [2.0, 4.0]])
-    padding_m = 3 * VOXEL_EDGE
-    lower, upper = script.padded_window(corners, padding_m)
-    assert np.allclose(lower, corners.min(axis=0) - padding_m)
-    assert np.allclose(upper, corners.max(axis=0) + padding_m)
-    inside = script.in_window(np.array([lower, upper, [0.0, 4.0], upper + 0.01]), (lower, upper))
-    assert inside.tolist() == [True, True, True, False]
-
-
-def test_convex_polygon_drops_interior_points():
-    """The hull of a square plus its centre has the four corners only."""
-    script = load_script()
-    square = np.array([[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0], [1.0, 1.0]])
-    hull = script.convex_polygon(square)
-    assert sorted(map(tuple, hull)) == sorted(map(tuple, square[:4]))
-
-
-def test_difference_image_nan_rule():
-    """NaN only where both are NaN; a one-sided NaN counts as 0; else first - second."""
-    script = load_script()
-    nan = np.nan
-    first = np.array([[0.8, nan, nan, 0.2]])
-    second = np.array([[0.3, 0.4, nan, nan]])
-    difference = script.difference_image(first, second)
-    expected = np.array([[0.8 - 0.3, 0.0 - 0.4, nan, 0.2 - 0.0]])
-    assert np.allclose(difference, expected, equal_nan=True)
-
-
 def test_campaign_envelope_min_max_over_repeats_and_both_curves():
     """Per threshold the band is min/max over repeats of the pooled and mean curves; all-NaN stays NaN."""
     script = load_script()
@@ -132,18 +101,6 @@ def test_scene_outcomes_follow_set_algebra():
     assert outcomes["context"].tolist() == [True, True, True, True, False, False]
 
 
-def test_seeds_path_for_profile_uses_anchor_or_none():
-    """Stock profiles have no seeds; radar profiles read the anchor's artifact, else their own."""
-    script = load_script()
-    profiles = {"stock_profile": {}, "init_profile": {"radar_variant": "init"},
-                "loss_profile": {"radar_variant": "init_loss", "radar_anchor_profile": "init_profile"}}
-    root = Path("intermediate")
-    assert script.seeds_path_for_profile("stock_profile", profiles, SESSION_NAME, root) is None
-    expected_init = root / SESSION_NAME / "radar_inputs" / "init_profile" / "radar_seeds.npz"
-    assert script.seeds_path_for_profile("init_profile", profiles, SESSION_NAME, root) == expected_init
-    assert script.seeds_path_for_profile("loss_profile", profiles, SESSION_NAME, root) == expected_init
-
-
 def test_short_run_id_strips_session_prefix():
     """The session prefix is removed once; other ids are unchanged."""
     script = load_script()
@@ -168,14 +125,17 @@ def make_context(script, tmp_path):
         run_dir = tmp_path / f"{SESSION_NAME}-{arm}-run"
         run_dir.mkdir()
         drawn[arm] = script.ArmRun(arm, run_dir, tiny_cells(np.zeros(CELL_COUNT)), f"{arm}_profile")
+        # scene_counts hashes every drawn archive, so the file must exist (its content is irrelevant here).
+        drawn[arm].cells_path.parent.mkdir(parents=True, exist_ok=True)
+        drawn[arm].cells_path.write_bytes(arm.encode())
     return script.FigureContext(
-        session=SESSION_NAME, settings=settings, eval_section=eval_section, cuboids=[],
-        sweep_origins=np.zeros((1, 3)), class_ids=(1, 3, 4), p2_thresholds=np.array([0.5, 0.8]), threshold=0.5,
-        curve_grid=np.linspace(0.0, 1.0, settings.threshold_curve_points), drawn=drawn,
-        repeats={arm: [drawn[arm]] for arm in ARMS}, seeds_paths={arm: None for arm in ARMS},
+        session=SESSION_NAME, settings=settings, eval_section=eval_section,
+        class_ids=(1, 3, 4), p2_thresholds=np.array([0.5, 0.8]), threshold=0.5,
+        curve_grid=np.linspace(settings.threshold_curve_min, settings.threshold_curve_max,
+                               settings.threshold_curve_points), drawn=drawn,
+        repeats={arm: [drawn[arm]] for arm in ARMS},
         git={"head_sha": "abc", "dirty": False},
-        arms_info={arm: {"drawn_run_id": drawn[arm].run_id, "drawn_by": "median repeat"} for arm in ARMS}, hashes=script.HashRecorder(),
-        cuboids_path=tmp_path / "cuboids.json")
+        arms_info={arm: {"drawn_run_id": drawn[arm].run_id, "drawn_by": "median repeat"} for arm in ARMS}, hashes=script.HashRecorder())
 
 
 def stub_all_figures(script, monkeypatch, failing_name=None):
@@ -194,31 +154,8 @@ def stub_all_figures(script, monkeypatch, failing_name=None):
                 raise RuntimeError(f"renderer {name} exploded")
             return {}
         return stub
-    for name in ("draw_occupancy_bev", "draw_occupancy_outcomes_3d", "draw_gaussian_density_bev",
-                 "draw_arm_outcome_panels", "draw_trunk_gallery", "draw_occlusion_sections",
-                 "draw_threshold_curves", "draw_occupancy_histograms", "draw_hidden_near_heat"):
+    for name in ("draw_arm_outcome_panels", "draw_threshold_curves"):
         monkeypatch.setattr(script, name, make_stub(name))
-
-
-def test_renderer_failure_is_recorded_and_exit_code_is_one(tmp_path, monkeypatch):
-    """A raising renderer is recorded as failed (others written), the manifests exist and main returns 1."""
-    script = load_script()
-    context = make_context(script, tmp_path)
-    monkeypatch.setattr(script, "build_context", lambda arguments: context)
-    stub_all_figures(script, monkeypatch, failing_name="draw_occupancy_outcomes_3d")
-    output_dir = tmp_path / "arms_out"
-    exit_code = script.main(["--session", SESSION_NAME, "--output-dir", str(output_dir)])
-    assert exit_code == 1
-    for arm in ARMS:
-        manifest = json.loads((context.drawn[arm].run_dir / script.PER_RUN_FIGURE_DIR
-                               / suite_io.MANIFEST_FILE_NAME).read_text())
-        assert manifest["schema"] == "occupancy-figures/1"
-        assert manifest["figures"]["occupancy_outcomes_3d"]["status"] == "failed"
-        assert "exploded" in manifest["figures"]["occupancy_outcomes_3d"]["error"]
-        assert manifest["figures"]["occupancy_bev"]["status"] == "written"
-    arms_manifest = json.loads((output_dir / suite_io.MANIFEST_FILE_NAME).read_text())
-    assert arms_manifest["session"] == SESSION_NAME and arms_manifest["binding_threshold"] == 0.5
-    assert all(entry["status"] == "written" for entry in arms_manifest["figures"].values())
 
 
 def test_cross_arm_failure_also_returns_one(tmp_path, monkeypatch):
@@ -228,21 +165,21 @@ def test_cross_arm_failure_also_returns_one(tmp_path, monkeypatch):
     monkeypatch.setattr(script, "build_context", lambda arguments: context)
     stub_all_figures(script, monkeypatch, failing_name="draw_threshold_curves")
     output_dir = tmp_path / "arms_out"
-    assert script.main(["--session", SESSION_NAME, "--output-dir", str(output_dir), "--arms-only"]) == 1
+    assert script.main(["--session", SESSION_NAME, "--output-dir", str(output_dir)]) == 1
     arms_manifest = json.loads((output_dir / suite_io.MANIFEST_FILE_NAME).read_text())
-    assert arms_manifest["figures"]["threshold_curves"]["status"] == "failed"
+    assert arms_manifest["figures"]["threshold_curves_scene"]["status"] == "failed"
     assert arms_manifest["figures"]["arms_scene_3d"]["status"] == "written"
 
 
 def test_all_figures_ok_returns_zero(tmp_path, monkeypatch):
-    """With no failing renderer main returns 0 and --per-run-only writes no arms manifest."""
+    """With no failing renderer main returns 0 and writes the arms manifest."""
     script = load_script()
     context = make_context(script, tmp_path)
     monkeypatch.setattr(script, "build_context", lambda arguments: context)
     stub_all_figures(script, monkeypatch)
     output_dir = tmp_path / "arms_out"
-    assert script.main(["--session", SESSION_NAME, "--output-dir", str(output_dir), "--per-run-only"]) == 0
-    assert not (output_dir / suite_io.MANIFEST_FILE_NAME).exists()
+    assert script.main(["--session", SESSION_NAME, "--output-dir", str(output_dir)]) == 0
+    assert (output_dir / suite_io.MANIFEST_FILE_NAME).exists()
 
 
 def test_refused_setup_returns_one(monkeypatch, capsys):
@@ -255,25 +192,6 @@ def test_refused_setup_returns_one(monkeypatch, capsys):
     monkeypatch.setattr(script, "build_context", refuse)
     assert script.main(["--session", SESSION_NAME]) == 1
     assert "refused: runs are not comparable" in capsys.readouterr().err
-
-
-def test_padded_window_pads_each_side_by_metres():
-    """The window is [min - padding, max + padding] per axis (expected values computed from the corners)."""
-    script = load_script()
-    corners = np.array([[10.0, 2.0], [12.0, 2.0], [12.0, 9.0], [10.0, 9.0]])
-    padding_m = 2.0
-    lower, upper = script.padded_window(corners, padding_m)
-    np.testing.assert_allclose(lower, corners.min(axis=0) - padding_m)
-    np.testing.assert_allclose(upper, corners.max(axis=0) + padding_m)
-
-
-def test_boxes_inside_extent_keeps_only_boxes_with_centre_inside():
-    """A box centred outside the extent is dropped even when a corner lies inside."""
-    script = load_script()
-    inside_box = np.array([[1.0, 1.0], [3.0, 1.0], [3.0, 3.0], [1.0, 3.0]])
-    straddling_box = inside_box + np.array([9.0, 0.0])  # centre x = 11 > extent max 10, left corner inside
-    kept = script.boxes_inside_extent([inside_box, straddling_box], (0.0, 10.0, 0.0, 10.0))
-    assert len(kept) == 1 and np.array_equal(kept[0], inside_box)
 
 
 def test_short_title_and_run_notes(tmp_path):
@@ -309,14 +227,6 @@ def test_repeat_count_text_states_the_actual_counts():
     text = script.repeat_count_text({"stock": 5, "radar_init": 0}, labels)
     assert text == "repeats: stock 5, radar init 0 (no band)"
     assert script.repeat_count_text({"stock": 5, "radar_init": 4}, labels) == "repeats: stock 5, radar init 4"
-
-
-def test_finite_summary_counts_and_range():
-    """Finite columns are counted and the range ignores NaN; an all-NaN map has no range."""
-    script = load_script()
-    image = np.array([[0.2, np.nan, 0.9], [np.nan, -0.1, np.nan]])
-    assert script.finite_summary(image) == {"finite_columns": 3, "min": -0.1, "max": 0.9}
-    assert script.finite_summary(np.full((2, 2), np.nan)) == {"finite_columns": 0, "min": None, "max": None}
 
 
 def test_difference_colour_names_follow_the_arm_constants(tmp_path):
@@ -374,13 +284,12 @@ def context_with_objects(script, tmp_path, occupancy_by_arm):
         occupancy_by_arm: arm -> (6,) occupancy.
 
     Returns:
-        The context (cuboids_path exists so hashing works).
+        The context (the archive files exist so hashing works).
     """
     context = make_context(script, tmp_path)
     for arm in ARMS:
         context.drawn[arm].cells = cells_with_objects(occupancy_by_arm[arm])
     context.class_ids = (OBLIQUE_CLASS_ID,)
-    context.cuboids_path.write_text("[]")
     # The hashing of inputs needs every archive file to exist (their content is irrelevant here).
     for arm in ARMS:
         cells_path = context.drawn[arm].cells_path
@@ -389,22 +298,20 @@ def context_with_objects(script, tmp_path, occupancy_by_arm):
     return context
 
 
-def test_histogram_numbers_are_reported_per_arm_and_series(tmp_path):
-    """reported numbers hold the counts of the figure's own bins: they sum to n and match np.histogram."""
+def test_threshold_curve_cell_counts_equal_the_mask_sizes(tmp_path):
+    """cell_counts = |G| and |N minus G| of the archive (tiny_cells: G = 2 cells, N = 4 cells), equal across arms."""
     script = load_script()
-    occupancy = {"stock": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], "radar_init": [0.5, 1.0, 0.2, 0.0, 0.0, 0.0],
-                 "radar_init_loss": [1.0, 1.0, 0.9, 0.9, 0.0, 0.0]}
-    context = context_with_objects(script, tmp_path, occupancy)
-    reported = script.draw_occupancy_histograms(context, tmp_path / "histograms.png")
-    assert (tmp_path / "histograms.png").is_file()
-    edges = np.linspace(0.0, 1.0, script.HISTOGRAM_BIN_COUNT + 1)
-    assert reported["bin_edges"] == edges.tolist()
-    # radar_init: truth cells 0, 1 have occupancy 0.5 and 1.0; off-truth neighbourhood cells 2, 3 have 0.2 and 0.0.
-    truth_counts = reported["counts"]["radar_init"]["truth"]
-    assert truth_counts["n"] == 2 and sum(truth_counts["counts"]) == 2
-    assert truth_counts["counts"] == np.histogram([0.5, 1.0], bins=edges)[0].tolist()
-    off_truth_counts = reported["counts"]["radar_init"]["off_truth"]
-    assert off_truth_counts["counts"] == np.histogram([0.2, 0.0], bins=edges)[0].tolist()
+    context = context_with_objects(script, tmp_path, {arm: [0.5] * CELL_COUNT for arm in ARMS})
+    cells = context.drawn["stock"].cells
+    truth_size = int(cells["truth_obstacles"].sum())
+    off_truth_size = int((cells["neighbourhood_obstacles"] & ~cells["truth_obstacles"]).sum())
+    reported = script.draw_threshold_curves(context, tmp_path / "curves.png", script.BAND_ALL)
+    assert reported["cell_counts"] == {"on_obstacle": truth_size, "next_to_obstacle": off_truth_size}
+    assert (truth_size, off_truth_size) == (2, 2)
+    # An arm with a different ground-truth mask is refused.
+    context.drawn["radar_init"].cells["truth_obstacles"] = np.zeros(CELL_COUNT, dtype=bool)
+    with pytest.raises(ValueError, match="differ between arms"):
+        script.whole_scene_cell_counts(context)
 
 
 def test_threshold_curve_numbers_and_title_state_the_repeat_count(tmp_path):
@@ -413,17 +320,17 @@ def test_threshold_curve_numbers_and_title_state_the_repeat_count(tmp_path):
     occupancy = {"stock": [0.5, 0.2, 0.9, 0.1, 0.0, 0.0], "radar_init": [0.5, 0.6, 0.0, 0.0, 0.0, 0.0],
                  "radar_init_loss": [0.9, 0.9, 0.9, 0.0, 0.0, 0.0]}
     context = context_with_objects(script, tmp_path, occupancy)
-    reported = script.draw_threshold_curves(context, tmp_path / "curves.png")
+    reported = script.draw_threshold_curves(context, tmp_path / "curves.png", script.HEADLINE_BAND)
     assert reported["repeat_counts"] == {arm: 1 for arm in ARMS}
     grid = reported["curve_grid"]
     assert len(grid) == context.settings.threshold_curve_points and 0.5 in grid
     half_position = grid.index(0.5)
     # Stock at threshold 0.5 on H_near (all hidden): occupied = cells 0 (0.5, inclusive) and 2 (0.9). Neighbourhood
     # cells 0-3, truth cells 0, 1: hits = 1, false alarms = 1 (cell 2), missed = 1 (cell 1), so recall = precision = 1/2.
-    stock_curves = reported["drawn_curves"]["H_near"]["stock"]
+    stock_curves = reported["drawn_curves"]["stock"]
     assert stock_curves["pooled_recall"][half_position] == pytest.approx(1 / 2)
     assert stock_curves["pooled_precision"][half_position] == pytest.approx(1 / 2)
-    band = reported["campaign_bands"]["H_near"]["stock"]["recall"]
+    band = reported["campaign_bands"]["stock"]["recall"]
     assert len(band["lower"]) == len(band["upper"]) == len(grid)
     assert (tmp_path / "curves.png").is_file()
 
@@ -434,90 +341,89 @@ def test_threshold_curves_without_campaign_runs_has_no_band(tmp_path):
     occupancy = {arm: [0.9, 0.9, 0.0, 0.0, 0.0, 0.0] for arm in ARMS}
     context = context_with_objects(script, tmp_path, occupancy)
     context.repeats["radar_init_loss"] = []
-    reported = script.draw_threshold_curves(context, tmp_path / "curves.png")
+    reported = script.draw_threshold_curves(context, tmp_path / "curves.png", script.BAND_ALL)
     assert reported["repeat_counts"]["radar_init_loss"] == 0
-    assert "radar_init_loss" not in reported["campaign_bands"]["H_near"]
-    assert "radar_init_loss" in reported["drawn_curves"]["H_near"]
+    assert "radar_init_loss" not in reported["campaign_bands"]
+    assert "radar_init_loss" in reported["drawn_curves"]
 
 
-def test_heat_numbers_are_reported(tmp_path):
-    """The heat map reports each arm's finite columns and range and the difference's range."""
+def test_threshold_grid_over_0_2_to_0_9_contains_the_p2_thresholds():
+    """15 points over [0.2, 0.9] (step 0.05) contain 0.2, 0.5, 0.8 and 0.9."""
     script = load_script()
-    occupancy = {"stock": [0.2, 0.2, 0.2, 0.2, 0.0, 0.0], "radar_init": [0.2, 0.2, 0.2, 0.2, 0.0, 0.0],
-                 "radar_init_loss": [0.9, 0.9, 0.9, 0.9, 0.0, 0.0]}
+    grid = script.threshold_grid(15, [0.5, 0.8], 0.2, 0.9)
+    assert len(grid) == 15 and np.allclose(np.diff(grid), 0.05)
+    for expected_point in (0.2, 0.5, 0.8, 0.9):
+        assert np.isclose(grid, expected_point).any()
+
+
+def test_threshold_grid_refuses_a_missing_p2_threshold_and_an_empty_range():
+    """A P2 threshold off the grid raises, and so does min >= max."""
+    script = load_script()
+    with pytest.raises(ValueError, match="not on the"):
+        script.threshold_grid(14, [0.5], 0.2, 0.9)
+    with pytest.raises(ValueError, match="below maximum"):
+        script.threshold_grid(15, [0.5], 0.9, 0.2)
+    with pytest.raises(ValueError, match="below maximum"):
+        script.threshold_grid(15, [0.5], 0.5, 0.5)
+
+
+def test_scene_counts_are_written_before_and_outside_every_figure(tmp_path, monkeypatch):
+    """scene_counts holds the cell counts and each arm's outcome counts even when every figure fails."""
+    script = load_script()
+    occupancy = {"stock": [0.5, 0.2, 0.9, 0.1, 0.0, 0.0], "radar_init": [0.5, 0.6, 0.0, 0.0, 0.0, 0.0],
+                 "radar_init_loss": [0.9, 0.9, 0.9, 0.0, 0.0, 0.0]}
     context = context_with_objects(script, tmp_path, occupancy)
-    reported = script.draw_hidden_near_heat(context, tmp_path / "heat.png")
-    # Mask = hidden_near & neighbourhood_obstacles = cells 0-3, which sit in 4 columns.
-    assert reported["arm_maps"]["stock"]["finite_columns"] == 4
-    assert reported["arm_maps"]["radar_init_loss"]["max"] == pytest.approx(0.9)
-    # Difference = init+loss minus stock = 0.9 - 0.2 in every column.
-    assert reported["difference"]["min"] == pytest.approx(0.9 - 0.2)
-    assert reported["difference"]["max"] == pytest.approx(0.9 - 0.2)
-    assert len(reported["extent"]) == 4
+    for name in ("draw_arm_outcome_panels", "draw_threshold_curves"):
+        monkeypatch.setattr(script, name, lambda *arguments, **keyword_arguments: (_ for _ in ()).throw(
+            RuntimeError("figure exploded")))
+    output_dir = tmp_path / "out"
+    recorder = script.generate_arm_figures(context, output_dir)
+    assert recorder.any_failed()
+    counts = json.loads((output_dir / suite_io.MANIFEST_FILE_NAME).read_text())["reported_numbers"]["scene_counts"]
+    assert counts["band"] == "all" and counts["cell_counts"] == {"on_obstacle": 2, "next_to_obstacle": 2}
+    # Stock O = cells 0 (0.5, inclusive) and 2; N = cells 0-3, G = cells 0, 1: hit 1, false alarm 1 (cell 2), missed 1
+    # (cell 1), context |N| = 4. Computed from the sets, not from the code under test.
+    assert counts["outcome_counts_by_arm"]["stock"] == {"hit": 1, "false_alarm": 1, "missed": 1, "context": 4}
+    # Init+loss: O = cells 0, 1, 2 -> hit 2, false alarm 1, missed 0.
+    assert counts["outcome_counts_by_arm"]["radar_init_loss"] == {"hit": 2, "false_alarm": 1, "missed": 0, "context": 4}
+    assert set(counts["outcome_counts_by_arm"]) == set(ARMS)
 
 
-def test_occlusion_sections_skip_when_no_trunk_has_hidden_gt(tmp_path):
-    """Regression: no trunk with a hidden GT cell is a recorded skip (not a failed figure, no crash)."""
+def test_missing_cuboids_file_fails_only_the_scene_figure(tmp_path):
+    """Without the GT cuboid file arms_scene_3d fails; the curves and scene_counts are still written."""
     script = load_script()
-    context = context_with_objects(script, tmp_path, {arm: np.zeros(CELL_COUNT) for arm in ARMS})
-    trunk_class_id = context.eval_section["scored_class_ids"][script.TRUNK_CLASS_NAME]
-    context.reference_cells["object_class_ids"] = np.array([trunk_class_id, trunk_class_id])
-    context.reference_cells["neighbourhood_tree_trunk"] = context.reference_cells["neighbourhood_obstacles"]
-    context.reference_cells["truth_tree_trunk"] = context.reference_cells["truth_obstacles"]
-    context.reference_cells["hidden_near"] = np.zeros(CELL_COUNT, dtype=bool)  # nothing hidden
-    recorder = script.FigureRecorder()
-    output_path = tmp_path / "sections.png"
-    recorder.attempt("occlusion_sections", output_path, lambda: script.draw_occlusion_sections(context, output_path))
-    assert recorder.figures["occlusion_sections"]["status"] == "skipped"
-    assert "no tree_trunk object has a hidden GT cell" in recorder.figures["occlusion_sections"]["error"]
-    assert not recorder.any_failed() and not output_path.exists()
+    occupancy = {arm: [0.9, 0.9, 0.0, 0.0, 0.0, 0.0] for arm in ARMS}
+    context = context_with_objects(script, tmp_path, occupancy)
+    context.cuboids_path = tmp_path / "no_such_dir" / script.CUBOIDS_FILE_NAME
+    output_dir = tmp_path / "out"
+    recorder = script.generate_arm_figures(context, output_dir)
+    manifest = json.loads((output_dir / suite_io.MANIFEST_FILE_NAME).read_text())
+    assert recorder.any_failed()
+    assert manifest["figures"]["arms_scene_3d"]["status"] == "failed"
+    assert manifest["figures"]["threshold_curves_scene"]["status"] == "written"
+    assert "scene_counts" in manifest["reported_numbers"]
+    assert "threshold_curves_scene" in manifest["reported_numbers"]
 
 
-def test_gallery_computes_outcomes_once_per_arm_and_titles_the_page_number(tmp_path, monkeypatch):
-    """hidden_cell_outcomes runs once per arm (not per box and arm); the title carries the page number passed in."""
+def test_ordered_box_counts_follow_the_class_id_order_not_the_encounter_order(tmp_path):
+    """Counts are ordered like context.class_ids (the group's member order), whatever the order of the boxes."""
     script = load_script()
-    context = context_with_objects(script, tmp_path, {arm: [0.9] * CELL_COUNT for arm in ARMS})
-    context.cuboids = [SimpleNamespace(box_id=box_id, class_name="trunk") for box_id in OBJECT_BOX_IDS]
-    outcome_calls = []
-    real_outcomes = script.hidden_cell_outcomes
-
-    def counting_outcomes(*arguments, **keyword_arguments):
-        """Count the calls and delegate."""
-        outcome_calls.append(arguments)
-        return real_outcomes(*arguments, **keyword_arguments)
-
-    saved_titles = []
-    monkeypatch.setattr(script, "hidden_cell_outcomes", counting_outcomes)
-    monkeypatch.setattr(script, "import_pyvista", lambda: None)
-    monkeypatch.setattr(script, "cuboid_wireframe_arrays", lambda cuboids: None)
-    monkeypatch.setattr(script, "render_object_tile", lambda *arguments, **keyword_arguments: None)
-    monkeypatch.setattr(script, "save_matplotlib_figure",
-                        lambda figure, output_path, dpi: saved_titles.append(figure._suptitle.get_text()))
-    recorder = script.FigureRecorder()
-    reported = script.draw_trunk_gallery(context, tmp_path, recorder)
-    assert len(outcome_calls) == len(ARMS)
-    assert sorted(reported) == [str(box_id) for box_id in OBJECT_BOX_IDS]
-    assert len(saved_titles) == 1 and saved_titles[0].endswith("page 1")
-    assert recorder.figures["trunk_gallery_p01"]["status"] == "written"
+    context = make_context(script, tmp_path)
+    class_name_by_id = {int(class_id): class_name for class_name, class_id in context.eval_section["scored_class_ids"].items()}
+    expected_names = [class_name_by_id[int(class_id)] for class_id in context.class_ids]
+    # Boxes listed in reverse member order, so encounter order differs from the group order.
+    boxes = [SimpleNamespace(class_name=class_name) for class_name in reversed(expected_names)]
+    assert list(script.ordered_box_counts(context, boxes)) == expected_names
+    # A class without boxes is left out; the others keep their order.
+    assert list(script.ordered_box_counts(context, boxes[:-1])) == expected_names[1:]
 
 
-def test_gallery_without_hidden_objects_is_one_skipped_entry(tmp_path):
-    """No object with hidden GT: one skipped 'trunk_gallery' entry and no page entries."""
+def test_difference_arms_missing_from_the_arm_order_raise_a_clear_error(tmp_path):
+    """A settings arm order without a compared arm is refused with a message naming the arm."""
     script = load_script()
-    context = context_with_objects(script, tmp_path, {arm: np.zeros(CELL_COUNT) for arm in ARMS})
-    for arm in ARMS:
-        context.drawn[arm].cells["hidden_near"] = np.zeros(CELL_COUNT, dtype=bool)
-    recorder = script.FigureRecorder()
-    assert script.draw_trunk_gallery(context, tmp_path, recorder) == {}
-    assert list(recorder.figures) == ["trunk_gallery"] and recorder.figures["trunk_gallery"]["status"] == "skipped"
-
-
-def test_gallery_preparation_failure_is_recorded_once_as_failed(tmp_path):
-    """A failure while preparing the tiles is one failed 'trunk_gallery' entry (through the shared recorder path)."""
-    script = load_script()
-    context = context_with_objects(script, tmp_path, {arm: np.zeros(CELL_COUNT) for arm in ARMS})
-    del context.drawn["stock"].cells["object_box_ids"]
-    recorder = script.FigureRecorder()
-    assert script.draw_trunk_gallery(context, tmp_path, recorder) == {}
-    assert recorder.figures["trunk_gallery"]["status"] == "failed" and recorder.any_failed()
-
+    context = make_context(script, tmp_path)
+    script.check_difference_arms(context)
+    reduced_order = tuple(arm for arm in context.settings.arm_order if arm != script.DIFFERENCE_SECOND_ARM)
+    context.settings = dataclasses.replace(context.settings, arm_order=reduced_order)
+    with pytest.raises(ValueError, match=script.DIFFERENCE_SECOND_ARM):
+        script.check_difference_arms(context)

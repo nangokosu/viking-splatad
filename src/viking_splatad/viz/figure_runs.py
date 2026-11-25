@@ -14,9 +14,16 @@ from viking_splatad.viz.pyvista_scene import MAX_CHANNEL_VALUE
 # Colours are RGB triples with this many channels, each within [0, MAX_CHANNEL_VALUE].
 RGB_CHANNEL_COUNT = 3
 # Fallback point count of a threshold-curve grid for settings built directly in code (the committed
-# configs/eval.yaml value is the source of truth and is required by ``load_figure_settings``): 21
-# points over [0, 1] give a 0.05 step that contains the P2 thresholds 0.5 and 0.8.
-DEFAULT_THRESHOLD_CURVE_POINTS = 21
+# configs/eval.yaml value is the source of truth and is required by ``load_figure_settings``): 15
+# points over [0.2, 0.9] give a 0.05 step that contains the P2 thresholds 0.5 and 0.8.
+DEFAULT_THRESHOLD_CURVE_POINTS = 15
+# Fallback grid ends for settings built directly in code (the committed configs/eval.yaml is the source of
+# truth and ``load_figure_settings`` requires its keys).
+DEFAULT_THRESHOLD_CURVE_MIN = 0.2
+DEFAULT_THRESHOLD_CURVE_MAX = 0.9
+# Fallback opacity of the translucent GT boxes for settings built directly in code (configs/eval.yaml's
+# figures.cuboid_opacity is the source of truth).
+DEFAULT_CUBOID_OPACITY = 0.35
 # A curve grid needs at least its two end points.
 MINIMUM_THRESHOLD_CURVE_POINTS = 2
 
@@ -29,35 +36,30 @@ class FigureSettings:
         arm_order: Arm keys, left to right.
         arm_labels: Display text per arm.
         campaign_profiles: session -> arm -> 20k campaign profile name.
-        section_trunk_count: Trunk sections per figure.
-        rows_per_page: Tile rows per page.
         dpi: Figure resolution.
         tile_px: Tile side in pixels.
-        bev_bin_m: Bird's-eye bin edge in metres, None = session voxel size.
-        difference_cmap: Colormap of difference maps.
-        occupancy_cmap: Colormap of occupancy maps.
         colours: name -> (R, G, B) in 0-255.
         footer_note: Text printed under every figure.
         representative_metric: Flat metric key (``p2_repeats.flatten_hidden_metrics``) whose median
             repeat represents an arm in the figures.
-        threshold_curve_points: Points of the evenly spaced [0, 1] occupancy-threshold grid of the
-            threshold-curve figures (ends included).
+        threshold_curve_min: Lowest occupancy threshold of the threshold-curve grid.
+        threshold_curve_max: Highest occupancy threshold of the grid (> min).
+        threshold_curve_points: Points of the evenly spaced [min, max] grid (ends included).
+        cuboid_opacity: Opacity (0-1) of the translucent GT boxes of the scene figure.
     """
 
     arm_order: Tuple[str, ...]
     arm_labels: Dict[str, str]
     campaign_profiles: Dict[str, Dict[str, str]]
-    section_trunk_count: int
-    rows_per_page: int
     dpi: int
     tile_px: int
-    bev_bin_m: Optional[float]
-    difference_cmap: str
-    occupancy_cmap: str
     colours: Dict[str, Tuple[int, int, int]]
     footer_note: str
     representative_metric: str
     threshold_curve_points: int = DEFAULT_THRESHOLD_CURVE_POINTS
+    threshold_curve_min: float = DEFAULT_THRESHOLD_CURVE_MIN
+    threshold_curve_max: float = DEFAULT_THRESHOLD_CURVE_MAX
+    cuboid_opacity: float = DEFAULT_CUBOID_OPACITY
 
 
 def _require_positive_int(figures_block: Mapping[str, Any], key: str) -> int:
@@ -78,6 +80,27 @@ def _require_positive_int(figures_block: Mapping[str, Any], key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"figures.{key} must be a positive integer, got {value!r}")
     return value
+
+
+def _require_positive_number(figures_block: Mapping[str, Any], key: str, *, allow_zero: bool = False) -> float:
+    """Return ``figures_block[key]`` after checking it is a positive (or non-negative) real number.
+
+    Args:
+        figures_block: The ``figures`` mapping.
+        key: Entry to read.
+        allow_zero: Accept 0 as well.
+
+    Returns:
+        The value as a float.
+
+    Raises:
+        ValueError: When the entry is missing, not a number (a bool is not), or out of range.
+    """
+    # Step 1: bool is an int subclass, so exclude it explicitly.
+    value = figures_block.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0 or (value == 0 and not allow_zero):
+        raise ValueError(f"figures.{key} must be a {'non-negative' if allow_zero else 'positive'} number, got {value!r}")
+    return float(value)
 
 
 def _require_profile_map(figures_block: Mapping[str, Any], key: str,
@@ -151,13 +174,9 @@ def load_figure_settings(eval_config: Mapping[str, Any]) -> FigureSettings:
             raise ValueError(f"figures.colours.{colour_name} must be {RGB_CHANNEL_COUNT} ints in "
                              f"0-{MAX_CHANNEL_VALUE}, got {channels!r}")
         colours[colour_name] = tuple(channels)
-    # Step 5: optional bev bin, strings.
-    bev_bin_m = figures_block.get("bev_bin_m")
-    if bev_bin_m is not None and (isinstance(bev_bin_m, bool) or not isinstance(bev_bin_m, (int, float))
-                                  or bev_bin_m <= 0):
-        raise ValueError(f"figures.bev_bin_m must be null or a positive number, got {bev_bin_m!r}")
+    # Step 5: required non-empty text entries.
     text_values = {}
-    for text_key in ("difference_cmap", "occupancy_cmap", "footer_note", "representative_metric"):
+    for text_key in ("footer_note", "representative_metric"):
         text_value = figures_block.get(text_key)
         if not isinstance(text_value, str) or not text_value:
             raise ValueError(f"figures.{text_key} must be a non-empty string, got {text_value!r}")
@@ -167,21 +186,28 @@ def load_figure_settings(eval_config: Mapping[str, Any]) -> FigureSettings:
     if threshold_curve_points < MINIMUM_THRESHOLD_CURVE_POINTS:
         raise ValueError(f"figures.threshold_curve_points must be at least {MINIMUM_THRESHOLD_CURVE_POINTS}, "
                          f"got {threshold_curve_points}")
+    # Step 7: grid ends.
+    curve_min = _require_positive_number(figures_block, "threshold_curve_min", allow_zero=True)
+    curve_max = _require_positive_number(figures_block, "threshold_curve_max")
+    if curve_min >= curve_max:
+        raise ValueError(f"figures.threshold_curve_min {curve_min} must be below threshold_curve_max {curve_max}")
+    # Step 8: translucent-box opacity in (0, 1].
+    cuboid_opacity = _require_positive_number(figures_block, "cuboid_opacity")
+    if cuboid_opacity > 1.0:  # opacity is a fraction; 1 = opaque
+        raise ValueError(f"figures.cuboid_opacity must be in (0, 1], got {cuboid_opacity}")
     return FigureSettings(
         arm_order=tuple(arm_order),
         arm_labels=dict(arm_labels),
         campaign_profiles=campaign_profiles,
-        section_trunk_count=_require_positive_int(figures_block, "section_trunk_count"),
-        rows_per_page=_require_positive_int(figures_block, "rows_per_page"),
         dpi=_require_positive_int(figures_block, "dpi"),
         tile_px=_require_positive_int(figures_block, "tile_px"),
-        bev_bin_m=bev_bin_m,
-        difference_cmap=text_values["difference_cmap"],
-        occupancy_cmap=text_values["occupancy_cmap"],
         colours=colours,
         footer_note=text_values["footer_note"],
         representative_metric=text_values["representative_metric"],
         threshold_curve_points=threshold_curve_points,
+        threshold_curve_min=curve_min,
+        threshold_curve_max=curve_max,
+        cuboid_opacity=float(cuboid_opacity),
     )
 
 

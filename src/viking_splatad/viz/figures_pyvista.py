@@ -1,24 +1,31 @@
-"""Off-screen PyVista renderers of the Gaussian-occupancy figure suite (F2 strata, C1 arm panels, C2 tiles).
+"""Off-screen PyVista renderers of the Gaussian-occupancy figure suite (the per-arm outcome panels).
 
 PyVista is installed only in the isolated ``viz/`` project, so nothing here imports it at module level:
 every renderer takes the imported module as ``pyvista_module`` (as ``pyvista_scene.draw_voxels`` does).
 Renderers return RGB uint8 images and never write files. Voxel drawing reuses ``pyvista_scene``; the
-oblique camera helper lives only here (scripts/15 uses PyVista's default and ``view_xy`` instead).
-Matplotlib is imported lazily, and only inside ``compose_tile_grid``.
+oblique camera is fitted exactly by ``camera_framing`` (scripts/15 uses PyVista's default and ``view_xy`` instead).
+Matplotlib is imported lazily, and only inside ``compose_scene_figure`` and the legend helper.
 """
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-from viking_splatad.viz.figure_grids import OUTCOME_STRATUM_NAMES
+from viking_splatad.labels.cuboids import compute_cuboid_geometry
+from viking_splatad.viz.camera_framing import (  # noqa: F401  (the camera constants are re-exported for callers)
+    CAMERA_VIEW_ANGLE_DEGREES,
+    OBLIQUE_CAMERA_DIRECTION,
+    VIEW_UP_VECTOR,
+    tight_oblique_camera,
+    tight_projected_aspect,
+)
 from viking_splatad.viz.figure_runs import FigureSettings
 from viking_splatad.viz.pyvista_scene import (
-    CUBOID_WIREFRAME_RGB,
+    CORNER_SIGN_TRIPLES,
     MAX_CHANNEL_VALUE,
     SOLID_VOXEL_OPACITY,
-    VOXEL_AMBIENT_LIGHT,
     WIREFRAME_LINE_WIDTH,
+    cuboid_wireframe_arrays,
     draw_voxels,
 )
 
@@ -26,55 +33,48 @@ from viking_splatad.viz.pyvista_scene import (
 CONTEXT_OPACITY = 0.15
 FALSE_ALARM_OPACITY = 0.5
 MISSED_OPACITY = 0.35
-# Missed-hidden grey = the settings' "missed" grey times this factor (darker, so hidden misses stand out
-# from visible ones); a presentation choice.
-MISSED_HIDDEN_DARKEN_FACTOR = 0.55
-# Occupancy is a probability, so its colour scale is fixed to [0, 1].
-OCCUPANCY_CLIM = (0.0, 1.0)
-OCCUPANCY_SCALAR_NAME = "occupancy"
-# Oblique camera: unit-less direction from the focal point to the camera (x right, y forward, z up), the
-# vertical field of view (PyVista/VTK default 30 degrees) and a framing margin around the drawn cells.
-OBLIQUE_CAMERA_DIRECTION = (1.0, -1.0, 0.9)
-CAMERA_VIEW_ANGLE_DEGREES = 30.0
-CAMERA_FRAMING_MARGIN = 1.15
-VIEW_UP_VECTOR = (0.0, 0.0, 1.0)
-# Legend / title text size (points) of the off-screen render: the window is ~1000 px wide per panel, so 8 pt
-# would print about 11 px glyphs; 14 pt stays legible once the screenshot is scaled into a figure.
-TEXT_FONT_SIZE = 14
-# Tighter camera margin for the scene figures (C1, and the default of ``render_outcome_strata``, whose F2 caller
-# passes its own margin): the bounding sphere of a flat, wide scene overstates the
-# projected extent of an oblique view, so 0.9 x the sphere distance still frames the drawn cells.
-TIGHT_SCENE_FRAMING_MARGIN = 0.9
+# Camera distance multiplier of the scene figure (1 = the closest camera that keeps every drawn cell and GT box
+# corner in view): 5 % of room (also covers the half-voxel of the outermost cubes) so no edge voxel touches the panel border.
+SCENE_CAMERA_PADDING = 1.05
+# Scene-figure grid: row 0 holds the ground-truth panel and the difference panel, row 1 one panel per arm.
+SCENE_GRID_ROWS, SCENE_GRID_COLUMNS = 2, 3
+# Grid column of the ground-truth panel and of the difference panel in row 0 (the middle cell stays empty).
+GROUND_TRUTH_PANEL_COLUMN, DIFFERENCE_PANEL_COLUMN = 0, SCENE_GRID_COLUMNS - 1
+# Row of the arm panels.
+ARM_PANEL_ROW = 1
+# Off-screen PyVista background (the library's default theme is white). A pixel is scene content when any of its
+# channels differs from the background by more than the tolerance (0-255 levels): 1 level ignores nothing
+# visible (the faintest context cell differs by about 7 levels) but absorbs 8-bit rounding.
+BACKGROUND_RGB = (255, 255, 255)
+CONTENT_TOLERANCE = 1
+# Margin kept around the union content box, as a fraction of its height / width, and the blank title band above
+# every grid row, as a fraction of the cropped panel height (the titles are drawn there by ``compose_scene_figure``).
+CROP_MARGIN_FRACTION = 0.03
+TITLE_BAND_FRACTION = 0.14
+# Colour name (settings.colours) of the cuboid edges.
+CUBOID_EDGE_COLOUR_NAME = "cuboid_edge"
+# Corners of one box face as sign pairs on the face's two free axes, in ring order (each consecutive pair, and the
+# last with the first, shares an edge), so the four corners form a planar, non-self-crossing quad.
+FACE_RING_SIGN_PAIRS = ((-1, -1), (1, -1), (1, 1), (-1, 1))
+# VTK "faces" cell layout: a leading corner count (a quad has four corners) then the corner indices.
+QUAD_CORNER_COUNT = 4
 # Scene-figure layout (inches): width of one scene panel when the screenshot is placed in a matplotlib figure,
 # title band, and font size (pt) of its legend and titles.
 SCENE_PANEL_WIDTH_IN = 6.0
 SCENE_TITLE_BAND_IN = 0.45
 SCENE_FONT_SIZE = 11
+# Left padding of a panel title, as a fraction of the cell width.
+SCENE_TITLE_PAD_FRACTION = 0.01
 # Width (inches) one legend entry needs at SCENE_FONT_SIZE (swatch plus a label such as "false_alarm: 1272"):
 # legends use as many columns as fit the figure width, and wrap into more rows otherwise.
 SCENE_LEGEND_ENTRY_WIDTH_IN = 2.0
 # Height (inches) of one legend row at SCENE_FONT_SIZE.
 SCENE_LEGEND_ROW_HEIGHT_IN = 0.3
-# Tile-grid key (colourbar + legend) band height and title band (inches), colourbar placement (figure fractions).
-TILE_KEY_BAND_IN = 0.8
-TILE_TITLE_BAND_IN = 0.4
-TILE_COLOURBAR_LEFT, TILE_COLOURBAR_WIDTH = 0.08, 0.38
-TILE_COLOURBAR_HEIGHT_IN = 0.14
-TILE_LEGEND_X_FRACTION = 0.55
-# Legend entry kinds of ``compose_scene_figure`` and tile key.
+# Legend entry kinds of ``compose_scene_figure``.
 LEGEND_KIND_PATCH, LEGEND_KIND_LINE = "patch", "line"
-# Digits after the decimal point in tile captions (e.g. "recall_H 0.33").
-CAPTION_DECIMAL_PLACES = 2
-# Font size (pt) of the grid's labels and captions, and of its title (2 pt larger so the title leads).
-GRID_FONT_SIZE = 8
-GRID_TITLE_FONT_SIZE = GRID_FONT_SIZE + 2
-# The tile-grid colourbar's bottom edge sits at this fraction of the key band's height (its vertical middle).
-KEY_BAND_MIDDLE_FRACTION = 0.5
 # Settings colour names of the two difference-panel arms (hits of only the first / only the second arm).
 FIRST_ARM_COLOUR_NAME = "only_radar_init_loss"
 SECOND_ARM_COLOUR_NAME = "only_stock"
-# Room (figure fraction) reserved at the bottom for the footer note.
-FOOTER_BOTTOM_MARGIN = 0.04
 
 
 def to_unit_rgb(colour_rgb: Sequence[int]) -> np.ndarray:
@@ -89,76 +89,6 @@ def to_unit_rgb(colour_rgb: Sequence[int]) -> np.ndarray:
     return np.asarray(colour_rgb, dtype=float) / MAX_CHANNEL_VALUE
 
 
-def darken_rgb(colour_rgb: Sequence[int], factor: float) -> Tuple[int, int, int]:
-    """Scale a 0-255 RGB triple toward black.
-
-    Args:
-        colour_rgb: 0-255 RGB.
-        factor: Multiplier in (0, 1]; smaller is darker.
-
-    Returns:
-        Integer RGB triple.
-    """
-    return tuple(int(round(channel * factor)) for channel in colour_rgb)
-
-
-def oblique_camera_position(cell_centres: np.ndarray, voxel_size: float,
-                            margin: float = CAMERA_FRAMING_MARGIN) -> List[Tuple[float, float, float]]:
-    """Camera (position, focal point, view-up) that frames cells from an oblique direction.
-
-    The focal point is the middle of the cells' bounding box (voxel edges included). The bounding sphere has
-    radius r = half the box diagonal; a camera at distance d = margin * r / tan(fov / 2) along the fixed
-    oblique direction sees the whole sphere.
-
-    Args:
-        cell_centres: (V, 3) centres to frame (at least one).
-        voxel_size: Voxel edge (m), added around the centres.
-        margin: Distance multiplier; below 1 crops the bounding sphere, which still frames a flat wide scene.
-
-    Returns:
-        [position, focal_point, view_up], each a 3-tuple.
-    """
-    # Step 1: bounding box padded by half a voxel on every side.
-    half_edge = voxel_size / 2.0
-    lower_corner = cell_centres.min(axis=0) - half_edge
-    upper_corner = cell_centres.max(axis=0) + half_edge
-    focal_point = (lower_corner + upper_corner) / 2.0
-    # Step 2: bounding-sphere radius and the distance that fits it in the field of view.
-    sphere_radius = np.linalg.norm(upper_corner - lower_corner) / 2.0
-    distance = margin * sphere_radius / np.tan(np.radians(CAMERA_VIEW_ANGLE_DEGREES) / 2.0)
-    # Step 3: step back along the unit oblique direction.
-    direction = np.asarray(OBLIQUE_CAMERA_DIRECTION, dtype=float)
-    position = focal_point + distance * direction / np.linalg.norm(direction)
-    return [tuple(position), tuple(focal_point), VIEW_UP_VECTOR]
-
-
-def draw_scalar_voxels(plotter, pyvista_module, centres: np.ndarray, voxel_size: float, scalars: np.ndarray,
-                       colormap: str, opacity: float = SOLID_VOXEL_OPACITY, show_scalar_bar: bool = False) -> None:
-    """Draw voxels as cubes coloured by a per-voxel scalar (0-1) through a continuous colormap.
-
-    Args:
-        plotter: ``pyvista.Plotter`` with the panel's subplot active.
-        pyvista_module: The imported ``pyvista``.
-        centres: (V, 3) voxel centres; nothing is drawn when empty.
-        voxel_size: Voxel edge (m).
-        scalars: (V,) values, mapped over ``OCCUPANCY_CLIM``.
-        colormap: Matplotlib colormap name.
-        opacity: 0-1.
-        show_scalar_bar: Whether to add a colour bar.
-    """
-    if centres.shape[0] == 0:
-        return
-    # Step 1: attach the scalar to the points; glyphing copies point data onto each cube's faces.
-    cube = pyvista_module.Cube(x_length=voxel_size, y_length=voxel_size, z_length=voxel_size)
-    cloud = pyvista_module.PolyData(centres)
-    cloud[OCCUPANCY_SCALAR_NAME] = np.asarray(scalars, dtype=float)
-    cubes = cloud.glyph(geom=cube, orient=False, scale=False)
-    # Step 2: colour through the colormap over the fixed probability range.
-    plotter.add_mesh(cubes, scalars=OCCUPANCY_SCALAR_NAME, cmap=colormap, clim=OCCUPANCY_CLIM, opacity=opacity,
-                     ambient=VOXEL_AMBIENT_LIGHT, diffuse=1.0 - VOXEL_AMBIENT_LIGHT,
-                     show_scalar_bar=show_scalar_bar)
-
-
 def capture_image(plotter) -> np.ndarray:
     """Screenshot an off-screen plotter as an RGB array.
 
@@ -171,82 +101,223 @@ def capture_image(plotter) -> np.ndarray:
     return np.asarray(plotter.screenshot(return_img=True), dtype=np.uint8)
 
 
-def outcome_stratum_styles(settings: FigureSettings) -> Dict[str, Tuple[Tuple[int, int, int], float]]:
-    """Colour (0-255 RGB) and opacity of each outcome stratum, shared by the drawing and its legend.
+def cuboid_face_cells() -> np.ndarray:
+    """VTK ``faces`` array of one box (six quads) over the corner order of ``compute_cuboid_geometry``.
 
-    Args:
-        settings: Figure settings (colours).
+    Corner k has the sign triple ``CORNER_SIGN_TRIPLES[k]``. The face on side s of axis a holds the four corners whose
+    triple has s on axis a; they are listed in ring order over the two other axes (``FACE_RING_SIGN_PAIRS``).
 
     Returns:
-        stratum name -> (RGB, opacity).
+        (6 * 5,) int array [4, a, b, c, d, 4, ...].
     """
-    return {
-        "hit_seen": (settings.colours["hit"], SOLID_VOXEL_OPACITY),
-        "hit_hidden": (settings.colours[FIRST_ARM_COLOUR_NAME], SOLID_VOXEL_OPACITY),
-        "false_alarm": (settings.colours["false_alarm"], FALSE_ALARM_OPACITY),
-        "missed_seen": (settings.colours["missed"], MISSED_OPACITY),
-        "missed_hidden": (darken_rgb(settings.colours["missed"], MISSED_HIDDEN_DARKEN_FACTOR), MISSED_OPACITY),
-    }
+    face_cells: List[int] = []
+    for fixed_axis in range(CORNER_SIGN_TRIPLES.shape[1]):
+        # Step 1: the two axes that vary on this face.
+        free_axes = [axis for axis in range(CORNER_SIGN_TRIPLES.shape[1]) if axis != fixed_axis]
+        for side in (-1, 1):
+            face_cells.append(QUAD_CORNER_COUNT)
+            for first_sign, second_sign in FACE_RING_SIGN_PAIRS:
+                # Step 2: the corner whose sign triple is (side on the fixed axis, the ring pair on the free ones).
+                target_triple = np.zeros(CORNER_SIGN_TRIPLES.shape[1], dtype=CORNER_SIGN_TRIPLES.dtype)
+                target_triple[fixed_axis] = side
+                target_triple[free_axes[0]], target_triple[free_axes[1]] = first_sign, second_sign
+                face_cells.append(int(np.flatnonzero(np.all(CORNER_SIGN_TRIPLES == target_triple, axis=1))[0]))
+    return np.asarray(face_cells, dtype=np.int64)
 
 
-def render_outcome_strata(pyvista_module, centres: np.ndarray, voxel_size: float, strata: np.ndarray,
-                          settings: FigureSettings, *, window_size: Tuple[int, int], title: str,
-                          draw_text_legend: bool = True,
-                          framing_margin: float = TIGHT_SCENE_FRAMING_MARGIN) -> np.ndarray:
-    """F2: one panel of the cells drawn per outcome stratum, optionally with a text legend of per-stratum counts.
-
-    Colours: hit_seen = settings "hit"; hit_hidden = settings FIRST_ARM_COLOUR_NAME (blue, so a hit on a
-    never-seen cell differs from a hit on a seen one); false_alarm = "false_alarm" translucent;
-    missed_seen = "missed" grey translucent; missed_hidden = that grey darkened by ``MISSED_HIDDEN_DARKEN_FACTOR``.
+def draw_class_cuboids(plotter, pyvista_module, cuboids: Sequence[Any], colour_by_class_id: Mapping[int, Sequence[int]],
+                       opacity: float, edge_rgb: Sequence[int]) -> None:
+    """Draw GT boxes as translucent solids coloured by class, with dark edges (display only).
 
     Args:
+        plotter: ``pyvista.Plotter`` with the panel's subplot active.
         pyvista_module: The imported ``pyvista``.
+        cuboids: Boxes with ``class_id`` in the map frame; nothing is drawn when empty.
+        colour_by_class_id: class id -> 0-255 RGB (every drawn class needs an entry).
+        opacity: 0-1 opacity of the solid faces.
+        edge_rgb: 0-255 RGB of the 12 edges of every box.
+    """
+    if not cuboids:
+        return
+    face_cells = cuboid_face_cells()
+    for cuboid in cuboids:
+        # Step 1: one solid mesh per box (its 8 map-frame corners, six quad faces) in its class colour.
+        corners = compute_cuboid_geometry(cuboid).corners
+        plotter.add_mesh(pyvista_module.PolyData(corners, faces=face_cells),
+                         color=to_unit_rgb(colour_by_class_id[cuboid.class_id]), opacity=opacity)
+    # Step 2: all edges as one line mesh (``pyvista_scene.cuboid_wireframe_arrays``).
+    corner_points, line_cells = cuboid_wireframe_arrays(list(cuboids))
+    plotter.add_mesh(pyvista_module.PolyData(corner_points, lines=line_cells), color=to_unit_rgb(edge_rgb),
+                     line_width=WIREFRAME_LINE_WIDTH)
+
+
+def scene_camera_points(centres: np.ndarray, outcomes_by_arm: Mapping[str, Mapping[str, np.ndarray]],
+                        difference_sets: Mapping[str, np.ndarray], cuboids: Sequence[Any]) -> np.ndarray:
+    """Points every scene panel must keep in view: the drawn cells' centres and the GT box corners.
+
+    Args:
         centres: (V, 3) cell centres.
-        voxel_size: Voxel edge (m).
-        strata: (V,) int index into ``OUTCOME_STRATUM_NAMES`` (-1 = not drawn).
-        settings: Figure settings (colours).
-        window_size: (width, height) in pixels.
-        title: First line of the legend text.
-        draw_text_legend: Whether to print the title and per-stratum counts into the image; the figure
-            scripts pass False and draw a colour legend with the same counts around the image instead.
-        framing_margin: Camera distance multiplier (see ``oblique_camera_position``).
+        outcomes_by_arm: arm -> outcome masks (``hidden_cell_outcomes``).
+        difference_sets: Difference masks (``arm_difference_sets``).
+        cuboids: GT boxes drawn in the ground-truth panel.
 
     Returns:
-        (H, W, 3) uint8 image.
+        (N, 3) array (N = 0 when nothing is drawn).
     """
-    colour_by_stratum = outcome_stratum_styles(settings)
-    plotter = pyvista_module.Plotter(off_screen=True, window_size=window_size)
-    try:
-        legend_lines = [title]
-        # Step 1: one draw call per stratum; count its cells for the legend.
-        for stratum_index, stratum_name in enumerate(OUTCOME_STRATUM_NAMES):
-            stratum_mask = strata == stratum_index
-            colour_rgb, opacity = colour_by_stratum[stratum_name]
-            draw_voxels(plotter, pyvista_module, centres[stratum_mask], voxel_size, colour_rgb, opacity)
-            legend_lines.append(f"{stratum_name}: {int(stratum_mask.sum())}")
-        # Step 2: legend, camera on the drawn cells, then the image.
-        if draw_text_legend:
-            plotter.add_text("\n".join(legend_lines), font_size=TEXT_FONT_SIZE)
-        drawn_centres = centres[strata >= 0]
-        if drawn_centres.shape[0]:
-            plotter.camera_position = oblique_camera_position(drawn_centres, voxel_size, framing_margin)
-        plotter.enable_depth_peeling()
-        return capture_image(plotter)
-    finally:
-        plotter.close()
+    # Step 1: a cell is drawn when it carries any outcome of any arm or any difference set.
+    drawn_mask = np.zeros(centres.shape[0], dtype=bool)
+    for outcomes in outcomes_by_arm.values():
+        for outcome_mask in outcomes.values():
+            drawn_mask |= np.asarray(outcome_mask, dtype=bool)
+    for difference_mask in difference_sets.values():
+        drawn_mask |= np.asarray(difference_mask, dtype=bool)
+    # Step 2: add every corner of every GT box.
+    point_blocks = [centres[drawn_mask]] + [compute_cuboid_geometry(cuboid).corners for cuboid in cuboids]
+    return np.vstack(point_blocks)
+
+
+def content_bounding_box(image: np.ndarray, background_rgb: Sequence[int],
+                         tolerance: int) -> Optional[Tuple[int, int, int, int]]:
+    """Bounding box of the pixels that differ from the background.
+
+    A pixel is content when ``max over channels |pixel - background| > tolerance``.
+
+    Args:
+        image: (H, W, 3) uint8 image.
+        background_rgb: 0-255 background colour.
+        tolerance: Largest per-channel difference (0-255 levels) still counted as background.
+
+    Returns:
+        (row_start, row_stop, column_start, column_stop) with exclusive stops, or None when the whole image is
+        background.
+    """
+    # Step 1: per-pixel largest channel difference (int16 avoids uint8 wrap-around).
+    difference = np.abs(image.astype(np.int16) - np.asarray(background_rgb, dtype=np.int16)).max(axis=2)
+    content_mask = difference > tolerance
+    if not content_mask.any():
+        return None
+    # Step 2: first and last content row / column.
+    content_rows = np.flatnonzero(content_mask.any(axis=1))
+    content_columns = np.flatnonzero(content_mask.any(axis=0))
+    return (int(content_rows[0]), int(content_rows[-1]) + 1, int(content_columns[0]), int(content_columns[-1]) + 1)
+
+
+def crop_grid_to_content(image: np.ndarray, grid_shape: Tuple[int, int], drawn_cells: Sequence[Tuple[int, int]],
+                         background_rgb: Sequence[int], tolerance: int, margin_fraction: float,
+                         title_band_fraction: float) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Crop every panel of a screenshot grid to the union of the panels' content boxes and reassemble the grid.
+
+    Each cell of the (rows, columns) screenshot is ``(H // rows, W // columns)`` pixels. The content box of every
+    drawn cell is found (``content_bounding_box``) in cell-local coordinates and the union box over all of them is
+    grown by ``margin_fraction`` of its size per side (kept inside the cell). Every cell is cropped by that same
+    box, so the scale of all panels stays comparable. The new grid has a blank band of
+    ``title_band_fraction`` x the cropped height above each row; cells not drawn stay background.
+
+    Args:
+        image: (H, W, 3) uint8 screenshot of the whole grid.
+        grid_shape: (rows, columns).
+        drawn_cells: (row, column) of the cells that hold a panel.
+        background_rgb: 0-255 background colour.
+        tolerance: Background tolerance of ``content_bounding_box``.
+        margin_fraction: Margin around the union box, as a fraction of its height (rows) and width (columns).
+        title_band_fraction: Title band height as a fraction of the cropped cell height.
+
+    Returns:
+        (new image, report). The report holds ``union_box`` (cell-local row/column start and stop), ``cell_shape``
+        (cropped (height, width)), ``title_band_px`` and ``fill_by_cell`` (``"row,column"`` -> share of the cell's
+        area that the cell's own content box covers, before and after the crop).
+    """
+    rows, columns = grid_shape
+    cell_height, cell_width = image.shape[0] // rows, image.shape[1] // columns
+    # Step 1: content box of every drawn cell, in cell-local pixels.
+    boxes = {}
+    for row_index, column_index in drawn_cells:
+        cell = image[row_index * cell_height:(row_index + 1) * cell_height,
+                     column_index * cell_width:(column_index + 1) * cell_width]
+        box = content_bounding_box(cell, background_rgb, tolerance)
+        if box is not None:
+            boxes[(row_index, column_index)] = box
+    # Step 2: union box (the whole cell when nothing is drawn), grown by the margin and clamped to the cell.
+    if boxes:
+        row_start = min(box[0] for box in boxes.values())
+        row_stop = max(box[1] for box in boxes.values())
+        column_start = min(box[2] for box in boxes.values())
+        column_stop = max(box[3] for box in boxes.values())
+        margin_rows = int(round(margin_fraction * (row_stop - row_start)))
+        margin_columns = int(round(margin_fraction * (column_stop - column_start)))
+        row_start, row_stop = max(0, row_start - margin_rows), min(cell_height, row_stop + margin_rows)
+        column_start, column_stop = max(0, column_start - margin_columns), min(cell_width, column_stop + margin_columns)
+    else:
+        row_start, row_stop, column_start, column_stop = 0, cell_height, 0, cell_width
+    cropped_height, cropped_width = row_stop - row_start, column_stop - column_start
+    # Step 3: reassemble on a background canvas with a title band above every row.
+    title_band = int(round(title_band_fraction * cropped_height))
+    row_height = title_band + cropped_height
+    canvas = np.empty((rows * row_height, columns * cropped_width, image.shape[2]), dtype=image.dtype)
+    canvas[:] = np.asarray(background_rgb, dtype=image.dtype)
+    for row_index, column_index in drawn_cells:
+        source = image[row_index * cell_height + row_start:row_index * cell_height + row_stop,
+                       column_index * cell_width + column_start:column_index * cell_width + column_stop]
+        top = row_index * row_height + title_band
+        canvas[top:top + cropped_height, column_index * cropped_width:(column_index + 1) * cropped_width] = source
+    # Step 4: how much of its cell / crop each panel's own content covers.
+    fill_by_cell = {f"{row_index},{column_index}": {
+        "before_crop": (box[1] - box[0]) * (box[3] - box[2]) / (cell_height * cell_width),
+        "after_crop": (box[1] - box[0]) * (box[3] - box[2]) / (cropped_height * cropped_width)}
+        for (row_index, column_index), box in boxes.items()}
+    return canvas, {"union_box": [row_start, row_stop, column_start, column_stop],
+                    "cell_shape": [cropped_height, cropped_width], "title_band_px": title_band,
+                    "fill_by_cell": fill_by_cell}
+
+
+def scene_panel_titles(arm_keys: Sequence[str], title_by_panel: Sequence[str],
+                       gt_title: str) -> Dict[Tuple[int, int], str]:
+    """Titles of the scene grid by (row, column): ground truth, difference, then one per arm.
+
+    Args:
+        arm_keys: Arms drawn, in panel order.
+        title_by_panel: One title per arm (in ``arm_keys`` order), then the difference panel's.
+        gt_title: Title of the ground-truth panel.
+
+    Returns:
+        (row, column) -> title.
+    """
+    titles = {(0, GROUND_TRUTH_PANEL_COLUMN): gt_title, (0, DIFFERENCE_PANEL_COLUMN): title_by_panel[len(arm_keys)]}
+    titles.update({(ARM_PANEL_ROW, column_index): title_by_panel[column_index]
+                   for column_index in range(len(arm_keys))})
+    return titles
+
+
+def scene_camera_aspect(points: np.ndarray) -> float:
+    """Width / height a panel needs to frame the points from the scene's oblique direction.
+
+    Args:
+        points: (N, 3) points from ``scene_camera_points`` (N >= 1).
+
+    Returns:
+        ``camera_framing.tight_projected_aspect`` of the points.
+    """
+    return tight_projected_aspect(points, OBLIQUE_CAMERA_DIRECTION, VIEW_UP_VECTOR)
 
 
 def render_arm_panels(pyvista_module, centres: np.ndarray, voxel_size: float,
                       outcomes_by_arm: Mapping[str, Mapping[str, np.ndarray]],
                       difference_sets: Mapping[str, np.ndarray], settings: FigureSettings, *,
-                      window_size: Tuple[int, int], title_by_panel: Sequence[str],
+                      window_size: Tuple[int, int],
                       first_colour_name: str = FIRST_ARM_COLOUR_NAME,
-                      second_colour_name: str = SECOND_ARM_COLOUR_NAME) -> np.ndarray:
-    """C1: one panel per arm (context, hits, false alarms, misses) plus a difference panel, on linked cameras.
+                      second_colour_name: str = SECOND_ARM_COLOUR_NAME,
+                      gt_cuboids: Sequence[Any] = (), gt_colour_by_class_id: Optional[Mapping[int, Sequence[int]]] = None,
+                      layout_report: Optional[Dict[str, Any]] = None) -> np.ndarray:
+    """A (2, 3) grid on one linked camera: ground truth and hit difference above, one panel per arm below.
 
-    Arm panels follow ``settings.arm_order`` (only arms present in ``outcomes_by_arm``). The last panel
-    colours hits of only the first arm (``only_first``, settings colour ``first_colour_name``, blue),
-    only the second (``second_colour_name``, orange) and both ("both" green).
+    Row 0 holds the GT panel (column 0: faint context and the GT boxes, ``draw_class_cuboids``) and the difference
+    panel (column 2; the middle cell stays empty). Row 1 holds the arms in ``settings.arm_order`` (only arms in
+    ``outcomes_by_arm``; context, misses, false alarms, hits). The difference panel colours hits of only the
+    first arm (``first_colour_name``), only the second (``second_colour_name``) and both ("both"). Every panel
+    gets the same camera, fitted exactly to the drawn cells and box corners (``tight_oblique_camera``) for the
+    panel aspect ``(window width / columns) / (window height / rows)``. The screenshot is then cropped so the
+    panels lose their empty margins (``crop_grid_to_content``); panel titles are not drawn here but by
+    ``compose_scene_figure`` (``scene_panel_titles`` gives their cells).
 
     Args:
         pyvista_module: The imported ``pyvista``.
@@ -254,29 +325,55 @@ def render_arm_panels(pyvista_module, centres: np.ndarray, voxel_size: float,
         voxel_size: Voxel edge (m).
         outcomes_by_arm: arm -> {"context","hit","false_alarm","missed"} (V,) bool (``hidden_cell_outcomes``).
         difference_sets: {"only_first","only_second","both"} (V,) bool (``arm_difference_sets``).
-        settings: Figure settings (arm order, colours).
+        settings: Figure settings (arm order, colours, box opacity).
         window_size: (width, height) of the whole window in pixels.
-        title_by_panel: One title per panel, arms first and the difference panel last.
         first_colour_name: Settings colour name of the hits only the first compared arm has.
         second_colour_name: Settings colour name of the hits only the second compared arm has.
+        gt_cuboids: GT boxes of the ground-truth panel.
+        gt_colour_by_class_id: class id -> 0-255 RGB of the boxes (required when ``gt_cuboids`` is not empty).
+        layout_report: Optional dict that receives ``crop_grid_to_content``'s report.
 
     Returns:
-        (H, W, 3) uint8 image.
+        (H, W, 3) uint8 image of the cropped grid with a blank title band above each row.
+
+    Raises:
+        ValueError: When there are more arms than grid columns, or boxes without a colour map.
     """
     arm_keys = [arm for arm in settings.arm_order if arm in outcomes_by_arm]
-    panel_count = len(arm_keys) + 1
-    # Step 1: camera fitted to the union of every cell any panel draws.
-    drawn_mask = np.zeros(centres.shape[0], dtype=bool)
-    for arm_key in arm_keys:
-        for outcome_name in ("context", "hit", "false_alarm", "missed"):
-            drawn_mask |= np.asarray(outcomes_by_arm[arm_key][outcome_name], dtype=bool)
-    for difference_mask in difference_sets.values():
-        drawn_mask |= np.asarray(difference_mask, dtype=bool)
-    plotter = pyvista_module.Plotter(shape=(1, panel_count), off_screen=True, window_size=window_size)
+    if len(arm_keys) > SCENE_GRID_COLUMNS:
+        raise ValueError(f"{len(arm_keys)} arms do not fit the {SCENE_GRID_COLUMNS}-column grid")
+    if gt_cuboids and gt_colour_by_class_id is None:
+        raise ValueError("gt_colour_by_class_id is required when gt_cuboids is given")
+    drawn_outcomes = {arm: outcomes_by_arm[arm] for arm in arm_keys}
+    # Step 1: camera fitted to everything any panel draws, for the panel aspect the window gives.
+    camera_points = scene_camera_points(centres, drawn_outcomes, difference_sets, gt_cuboids)
+    panel_aspect = (window_size[0] / SCENE_GRID_COLUMNS) / (window_size[1] / SCENE_GRID_ROWS)
+    camera_position = (tight_oblique_camera(camera_points, panel_aspect, SCENE_CAMERA_PADDING,
+                                            OBLIQUE_CAMERA_DIRECTION, VIEW_UP_VECTOR, CAMERA_VIEW_ANGLE_DEGREES)
+                       if camera_points.shape[0] else None)
+    plotter = pyvista_module.Plotter(shape=(SCENE_GRID_ROWS, SCENE_GRID_COLUMNS), off_screen=True,
+                                     window_size=window_size, border=False)
+    # Plain background so the content crop's background assumption (BACKGROUND_RGB) always holds.
+    plotter.set_background(to_unit_rgb(BACKGROUND_RGB))
+    drawn_panels = [(0, GROUND_TRUTH_PANEL_COLUMN), (0, DIFFERENCE_PANEL_COLUMN)]
     try:
-        # Step 2: arm panels, faint context first so the solid hits sit on top.
-        for panel_index, arm_key in enumerate(arm_keys):
-            plotter.subplot(0, panel_index)
+        # Step 2: ground-truth panel: faint context of the first arm, then the class-coloured boxes.
+        plotter.subplot(0, GROUND_TRUTH_PANEL_COLUMN)
+        if arm_keys:
+            draw_voxels(plotter, pyvista_module, centres[np.asarray(drawn_outcomes[arm_keys[0]]["context"], dtype=bool)],
+                        voxel_size, settings.colours["context"], CONTEXT_OPACITY)
+        draw_class_cuboids(plotter, pyvista_module, gt_cuboids, gt_colour_by_class_id or {}, settings.cuboid_opacity,
+                           settings.colours[CUBOID_EDGE_COLOUR_NAME] if gt_cuboids else ())
+        # Step 3: difference panel.
+        plotter.subplot(0, DIFFERENCE_PANEL_COLUMN)
+        for set_name, colour_name in (("both", "both"), ("only_first", first_colour_name),
+                                      ("only_second", second_colour_name)):
+            draw_voxels(plotter, pyvista_module, centres[np.asarray(difference_sets[set_name], dtype=bool)],
+                        voxel_size, settings.colours[colour_name], SOLID_VOXEL_OPACITY)
+        # Step 4: arm panels (bottom row), faint context first so the solid hits sit on top.
+        for column_index, arm_key in enumerate(arm_keys):
+            plotter.subplot(ARM_PANEL_ROW, column_index)
+            drawn_panels.append((ARM_PANEL_ROW, column_index))
             outcomes = outcomes_by_arm[arm_key]
             for outcome_name, colour_name, opacity in (("context", "context", CONTEXT_OPACITY),
                                                        ("missed", "missed", MISSED_OPACITY),
@@ -284,121 +381,23 @@ def render_arm_panels(pyvista_module, centres: np.ndarray, voxel_size: float,
                                                        ("hit", "hit", SOLID_VOXEL_OPACITY)):
                 draw_voxels(plotter, pyvista_module, centres[np.asarray(outcomes[outcome_name], dtype=bool)],
                             voxel_size, settings.colours[colour_name], opacity)
-            plotter.add_text(title_by_panel[panel_index], font_size=TEXT_FONT_SIZE)
-        # Step 3: difference panel.
-        plotter.subplot(0, panel_count - 1)
-        for set_name, colour_name in (("both", "both"), ("only_first", first_colour_name),
-                                      ("only_second", second_colour_name)):
-            draw_voxels(plotter, pyvista_module, centres[np.asarray(difference_sets[set_name], dtype=bool)],
-                        voxel_size, settings.colours[colour_name], SOLID_VOXEL_OPACITY)
-        plotter.add_text(title_by_panel[panel_count - 1], font_size=TEXT_FONT_SIZE)
-        # Step 4: same oblique camera and depth peeling in every panel, then link the views.
-        for panel_index in range(panel_count):
-            plotter.subplot(0, panel_index)
-            if drawn_mask.any():
-                plotter.camera_position = oblique_camera_position(centres[drawn_mask], voxel_size,
-                                                                  TIGHT_SCENE_FRAMING_MARGIN)
+        # Step 5: the same camera and depth peeling in every drawn panel, then link the views.
+        for row_index, column_index in drawn_panels:
+            plotter.subplot(row_index, column_index)
+            if camera_position is not None:
+                plotter.camera_position = camera_position
             plotter.enable_depth_peeling()
         plotter.link_views()
-        return capture_image(plotter)
+        screenshot = capture_image(plotter)
     finally:
         plotter.close()
-
-
-def render_object_tile(pyvista_module, centres: np.ndarray, voxel_size: float, tile: Mapping[str, Any],
-                       occupancy: np.ndarray, truth: np.ndarray, hidden: np.ndarray, false_alarm: np.ndarray,
-                       settings: FigureSettings, *, window_size: Tuple[int, int],
-                       cuboid_wireframe: Optional[Tuple[np.ndarray, np.ndarray]] = None) -> np.ndarray:
-    """C2: close-up of one object. Hidden GT cells coloured by occupancy, visible GT faint, false alarms red.
-
-    The camera looks at ``tile["centre"]`` from the oblique direction, at the distance that frames the box
-    ``[extent_min, extent_max]`` (``oblique_camera_position`` on the two corners). The GT drawn is exactly the
-    metric's G_k = truth restricted to the object's own box cells (``tile["inside_cells"]``; truth already lies in
-    the neighbourhood), so a neighbouring object's GT cell in the grown box is not drawn as this object's and the
-    drawing agrees with the caption; false alarms are the flagged cells inside the tile box (padded by half a voxel).
-
-    Args:
-        pyvista_module: The imported ``pyvista``.
-        centres: (V, 3) cell centres.
-        voxel_size: Voxel edge (m).
-        tile: One ``object_tiles`` entry.
-        occupancy: (V,) Gaussian occupancy of every cell.
-        truth: (V,) bool, GT cells.
-        hidden: (V,) bool, hidden flag.
-        false_alarm: (V,) bool, false-alarm cells.
-        settings: Figure settings (colours, occupancy colormap).
-        window_size: (width, height) in pixels.
-        cuboid_wireframe: Optional (corner points, VTK line cells) of the object box.
-
-    Returns:
-        (H, W, 3) uint8 image.
-    """
-    # Step 1: G_k = the object's inside cells that are GT, split by the hidden flag; false alarms inside the
-    # padded tile box.
-    inside_cells = np.asarray(tile["inside_cells"], dtype=int)
-    tile_truth = inside_cells[np.asarray(truth, dtype=bool)[inside_cells]]
-    hidden_truth = tile_truth[np.asarray(hidden, dtype=bool)[tile_truth]]
-    visible_truth = tile_truth[~np.asarray(hidden, dtype=bool)[tile_truth]]
-    half_edge = voxel_size / 2.0
-    inside_box = np.all((centres >= np.asarray(tile["extent_min"]) - half_edge)
-                        & (centres <= np.asarray(tile["extent_max"]) + half_edge), axis=1)
-    tile_false_alarm = np.flatnonzero(np.asarray(false_alarm, dtype=bool) & inside_box)
-    plotter = pyvista_module.Plotter(off_screen=True, window_size=window_size)
-    try:
-        # Step 2: faint visible GT, false alarms, then the occupancy-coloured hidden GT.
-        draw_voxels(plotter, pyvista_module, centres[visible_truth], voxel_size, settings.colours["context"],
-                    CONTEXT_OPACITY)
-        draw_voxels(plotter, pyvista_module, centres[tile_false_alarm], voxel_size, settings.colours["false_alarm"],
-                    FALSE_ALARM_OPACITY)
-        draw_scalar_voxels(plotter, pyvista_module, centres[hidden_truth], voxel_size, np.asarray(occupancy)[hidden_truth],
-                           settings.occupancy_cmap)
-        if cuboid_wireframe is not None and cuboid_wireframe[0].shape[0]:
-            plotter.add_mesh(pyvista_module.PolyData(cuboid_wireframe[0], lines=cuboid_wireframe[1]),
-                             color=to_unit_rgb(CUBOID_WIREFRAME_RGB), line_width=WIREFRAME_LINE_WIDTH)
-        # Step 3: close-up camera: framing of the tile box, re-centred exactly on the tile centre.
-        framing = oblique_camera_position(np.vstack([tile["extent_min"], tile["extent_max"]]), voxel_size)
-        tile_centre = np.asarray(tile["centre"], dtype=float)
-        shift = tile_centre - np.asarray(framing[1])
-        plotter.camera_position = [tuple(np.asarray(framing[0]) + shift), tuple(tile_centre), VIEW_UP_VECTOR]
-        plotter.enable_depth_peeling()
-        return capture_image(plotter)
-    finally:
-        plotter.close()
-
-
-def paginate(items: Sequence[Any], rows_per_page: int) -> List[List[Any]]:
-    """Split items into consecutive pages of at most ``rows_per_page`` items.
-
-    Args:
-        items: Rows to split.
-        rows_per_page: Page capacity (positive).
-
-    Returns:
-        List of pages (lists); empty for no items; the last page holds the remainder.
-
-    Raises:
-        ValueError: If ``rows_per_page`` is not positive.
-    """
-    if rows_per_page < 1:
-        raise ValueError("rows_per_page must be positive")
-    # Ceil(len / rows_per_page) pages, each a slice.
-    return [list(items[start:start + rows_per_page]) for start in range(0, len(items), rows_per_page)]
-
-
-def format_tile_caption(recall_hidden: Optional[float], baseline_recall: Optional[float]) -> str:
-    """Caption text of a tile, e.g. ``recall_H 0.33 · baseline 0.80`` (``n/a`` for None).
-
-    Args:
-        recall_hidden: Hidden recall of the object, or None.
-        baseline_recall: Whole-scene baseline recall, or None.
-
-    Returns:
-        The caption.
-    """
-    def _format(value: Optional[float]) -> str:
-        """Fixed-precision number text, or ``n/a``."""
-        return "n/a" if value is None else f"{value:.{CAPTION_DECIMAL_PLACES}f}"
-    return f"recall_H {_format(recall_hidden)} · baseline {_format(baseline_recall)}"
+    # Step 6: crop every panel to the union content box and reassemble (titles are added by compose_scene_figure).
+    cropped, report = crop_grid_to_content(screenshot, (SCENE_GRID_ROWS, SCENE_GRID_COLUMNS), drawn_panels,
+                                           BACKGROUND_RGB, CONTENT_TOLERANCE, CROP_MARGIN_FRACTION,
+                                           TITLE_BAND_FRACTION)
+    if layout_report is not None:
+        layout_report.update(report)
+    return cropped
 
 
 def _legend_handles(entries: Sequence[Tuple[str, Sequence[int], str]]) -> List[Any]:
@@ -425,7 +424,8 @@ def _legend_handles(entries: Sequence[Tuple[str, Sequence[int], str]]) -> List[A
 
 
 def compose_scene_figure(image: np.ndarray, title: str, legend_entries: Sequence[Tuple[str, Sequence[int], str]],
-                         settings: FigureSettings, *, panel_count: int = 1, run_note: Optional[str] = None):
+                         settings: FigureSettings, *, panel_count: int = 1, run_note: Optional[str] = None,
+                         panel_titles: Optional[Mapping[Tuple[int, int], str]] = None, grid_rows: int = 1):
     """Place a 3D screenshot in a matplotlib figure with a short title, a colour legend, footer and run note.
 
     The image keeps its aspect: the figure is ``panel_count * SCENE_PANEL_WIDTH_IN`` inches wide and the image
@@ -438,6 +438,9 @@ def compose_scene_figure(image: np.ndarray, title: str, legend_entries: Sequence
         settings: Figure settings (footer note).
         panel_count: Number of side-by-side panels in the screenshot (sets the figure width).
         run_note: Optional text naming the drawn runs.
+        panel_titles: Optional (row, column) -> title, drawn at the top-left of that grid cell (the screenshot's
+            blank title band, see ``crop_grid_to_content``).
+        grid_rows: Rows of the screenshot grid (``panel_count`` is its column count).
 
     Returns:
         A matplotlib ``Figure`` (Agg backend).
@@ -460,88 +463,15 @@ def compose_scene_figure(image: np.ndarray, title: str, legend_entries: Sequence
     image_axes = figure.add_axes([0.0, band["total_in"] / height_in, 1.0, image_height_in / height_in])
     image_axes.imshow(image)
     image_axes.set_axis_off()
+    # Titles sit at the top-left of their cell, in image pixel coordinates (rows grow downward in imshow).
+    cell_width_px, row_height_px = image.shape[1] / panel_count, image.shape[0] / grid_rows
+    for (row_index, column_index), panel_title in (panel_titles or {}).items():
+        image_axes.text(column_index * cell_width_px + SCENE_TITLE_PAD_FRACTION * cell_width_px,
+                        row_index * row_height_px, panel_title, ha="left", va="top", fontsize=SCENE_FONT_SIZE)
     figure.suptitle(title, y=1.0, va="top", fontsize=SCENE_FONT_SIZE)
     # Step 3: texts and the colour legend above the footer.
     legend_bottom = figures_mpl.place_band_texts(figure, band, height_in, settings.footer_note)
     figure.legend(handles=_legend_handles(legend_entries), loc="lower center",
                   bbox_to_anchor=(figures_mpl.FOOTER_X_FRACTION, legend_bottom), ncol=legend_columns,
                   fontsize=SCENE_FONT_SIZE, frameon=False)
-    return figure
-
-
-def compose_tile_grid(tile_images: Sequence[Sequence[Optional[np.ndarray]]], row_labels: Sequence[str],
-                      column_labels: Sequence[str], caption_by_tile: Sequence[Sequence[str]],
-                      settings: FigureSettings, *, title: Optional[str] = None, run_note: Optional[str] = None,
-                      show_key: bool = False):
-    """Lay tile images in a rows x arms grid with labels, per-tile captions and the footer note.
-
-    With ``show_key`` a horizontal occupancy colourbar (``settings.occupancy_cmap``, 0-1) and a legend of the
-    false-alarm, visible-GT and GT-box drawing styles are added at the bottom.
-
-    Args:
-        tile_images: ``tile_images[row][column]`` RGB image, or None for an empty cell.
-        row_labels: One label per row (y-axis label of the first column).
-        column_labels: One label per column (title of the first row; arm labels only).
-        caption_by_tile: ``caption_by_tile[row][column]`` text drawn under the image.
-        settings: Figure settings (tile_px, dpi, footer_note).
-        title: Optional short figure title above the column headers.
-        run_note: Optional text naming the drawn runs, printed wrapped under the footer.
-        show_key: Whether to draw the colourbar and legend band.
-
-    Returns:
-        A matplotlib ``Figure`` (Agg backend) with rows x columns image axes (plus the colourbar axes
-        when ``show_key``).
-    """
-    # Lazy import: matplotlib is needed only here, and Agg keeps it headless.
-    import matplotlib
-    matplotlib.use("Agg")
-    from matplotlib.cm import ScalarMappable
-    from matplotlib.colors import Normalize
-    from matplotlib.figure import Figure
-
-    from viking_splatad.viz import figures_mpl
-
-    row_count, column_count = len(tile_images), len(column_labels)
-    # Step 1: figure size = tiles at tile_px pixels each at the settings' dpi, plus title and bottom bands.
-    tile_inches = settings.tile_px / settings.dpi
-    width_in = tile_inches * column_count
-    band = figures_mpl.band_layout(width_in, run_note, settings.footer_note, TILE_KEY_BAND_IN if show_key else 0.0)
-    title_in = TILE_TITLE_BAND_IN if title else 0.0
-    grid_in = tile_inches * row_count / (1.0 - FOOTER_BOTTOM_MARGIN)
-    height_in = grid_in + band["total_in"] + title_in
-    figure = Figure(figsize=(width_in, height_in), dpi=settings.dpi)
-    axes_grid = figure.subplots(row_count, column_count, squeeze=False)
-    # Step 2: one image per axes, captions as x labels, row/column labels on the edges.
-    for row_index in range(row_count):
-        for column_index in range(column_count):
-            axes = axes_grid[row_index][column_index]
-            image = tile_images[row_index][column_index]
-            if image is not None:
-                axes.imshow(image)
-            axes.set_xticks([])
-            axes.set_yticks([])
-            axes.set_xlabel(caption_by_tile[row_index][column_index], fontsize=GRID_FONT_SIZE)
-            if column_index == 0:
-                axes.set_ylabel(row_labels[row_index], fontsize=GRID_FONT_SIZE)
-            if row_index == 0:
-                axes.set_title(column_labels[column_index], fontsize=GRID_FONT_SIZE)
-    # Step 3: reserve the bands, then the texts (run note lowest, footer above, key above that).
-    bottom_fraction = band["total_in"] / height_in
-    figure.tight_layout(rect=(0.0, bottom_fraction, 1.0, 1.0 - title_in / height_in))
-    if title:
-        figure.suptitle(title, y=1.0, va="top", fontsize=GRID_TITLE_FONT_SIZE)
-    key_bottom = figures_mpl.place_band_texts(figure, band, height_in, settings.footer_note)
-    if show_key:
-        # Step 4: colourbar (occupancy 0-1) on the left of the key band, drawing-style legend on the right.
-        colourbar_axes = figure.add_axes([TILE_COLOURBAR_LEFT, key_bottom + band["key_in"] / height_in * KEY_BAND_MIDDLE_FRACTION,
-                                          TILE_COLOURBAR_WIDTH, TILE_COLOURBAR_HEIGHT_IN / height_in])
-        mappable = ScalarMappable(norm=Normalize(*OCCUPANCY_CLIM), cmap=settings.occupancy_cmap)
-        colourbar = figure.colorbar(mappable, cax=colourbar_axes, orientation="horizontal")
-        colourbar.set_label("occupancy of hidden GT cells", fontsize=GRID_FONT_SIZE)
-        colourbar.ax.tick_params(labelsize=GRID_FONT_SIZE)
-        key_entries = [("false alarm", settings.colours["false_alarm"], LEGEND_KIND_PATCH),
-                       ("visible GT cell (context)", settings.colours["context"], LEGEND_KIND_PATCH),
-                       ("GT box", CUBOID_WIREFRAME_RGB, LEGEND_KIND_LINE)]
-        figure.legend(handles=_legend_handles(key_entries), loc="lower left",
-                      bbox_to_anchor=(TILE_LEGEND_X_FRACTION, key_bottom), fontsize=GRID_FONT_SIZE, frameon=False)
     return figure
