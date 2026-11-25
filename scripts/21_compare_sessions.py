@@ -16,6 +16,9 @@ profile names differ between sessions. Per session and method pair it reports:
 - the difference of the gaps between sessions (last session given - first session given; sessions in
   between are reported per session but do not enter the difference).
   The claim expects a radar gain in June (tall grass occludes trunks), and none in May.
+The markdown opens with the definitions (first session's values) and one whole-scene section per session,
+which need each session's scripts/26 ``figures_manifest.json``; ``terminology.md`` (glossary, definitions,
+figure guides, per-session value table) is written beside the report.
 
 Descriptive only: repeats share one seed, so they are not paired. A gap means something only beside
 the spread within both arms.
@@ -28,6 +31,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -35,6 +39,19 @@ from typing import Any, Dict, List, Optional, Sequence
 from viking_splatad.config import find_project_root
 from viking_splatad.viz.pyvista_scene import repo_relative
 from viking_splatad.eval.p2_repeats import arm_pairs, compare_arms, describe_arm
+from viking_splatad.eval.report_opening import (
+    ARM_LABEL_BY_METHOD,
+    format_description,
+    FIGURES_RELATIVE_DIR,
+    definitions_note,
+    format_value,
+    load_figure_manifest,
+    manifest_definition_values,
+    separation_label,
+    whole_scene_section_markdown,
+    write_terminology,
+)
+from viking_splatad.eval.evaluation_terminology import definitions_markdown
 
 SUMMARY_SCHEMA = "viking-splatad/gaussian-occupancy-summary/2"
 SEMANTIC_REPORT_SCHEMA = "viking-splatad/semantic-occupancy/1"
@@ -46,11 +63,12 @@ REPORT_SCHEMA = "viking-splatad/session-comparison/1"
 DEFAULT_OUTPUT_RELATIVE_DIR = Path("reports") / "gaussian_occupancy"
 OUTPUT_JSON_NAME = "session_comparison.json"
 OUTPUT_MARKDOWN_NAME = "session_comparison.md"
+TERMINOLOGY_NAME = "terminology.md"
 # Method order: stock, then the radar variants as they build on each other (same as scripts/20), so
 # every gap reads "radar variant - its baseline".
 METHOD_ORDER = ("splatad", "splatad-radar-init", "splatad-radar-init-lidar")
-METHOD_LABELS = {"splatad": "stock", "splatad-radar-init": "radar init",
-                 "splatad-radar-init-lidar": "radar init + loss"}
+# Plain arm labels: one definition, shared with the reports' whole-scene section.
+METHOD_LABELS = ARM_LABEL_BY_METHOD
 # P1 is read ungated: the binding P1 form (PLAN §5); the gated set is SplatAD's sensor-faithful view.
 P1_POINT_SET = "ungated"
 # Metrics shown in the markdown (the JSON holds every scripts/20 metric). Classes: the group of all
@@ -223,51 +241,54 @@ def compare_sessions(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return comparisons
 
 
-def format_value(value: Optional[float]) -> str:
-    """A metric value for the markdown tables.
+def session_definition_values(sessions: List[Dict[str, Any]], manifests: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Definition values of every session, computed once.
 
     Args:
-        value: Number or None (undefined).
+        sessions: Session entries with a ``summary``.
+        manifests: scripts/26 manifest by session.
 
     Returns:
-        Fixed-point text, or "n/a".
+        Session name -> ``manifest_definition_values`` output.
     """
-    return "n/a" if value is None else f"{value:.{TABLE_DECIMALS}f}"
+    return {entry["session"]: manifest_definition_values(entry["summary"], manifests[entry["session"]])
+            for entry in sessions}
 
 
-def format_description(description: Dict[str, Optional[float]]) -> str:
-    """An arm's metric as "mean ± std [min, max] (n)".
+def session_openings_markdown(sessions: List[Dict[str, Any]], manifests: Dict[str, Dict[str, Any]],
+                              figures_relative_dirs: Dict[str, str],
+                              values_by_session: Optional[Dict[str, Dict[str, Any]]] = None) -> str:
+    """The definitions once (first session's values), then one whole-scene section per session.
 
     Args:
-        description: describe_values output.
+        sessions: Session entries; each needs a ``summary`` (scripts/20 summary with provenance).
+        manifests: scripts/26 manifest by session.
+        figures_relative_dirs: Figures folder relative to the report, by session.
+        values_by_session: Optional precomputed ``session_definition_values`` output (computed here if absent).
 
     Returns:
-        Table cell text.
+        Markdown.
     """
-    return (f"{format_value(description['mean'])} ± {format_value(description['std'])} "
-            f"[{format_value(description['min'])}, {format_value(description['max'])}] (n={description['n']})")
+    if values_by_session is None:
+        values_by_session = session_definition_values(sessions, manifests)
+    first_values = values_by_session[sessions[0]["session"]]
+    # The definitions are rendered once; the note says whose values they carry.
+    parts = [definitions_note(sessions[0]["session"]), "", definitions_markdown(first_values)]
+    for entry in sessions:
+        session = entry["session"]
+        parts.append(whole_scene_section_markdown(entry["summary"], manifests[session], figures_relative_dirs[session],
+                                                  values_by_session[session], heading=f"## Whole scene: {session}"))
+    return "\n".join(parts)
 
 
-def separation_label(separated: Optional[bool]) -> str:
-    """Table text for compare_arms' "separated" flag.
-
-    Args:
-        separated: True (ranges disjoint), False (overlap) or None (an arm has < 2 defined repeats).
-
-    Returns:
-        "sep", "-" or "n/a".
-    """
-    if separated is None:
-        return "n/a"
-    return "sep" if separated else "-"
-
-
-def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, Any]]) -> str:
+def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, Any]],
+                    opening_markdown: Optional[str] = None) -> str:
     """The comparison as markdown: per-session arm tables, then per method pair the gaps side by side.
 
     Args:
         sessions: As passed to compare_sessions.
         comparisons: compare_sessions output.
+        opening_markdown: Optional definitions and whole-scene sections, placed after the intro.
 
     Returns:
         Markdown text.
@@ -280,6 +301,8 @@ def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, 
              f"P1cuboid = scripts/13 {P1_POINT_SET} cuboid detection rate (T45) and point precision (T46); "
              "P1/P2 = scripts/19 voxel metrics on the rendered lidar (P1) and the Gaussians (P2); `_Hnear` = restricted to the hidden cells within the near band of the path (headline), `_H` = to all "
              "hidden cells, pooled over cells or mean over objects; P2@t = Gaussians occupied at probability >= t.", ""]
+    if opening_markdown:
+        lines += [opening_markdown, ""]
     # Arm membership, so every number traces to its runs.
     for entry in sessions:
         lines.append(f"## {entry['session']}: arms")
@@ -342,7 +365,7 @@ def main() -> int:
             summary = json.loads(summary_path.read_text())
             if summary.get("schema") != SUMMARY_SCHEMA:
                 raise ValueError(f"{summary_path}: schema {summary.get('schema')!r}, need {SUMMARY_SCHEMA!r}")
-            sessions.append({"session": summary["session"], "summary_path": repo_relative(str(summary_path.resolve()), project_root),
+            sessions.append({"session": summary["session"], "summary": summary, "summary_path": repo_relative(str(summary_path.resolve()), project_root),
                              "p2_thresholds": summary["p2_thresholds"],
                              "arms": session_arms(summary, project_root)})
         session_names = [entry["session"] for entry in sessions]
@@ -353,18 +376,29 @@ def main() -> int:
         # Step 2: gaps per session and their differences (compare_arms raises KeyError, hence a refusal,
         # when the earlier arm of a pair lacks a metric the later arm has; the reverse is dropped silently).
         comparisons = compare_sessions(sessions)
+        # Step 2b: the opening needs each session's figure manifest and summary provenance.
+        output_dir = arguments.output_dir or project_root / DEFAULT_OUTPUT_RELATIVE_DIR
+        manifests, figures_relative_dirs = {}, {}
+        for session in session_names:
+            figures_dir = project_root / FIGURES_RELATIVE_DIR / session
+            manifests[session] = load_figure_manifest(project_root, session)
+            figures_relative_dirs[session] = Path(os.path.relpath(figures_dir, output_dir)).as_posix()
+        # Computed once per session and reused for the opening and the terminology document.
+        session_values = session_definition_values(sessions, manifests)
+        opening_markdown = session_openings_markdown(sessions, manifests, figures_relative_dirs, session_values)
     except (OSError, ValueError, KeyError) as error:
         print(f"refused: {error!r}", file=sys.stderr)
         return 1
     # Step 3: write JSON (all metrics) and markdown (headline metrics).
-    output_dir = arguments.output_dir or project_root / DEFAULT_OUTPUT_RELATIVE_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
     report = {"schema": REPORT_SCHEMA, "p1_point_set": P1_POINT_SET,
               "sessions": [{"session": entry["session"], "summary": entry["summary_path"],
                             "arms": entry["arms"]} for entry in sessions],
               "comparisons": comparisons}
     (output_dir / OUTPUT_JSON_NAME).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    (output_dir / OUTPUT_MARKDOWN_NAME).write_text(render_markdown(sessions, comparisons))
+    (output_dir / OUTPUT_MARKDOWN_NAME).write_text(render_markdown(sessions, comparisons, opening_markdown))
+    # Stand-alone terminology: glossary, definitions (first session's values), figure guides and the per-session value table.
+    write_terminology(output_dir / TERMINOLOGY_NAME, session_values[sessions[0]["session"]], session_values)
     print(f"wrote {output_dir / OUTPUT_JSON_NAME} and {output_dir / OUTPUT_MARKDOWN_NAME}")
     return 0
 

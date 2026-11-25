@@ -36,3 +36,31 @@ uv run --project viz python scripts/15_view_pose_pyvista.py --run runs/<run_id> 
 - **grey, translucent = missed** = G & H & not O (false negatives of recall_H).
 - **grey, very faint = context** = H & N (every scored hidden cell of the class).
 - Caption: recall_H = |hit| / (|hit| + |missed|), precision_H = |hit| / (|hit| + |false alarm|), counts over the whole scored region (the drawing is cut to the radius); "n/a" when a denominator is empty. Scored-box wireframes as in the other views.
+
+## Gaussian-occupancy figure suite (`scripts/26_occupancy_figures.py`)
+Static PNGs that show the P2 evaluation beyond the single frames above. Run per session in the viz env, after
+scripts/19 has scored the session's campaign runs:
+
+    uv run --project viz python scripts/26_occupancy_figures.py --session june_tall_grass [--run <arm>=<run dir> ...]
+
+- **Which run:** one per arm, the median repeat on `eval.figures.representative_metric` (`--run` overrides).
+  The footer of every cross-arm figure says the run is illustrative; the threshold curves draw the arm's
+  5-repeat min–max band behind it.
+- **Figures** (`reports/gaussian_occupancy/figures/<session>/`, whole scene only for now; the H_near versions
+  take the same form and come in a later round):
+  - `arms_scene_3d.png`: a 2 × 3 grid. Top: the scored obstacle boxes coloured by class (frame of reference) and
+    the hits only radar init + loss / only stock / both. Bottom: stock, radar init, radar init + loss, with hit /
+    false alarm / missed cells. One camera fitted to the cells and boxes (`camera_framing.tight_oblique_camera`),
+    every panel cropped by the same content box.
+  - `threshold_curves_scene.png`: recall | precision for t in [0.2, 0.9] (`eval.figures.threshold_curve_*`),
+    pooled and mean over objects, with the 5-repeat min–max band.
+  - Dropped on 2026-11-25: the per-run figures, the H_near panels, the trunk gallery, the occlusion sections, the
+    occupancy histograms/boxplots (bimodal values; the share above t is pooled recall) and the heat maps.
+- **Audit:** `figures_manifest.json` beside each set records the input sha256s, git state, the representative
+  metric of every repeat, every caption number, and each figure's status. A failed figure is printed and
+  recorded and the exit code is 1.
+- **Code:** data preparation in `src/viking_splatad/viz/figure_{grids,metrics,runs}.py`, `camera_framing.py`, `scored_boxes.py` (tested in the
+  image); drawing in `figures_mpl.py` and `figures_pyvista.py` (PyVista passed in, never imported by `src/`).
+  Settings live in `configs/eval.yaml` → `eval.figures`. The reports' definitions come from
+  `src/viking_splatad/eval/evaluation_terminology.py`, the glossary from `terminology_glossary.py`, and the
+  report opening from `report_opening.py`.

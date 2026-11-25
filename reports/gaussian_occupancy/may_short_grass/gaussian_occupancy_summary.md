@@ -1,5 +1,242 @@
 # P1/P2 over repeats: may_short_grass
 
+## Definitions
+
+Plain words first, the formula last. Every number is read from the run reports, never typed in.
+
+1. **Cells.** The scene is cut into small cubes ("cells") of edge 0.521933 m. Everything below is about cells.
+2. **Ground truth, "on an obstacle" and "next to an obstacle".** People drew a box around every tree trunk, rock and bush ("obstacles"). The boxes are used only for scoring, never for training.
+   - **On an obstacle (G):** a cell whose **centre** lies inside an obstacle box.
+   - **The scored area around a class (N_c):** for each class (trunk, rock, bush) separately:
+     1. **Margin:** m_c = half of the class's typical footprint width, i.e. the median over all of the session's boxes of that class of (length + width) / 4. Values for session may_short_grass: trunk 0.522 m, rock 0.665 m, bush 1.069 m.
+     2. **Grow:** widen every box of the class by m_c on each of its four sides, along the box's own axes, leaving its height unchanged. A typical object's grown box is therefore about twice its own width.
+     3. **Collect:** N_c = the cells whose centre lies inside a grown box.
+   - **Only space the lidar could have covered is scored:** a box counts only when its centre is within the lidar's range (207.364 m) and vertical field of view (±44.8°) of at least one recorded sweep. The same range and field-of-view test is applied to every cell of N_c.
+   - **Obstacles as one group:** N = N_trunk ∪ N_rock ∪ N_bush, minus any cell whose centre lies in a box of a different, non-obstacle annotated class. Those cells count neither for nor against.
+   - **Next to an obstacle:** N ∖ G, the cells in the grown area that are not inside any obstacle box.
+   - **Scored:** only cells in N; everything else in the scene is ignored.
+   - **Caveat:** the boxes are rectangular and a cell counts by its centre only. So for a trunk thinner than one cell (0.521933 m), whether the trunk gets 0, 1 or 2 cells across depends on where the grid lines fall.
+3. **What the model contains.** A trained SplatAD model is millions of small fuzzy blobs (3D Gaussians). Each blob has an opacity from 0 (see-through) to 1 (solid).
+4. **Occupancy of a cell** is how solid the model says the cell is, from 0 (empty) to 1 (solid).
+   - Each blob adds its opacity to the cell its centre lies in, and a fading share to nearby cells.
+   - Blobs combine like stacked tinted glass: light passes through a blob of opacity α with probability (1 − α). So occupancy = 1 − ∏_k(1 − α_k), which grows with every blob but never passes 1.
+   - **Why opacities are combined this way (the source of the definition).** The rule is not new. It reads, at a cell, the same accumulation SplatAD uses to render a lidar ray. The design choice is recorded in PLAN §5 (P2) and `docs/research/evaluation_caveats.md`, "Blocking probability". Quotes are verbatim from the sources below.
+     1. **How SplatAD blends Gaussians along a ray.** SplatAD (Hess et al., *SplatAD: Real-Time Lidar and Camera Rendering with 3D Gaussian Splatting for Autonomous Driving*, arXiv:2411.16816, https://arxiv.org/abs/2411.16816, Eqs. 4-5 (section 3.2), median-range rule (section 3.3); passages checked 2026-11-25) models the scene as "translucent 3D Gaussians with learnable occupancy o∈(0,1)" (§3.1).
+        - **Eq. 4 (§3.2):** [F_p^rgb, F_p] = Σ_i [f_i^rgb, f_i] α_i ∏_{j=1}^{i−1}(1 − α_j). Each Gaussian's own opacity α_i is multiplied by ∏_{j<i}(1 − α_j), the light still left in front of it (the transmittance).
+        - **Eq. 5 (§3.2):** α_i = sqrt(|Σ_i^I| / |Σ_i^I + s·I|) · o_i · exp(−½ Δ_iᵀ (Σ_i^I + s·I)⁻¹ Δ_i). The Gaussian's α_i is its learned opacity o_i times its falloff at the ray, projected onto the sensor plane.
+        - **§3.3:** "For each lidar point, we α-blend the Gaussians' features 𝐟_i using Eqs. 4, 5 and 6." So the lidar uses exactly these weights.
+     2. **SplatAD's own 0.5 rule, which is our definition.** SplatAD places a rendered lidar point at the median range, "the rolling shutter corrected range of the first Gaussian that satisfies ∏_{j=1}^{i}(1−α_j) < 0.5 during the α-blending in Eq. 4" (§3.3). It is used at inference: "While we use the expected range for training, the median range is used during inference as it, in contrast to the expected range, does not yield depths between Gaussians." (§3.3). In words: SplatAD says a ray has hit something once **1 − ∏(1 − α) passes 0.5**. Our occupancy is that same quantity. Our binding cut-off is that same 0.5. So "the cell is filled" means "SplatAD's own renderer would consider a ray through these Gaussians stopped".
+     3. **The lineage.** 3D Gaussian Splatting (Kerbl et al., *3D Gaussian Splatting for Real-Time Radiance Field Rendering*, arXiv:2308.04079, https://arxiv.org/abs/2308.04079, section 2.3, Eqs. 1-3 (ACM TOG 42(4), 2023); passages checked 2026-11-25) gives the same blending, Eq. 3: C = Σ_{i∈N} c_i α_i ∏_{j=1}^{i−1}(1 − α_j). It states: "Point-based α-blending and NeRF-style volumetric rendering share essentially the same image formation model." (§2.3). So ∏(1 − α_j) is the transmittance T_i of volume rendering (its Eqs. 1–2).
+     4. **Why 1 − ∏(1 − α), as one number per cell.** The blending weights along a ray always add up to Σ_i α_i ∏_{j<i}(1 − α_j) = 1 − ∏_i(1 − α_i). Proof by telescoping: with T_k = ∏_{i≤k}(1 − α_i) and T_0 = 1, each weight equals T_{k−1} − T_k, so the sum is T_0 − T_n = 1 − T_n. A unit test checks this identity. The product does not depend on the order of the Gaussians, so no particular ray direction is needed. The result is the total opacity a ray collects from these Gaussians, between 0 and 1.
+   - **How ours differs from SplatAD's α (stated here, not hidden):**
+     - SplatAD evaluates each Gaussian **projected** onto the image or lidar plane, with a small blur term s·I that matches the pixel size or beam divergence (Eq. 5). We evaluate the **3D** Gaussian at a point: α_k(x) = σ(o_k) · exp(−½ (x − μ_k)ᵀ Σ_k⁻¹ (x − μ_k)), at the cell centre, or at its own peak for the cell holding its mean (T81).
+     - We combine every Gaussian touching the cell, rather than those along one beam.
+     - So occupancy is a blocking probability at one point of the cell, in the spirit of SplatAD's accumulation. It is not the fraction of the cell that is filled. Like the renderer, it assumes each Gaussian blocks light independently.
+   - **General reference, not the source of our rule.** Using 3D Gaussians to predict 3D occupancy has been done before (Huang et al., *GaussianFormer: Scene as Gaussians for Vision-Based 3D Semantic Occupancy Prediction*, arXiv:2405.17429, https://arxiv.org/abs/2405.17429, section 3.3, Gaussian-to-Voxel Splatting (general reference only); passages checked 2026-11-25). It adds up the Gaussians' contributions at voxel positions. Ours combines opacities with the renderer's rule above instead, so that the result stays in [0, 1] and matches SplatAD's stop rule.
+   - It is read from the blobs directly, not from a rendered image, so something hidden behind grass still counts.
+5. **Filled, recall and precision.** Pick a cut-off t; a cell with occupancy ≥ t counts as *filled*. Let O_t be the set of filled cells.
+   - **(a) What is scored and what is not.** Only the cells in N are scored: the cells **on** an obstacle (G) and the cells **next to** an obstacle (N ∖ G, the ring, 16407 cells). "Not ground truth" here means only that ring, not the whole scene. Every other cell is ignored, even if the model fills it, so the ring is what makes false alarms countable: a filled cell far from every obstacle is never counted. Cells on another labelled class are excluded from both metrics.
+   - **(b) The 2 × 2 table.** Each scored cell is either filled or empty, and either on an obstacle or next to one:
+
+     | | on an obstacle (G) | next to an obstacle (N ∖ G) |
+     |---|---|---|
+     | **model filled** | hit | false alarm |
+     | **model left empty** | missed | correct empty |
+
+     "Correct empty" enters neither metric.
+   - **(c) Recall** = hit / (hit + missed) = |O_t ∩ G| / |G|. *Did it rebuild the obstacles?* The denominator is every obstacle cell (19600); it depends only on the ground truth. So recall cannot be gamed by leaving things out, but it ignores false alarms.
+   - **(d) Precision** = hit / (hit + false alarm) = |O_t ∩ G| / |O_t ∩ N|. *When it fills something, is it real?* The denominator is every filled scored cell; it depends on the model. Filling everything near obstacles raises recall and lowers precision. This is why both are read together, and why the reading rule asks for higher recall *without lower precision*.
+   - **IoU** (intersection over union) = hit / (hit + missed + false alarm) = |O_t ∩ G| / |(O_t ∪ G) ∩ N|. In words: the overlap between what the model filled and the obstacles, divided by everything either of them covers in the scored area. It puts both kinds of error in one number: a miss and a false alarm each lower it. Correct-empty cells do not enter it. It is always ≤ min(recall, precision). It is a summary only: the reading rule uses recall and precision.
+   - **(e) Worked example.** The stock arm's drawn run in may_short_grass at t = 0.5, with its real counts: 5546 hits, 14054 missed, 1074 false alarms → recall 0.283, precision 0.838, IoU 0.268. These are one run; the tables give mean ± std over the repeats.
+   - **(f) Pooled vs mean over objects.** Recall, precision and IoU are each reported in two ways. They differ only in how the objects are combined.
+     - **Pooled** (T94): add up the cells of all objects first, then divide once. Pooled recall = Σ_k |O_t ∩ G_k| / Σ_k |G_k| = all hits / all obstacle cells; pooled precision = all hits / all filled scored cells. Every *cell* weighs the same, so objects with many cells (tall trunks, big bushes) dominate.
+     - **Mean over objects** (T95): score each object k on its own, inside its own grown box N_k with its own obstacle cells G_k, then take the plain average: mean recall = (1/K) Σ_k recall_k, and likewise precision and IoU. Every *object* weighs the same, however small. K counts only the objects where the ratio is defined (a non-zero denominator): an object with no filled cell in its box has no precision and is left out of the precision mean. A filled cell inside several objects' grown boxes counts as a false alarm of each of them.
+     - **Example (made-up numbers, for illustration only):** a large trunk with 90 obstacle cells, 30 of them filled and a small rock with 10 obstacle cells, 8 of them filled. The per-object recalls are 0.333 and 0.800. Pooled recall = 0.380, dominated by the large trunk; mean recall = 0.567, where the small rock counts as much as the trunk.
+     - **Reading the two together:** for recall, when objects share no cells, the pooled value is the average of the per-object recalls weighted by each object's cell count. So a mean above the pooled value means objects with few cells are recovered better, relative to their size, than objects with many cells; a mean below means the large objects carry the score.
+   - **(g) Why precision stays below 1.** "Next to an obstacle" is not "empty space". The ring also holds things nobody labelled: grass (tall in June), ground and small plants, which really are solid. It also catches the edges of a trunk's own Gaussians, because a trunk is thinner than one cell. So precision stays below 1 even for a correct model. This is a likely cause, not a tested finding.
+   - **(h) How the threshold changes both.** Raising t moves cells from filled to empty, so recall can only fall; precision usually rises.
+6. **Hidden cells (reference for the later round).** We replay every recorded lidar beam.
+   - A cell is *hidden* if no beam reached it, none passed through it, and at least one was stopped before it (by grass, for example).
+   - *H_near* keeps the hidden cells within 20 m of the driven path.
+   - Hidden-cell metrics are the formulas of point 5, restricted to H_near. The figures will take the same form as the whole-scene ones.
+   - Stock SplatAD is expected to leave hidden cells mostly empty, since no lidar or camera signal reached them. That gap is what radar is meant to close.
+7. **Statistics.** Each arm is trained 5 times. A table cell shows mean ± std over the repeats. Gap = difference of means. "sep" means the two arms' [min, max] ranges do not overlap. A gap is read only when it is larger than the spread within the arms.
+
+## Whole scene
+
+### obstacles, P2 occupied at >= 0.5
+
+| metric | stock (`may_scene_a`) | radar init (`may_scene_a_radar_init`) | radar init + loss (`may_scene_a_radar_init_loss`) |
+|---|---|---|---|
+| recall | 0.278 ± 0.003 [0.275, 0.283] (n=5) | 0.221 ± 0.003 [0.218, 0.225] (n=5) | 0.370 ± 0.003 [0.366, 0.374] (n=5) |
+| precision | 0.838 ± 0.004 [0.834, 0.843] (n=5) | 0.810 ± 0.005 [0.805, 0.817] (n=5) | 0.758 ± 0.006 [0.749, 0.762] (n=5) |
+| IoU | 0.264 ± 0.003 [0.261, 0.268] (n=5) | 0.210 ± 0.003 [0.208, 0.215] (n=5) | 0.331 ± 0.002 [0.328, 0.333] (n=5) |
+
+### obstacles, P2 occupied at >= 0.8
+
+| metric | stock (`may_scene_a`) | radar init (`may_scene_a_radar_init`) | radar init + loss (`may_scene_a_radar_init_loss`) |
+|---|---|---|---|
+| recall | 0.244 ± 0.002 [0.241, 0.247] (n=5) | 0.190 ± 0.002 [0.187, 0.193] (n=5) | 0.326 ± 0.001 [0.324, 0.327] (n=5) |
+| precision | 0.863 ± 0.003 [0.859, 0.866] (n=5) | 0.831 ± 0.002 [0.827, 0.834] (n=5) | 0.772 ± 0.003 [0.768, 0.774] (n=5) |
+| IoU | 0.234 ± 0.002 [0.232, 0.237] (n=5) | 0.183 ± 0.002 [0.180, 0.186] (n=5) | 0.297 ± 0.001 [0.296, 0.298] (n=5) |
+
+### tree_trunk, P2 occupied at >= 0.5
+
+| metric | stock (`may_scene_a`) | radar init (`may_scene_a_radar_init`) | radar init + loss (`may_scene_a_radar_init_loss`) |
+|---|---|---|---|
+| recall | 0.375 ± 0.002 [0.372, 0.376] (n=5) | 0.302 ± 0.001 [0.300, 0.303] (n=5) | 0.433 ± 0.004 [0.426, 0.438] (n=5) |
+| precision | 0.849 ± 0.005 [0.845, 0.856] (n=5) | 0.828 ± 0.002 [0.826, 0.830] (n=5) | 0.811 ± 0.009 [0.795, 0.817] (n=5) |
+| IoU | 0.351 ± 0.001 [0.349, 0.352] (n=5) | 0.284 ± 0.001 [0.283, 0.286] (n=5) | 0.393 ± 0.004 [0.389, 0.398] (n=5) |
+
+### tree_trunk, P2 occupied at >= 0.8
+
+| metric | stock (`may_scene_a`) | radar init (`may_scene_a_radar_init`) | radar init + loss (`may_scene_a_radar_init_loss`) |
+|---|---|---|---|
+| recall | 0.331 ± 0.001 [0.329, 0.332] (n=5) | 0.263 ± 0.003 [0.258, 0.266] (n=5) | 0.379 ± 0.002 [0.377, 0.383] (n=5) |
+| precision | 0.872 ± 0.005 [0.868, 0.878] (n=5) | 0.848 ± 0.003 [0.846, 0.852] (n=5) | 0.825 ± 0.003 [0.821, 0.828] (n=5) |
+| IoU | 0.316 ± 0.001 [0.314, 0.317] (n=5) | 0.251 ± 0.003 [0.247, 0.253] (n=5) | 0.351 ± 0.002 [0.349, 0.354] (n=5) |
+
+### rock, P2 occupied at >= 0.5
+
+| metric | stock (`may_scene_a`) | radar init (`may_scene_a_radar_init`) | radar init + loss (`may_scene_a_radar_init_loss`) |
+|---|---|---|---|
+| recall | 0.253 ± 0.018 [0.230, 0.281] (n=5) | 0.206 ± 0.021 [0.180, 0.225] (n=5) | 0.284 ± 0.010 [0.270, 0.298] (n=5) |
+| precision | 0.456 ± 0.011 [0.441, 0.472] (n=5) | 0.406 ± 0.034 [0.367, 0.455] (n=5) | 0.429 ± 0.020 [0.395, 0.445] (n=5) |
+| IoU | 0.194 ± 0.012 [0.180, 0.214] (n=5) | 0.158 ± 0.017 [0.140, 0.177] (n=5) | 0.206 ± 0.008 [0.198, 0.217] (n=5) |
+
+### rock, P2 occupied at >= 0.8
+
+| metric | stock (`may_scene_a`) | radar init (`may_scene_a_radar_init`) | radar init + loss (`may_scene_a_radar_init_loss`) |
+|---|---|---|---|
+| recall | 0.228 ± 0.015 [0.202, 0.236] (n=5) | 0.165 ± 0.011 [0.157, 0.180] (n=5) | 0.267 ± 0.010 [0.258, 0.281] (n=5) |
+| precision | 0.478 ± 0.022 [0.444, 0.500] (n=5) | 0.408 ± 0.025 [0.373, 0.438] (n=5) | 0.458 ± 0.011 [0.447, 0.475] (n=5) |
+| IoU | 0.183 ± 0.012 [0.161, 0.191] (n=5) | 0.133 ± 0.010 [0.124, 0.146] (n=5) | 0.203 ± 0.007 [0.196, 0.212] (n=5) |
+
+### bush_or_small_tree, P2 occupied at >= 0.5
+
+| metric | stock (`may_scene_a`) | radar init (`may_scene_a_radar_init`) | radar init + loss (`may_scene_a_radar_init_loss`) |
+|---|---|---|---|
+| recall | 0.127 ± 0.007 [0.122, 0.138] (n=5) | 0.093 ± 0.006 [0.088, 0.104] (n=5) | 0.274 ± 0.005 [0.269, 0.280] (n=5) |
+| precision | 0.819 ± 0.012 [0.807, 0.835] (n=5) | 0.763 ± 0.020 [0.739, 0.791] (n=5) | 0.663 ± 0.007 [0.655, 0.672] (n=5) |
+| IoU | 0.124 ± 0.007 [0.119, 0.134] (n=5) | 0.091 ± 0.006 [0.086, 0.101] (n=5) | 0.241 ± 0.004 [0.236, 0.246] (n=5) |
+
+### bush_or_small_tree, P2 occupied at >= 0.8
+
+| metric | stock (`may_scene_a`) | radar init (`may_scene_a_radar_init`) | radar init + loss (`may_scene_a_radar_init_loss`) |
+|---|---|---|---|
+| recall | 0.106 ± 0.005 [0.102, 0.113] (n=5) | 0.076 ± 0.003 [0.073, 0.081] (n=5) | 0.244 ± 0.003 [0.241, 0.247] (n=5) |
+| precision | 0.853 ± 0.011 [0.839, 0.864] (n=5) | 0.779 ± 0.020 [0.758, 0.803] (n=5) | 0.677 ± 0.004 [0.673, 0.684] (n=5) |
+| IoU | 0.104 ± 0.005 [0.100, 0.111] (n=5) | 0.075 ± 0.003 [0.071, 0.079] (n=5) | 0.218 ± 0.002 [0.216, 0.222] (n=5) |
+
+### Gap radar init (`may_scene_a_radar_init`) - stock (`may_scene_a`) (sep = the arms' [min, max] do not overlap, ovl = they overlap)
+
+| metric | gap | sep / ovl |
+|---|---|---|
+| obstacles/P2@0.5/recall/pooled | -0.058 | sep |
+| obstacles/P2@0.5/precision/pooled | -0.027 | sep |
+| obstacles/P2@0.5/iou/pooled | -0.054 | sep |
+| obstacles/P2@0.8/recall/pooled | -0.053 | sep |
+| obstacles/P2@0.8/precision/pooled | -0.032 | sep |
+| obstacles/P2@0.8/iou/pooled | -0.051 | sep |
+| tree_trunk/P2@0.5/recall/pooled | -0.073 | sep |
+| tree_trunk/P2@0.5/precision/pooled | -0.021 | sep |
+| tree_trunk/P2@0.5/iou/pooled | -0.067 | sep |
+| tree_trunk/P2@0.8/recall/pooled | -0.068 | sep |
+| tree_trunk/P2@0.8/precision/pooled | -0.024 | sep |
+| tree_trunk/P2@0.8/iou/pooled | -0.064 | sep |
+| rock/P2@0.5/recall/pooled | -0.047 | sep |
+| rock/P2@0.5/precision/pooled | -0.050 | ovl |
+| rock/P2@0.5/iou/pooled | -0.036 | sep |
+| rock/P2@0.8/recall/pooled | -0.063 | sep |
+| rock/P2@0.8/precision/pooled | -0.070 | sep |
+| rock/P2@0.8/iou/pooled | -0.049 | sep |
+| bush_or_small_tree/P2@0.5/recall/pooled | -0.034 | sep |
+| bush_or_small_tree/P2@0.5/precision/pooled | -0.056 | sep |
+| bush_or_small_tree/P2@0.5/iou/pooled | -0.033 | sep |
+| bush_or_small_tree/P2@0.8/recall/pooled | -0.030 | sep |
+| bush_or_small_tree/P2@0.8/precision/pooled | -0.074 | sep |
+| bush_or_small_tree/P2@0.8/iou/pooled | -0.030 | sep |
+
+### Gap radar init + loss (`may_scene_a_radar_init_loss`) - stock (`may_scene_a`) (sep = the arms' [min, max] do not overlap, ovl = they overlap)
+
+| metric | gap | sep / ovl |
+|---|---|---|
+| obstacles/P2@0.5/recall/pooled | 0.092 | sep |
+| obstacles/P2@0.5/precision/pooled | -0.079 | sep |
+| obstacles/P2@0.5/iou/pooled | 0.067 | sep |
+| obstacles/P2@0.8/recall/pooled | 0.082 | sep |
+| obstacles/P2@0.8/precision/pooled | -0.091 | sep |
+| obstacles/P2@0.8/iou/pooled | 0.063 | sep |
+| tree_trunk/P2@0.5/recall/pooled | 0.058 | sep |
+| tree_trunk/P2@0.5/precision/pooled | -0.038 | sep |
+| tree_trunk/P2@0.5/iou/pooled | 0.042 | sep |
+| tree_trunk/P2@0.8/recall/pooled | 0.048 | sep |
+| tree_trunk/P2@0.8/precision/pooled | -0.047 | sep |
+| tree_trunk/P2@0.8/iou/pooled | 0.035 | sep |
+| rock/P2@0.5/recall/pooled | 0.031 | ovl |
+| rock/P2@0.5/precision/pooled | -0.027 | ovl |
+| rock/P2@0.5/iou/pooled | 0.012 | ovl |
+| rock/P2@0.8/recall/pooled | 0.039 | sep |
+| rock/P2@0.8/precision/pooled | -0.021 | ovl |
+| rock/P2@0.8/iou/pooled | 0.020 | sep |
+| bush_or_small_tree/P2@0.5/recall/pooled | 0.147 | sep |
+| bush_or_small_tree/P2@0.5/precision/pooled | -0.156 | sep |
+| bush_or_small_tree/P2@0.5/iou/pooled | 0.117 | sep |
+| bush_or_small_tree/P2@0.8/recall/pooled | 0.138 | sep |
+| bush_or_small_tree/P2@0.8/precision/pooled | -0.176 | sep |
+| bush_or_small_tree/P2@0.8/iou/pooled | 0.114 | sep |
+
+### Gap radar init + loss (`may_scene_a_radar_init_loss`) - radar init (`may_scene_a_radar_init`) (sep = the arms' [min, max] do not overlap, ovl = they overlap)
+
+| metric | gap | sep / ovl |
+|---|---|---|
+| obstacles/P2@0.5/recall/pooled | 0.150 | sep |
+| obstacles/P2@0.5/precision/pooled | -0.052 | sep |
+| obstacles/P2@0.5/iou/pooled | 0.121 | sep |
+| obstacles/P2@0.8/recall/pooled | 0.136 | sep |
+| obstacles/P2@0.8/precision/pooled | -0.058 | sep |
+| obstacles/P2@0.8/iou/pooled | 0.114 | sep |
+| tree_trunk/P2@0.5/recall/pooled | 0.131 | sep |
+| tree_trunk/P2@0.5/precision/pooled | -0.017 | sep |
+| tree_trunk/P2@0.5/iou/pooled | 0.109 | sep |
+| tree_trunk/P2@0.8/recall/pooled | 0.116 | sep |
+| tree_trunk/P2@0.8/precision/pooled | -0.023 | sep |
+| tree_trunk/P2@0.8/iou/pooled | 0.100 | sep |
+| rock/P2@0.5/recall/pooled | 0.079 | sep |
+| rock/P2@0.5/precision/pooled | 0.023 | ovl |
+| rock/P2@0.5/iou/pooled | 0.048 | sep |
+| rock/P2@0.8/recall/pooled | 0.102 | sep |
+| rock/P2@0.8/precision/pooled | 0.049 | sep |
+| rock/P2@0.8/iou/pooled | 0.070 | sep |
+| bush_or_small_tree/P2@0.5/recall/pooled | 0.181 | sep |
+| bush_or_small_tree/P2@0.5/precision/pooled | -0.100 | sep |
+| bush_or_small_tree/P2@0.5/iou/pooled | 0.150 | sep |
+| bush_or_small_tree/P2@0.8/recall/pooled | 0.167 | sep |
+| bush_or_small_tree/P2@0.8/precision/pooled | -0.102 | sep |
+| bush_or_small_tree/P2@0.8/iou/pooled | 0.144 | sep |
+
+![Whole scene in 3D, per arm](../figures/may_short_grass/arms_scene_3d.png)
+
+**How to read this figure**
+- **GT panel:** the obstacle boxes, coloured by class, for orientation.
+- **Arm panels:** green = hit (filled, on an obstacle); red = false alarm (filled, next to an obstacle); grey = missed (empty, on an obstacle); faint grey = the scored area, the ring included. Correct-empty cells are not drawn. Cut-off t = 0.5. The terms are defined in point 5.
+- **Difference panel:** hits only radar init + loss has, hits only stock has, and hits both have.
+- One run per arm (the median repeat), so it illustrates and does not decide anything.
+
+
+![Recall and precision against the occupancy threshold](../figures/may_short_grass/threshold_curves_scene.png)
+
+**How to read this figure**
+- **What is plotted:** recall (left) and precision (right) recomputed at each cut-off t from 0.2 to 0.9 (15 evenly spaced values). Solid lines are pooled and dashed lines are the mean over objects. The line is the median repeat. Each line has its own shaded band: at each t, the lowest and highest value of that same curve (pooled or mean over objects) over the 5 repeats of the arm. The pooled band is shaded more strongly than the mean band. Dotted lines mark the table cut-offs 0.5, 0.8.
+- **Solid vs dashed:** solid = *pooled* (all objects' cells counted together, so large objects dominate); dashed = *mean over objects* (each object scored on its own, then averaged, so every object counts once). Full definitions and an example: point 5(f).
+- **Definitions:** see point 5. Only recall and precision are plotted; IoU is in the tables. Recall = hit / (hit + missed) has all 19600 obstacle cells as its denominator; precision = hit / (hit + false alarm) has every filled scored cell as its denominator.
+- **How the curves move:** raising t fills fewer cells, so recall can only fall and precision usually rises.
+- **When one arm beats another:** its line is higher and its band does not overlap the other arm's band of the same kind (pooled with pooled, mean with mean).
+- **Why t runs from 0.2 to 0.9:** the extremes are left out because they say nothing about the model. At t = 0 every cell counts as filled (recall 1, precision = the share of obstacle cells). At t ≈ 1 precision rests on a handful of cells and jumps.
+
+
+
+
 Descriptive only: a variant gap counts only when it exceeds the spread between repeats without losing precision_H. Repeats share one seed, so they are not paired. Cells are mean ± sample std (n = repeats).
 
 - **may_scene_a** (`splatad`): may_short_grass-may_scene_a-20261116-133928-17bb7a1 [17bb7a1; split identical to the reference record], may_short_grass-may_scene_a-20261116-135425-17bb7a1 [17bb7a1; split identical to the reference record], may_short_grass-may_scene_a-20261116-135428-17bb7a1 [17bb7a1; split identical to the reference record], may_short_grass-may_scene_a-20261116-135432-17bb7a1 [17bb7a1; split identical to the reference record], may_short_grass-may_scene_a-20261116-135435-17bb7a1 [17bb7a1; split identical to the reference record]
