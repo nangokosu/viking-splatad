@@ -9,7 +9,7 @@ Branch `margin-reach-rescore` (from `radar-init-loss-merge`, whose PR #14 is mer
   - H_near obstacle GT cells: June 276 → 332 (objects 14 → 21); May 137 → 193 (objects 7 → 13).
 - **Viewer fix:** `scripts/15 --p2-hidden` dropped the report it loads, so every H picture had failed since 9b898f7 (UnboundLocalError). It is fixed, with a regression test in `tests/unit/test_p2_hidden_viewer_mode.py`. All 30 runs now carry both pictures.
 - **Re-scored:** all 30 runs (script 19), then scripts 20 and 21. The reports in `reports/gaussian_occupancy/` are replaced.
-- **Before/after table:** `docs/research/hidden_space/compare_margin_rescore.py` (old = commit 9b898f7).
+- **Before/after report:** `reports/gaussian_occupancy/margin_rescore_comparison.md`, written by `docs/research/hidden_space/compare_margin_rescore.py` (old = commit 9b898f7). It opens with full definitions of the arms, H, H_near, the margin, the metrics and the statistics, for collaborators.
   - Radar init + loss beats stock on P2 recall_Hnear (mean over objects) at 0.5 and now also at 0.8, separated in both sessions.
     - June 0.2278 vs 0.1235 at 0.5; 0.1477 vs 0.0796 at 0.8.
     - May 0.3881 vs 0.1936 at 0.5; 0.3368 vs 0.1682 at 0.8.
