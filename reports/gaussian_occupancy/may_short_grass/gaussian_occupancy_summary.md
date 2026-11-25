@@ -55,10 +55,10 @@ Plain words first, the formula last. Every number is read from the run reports, 
      - **Reading the two together:** for recall, when objects share no cells, the pooled value is the average of the per-object recalls weighted by each object's cell count. So a mean above the pooled value means objects with few cells are recovered better, relative to their size, than objects with many cells; a mean below means the large objects carry the score.
    - **(g) Why precision stays below 1.** "Next to an obstacle" is not "empty space". The ring also holds things nobody labelled: grass (tall in June), ground and small plants, which really are solid. It also catches the edges of a trunk's own Gaussians, because a trunk is thinner than one cell. So precision stays below 1 even for a correct model. This is a likely cause, not a tested finding.
    - **(h) How the threshold changes both.** Raising t moves cells from filled to empty, so recall can only fall; precision usually rises.
-6. **Hidden cells (reference for the later round).** We replay every recorded lidar beam.
+6. **Hidden cells (the second part of the evaluation, read after the whole scene).** We replay every recorded lidar beam.
    - A cell is *hidden* if no beam reached it, none passed through it, and at least one was stopped before it (by grass, for example).
    - *H_near* keeps the hidden cells within 20 m of the driven path.
-   - Hidden-cell metrics are the formulas of point 5, restricted to H_near. The figures will take the same form as the whole-scene ones.
+   - Hidden-cell metrics are the formulas of point 5, restricted to H_near. Their figures take the same form as the whole-scene ones, and are read after them.
    - Stock SplatAD is expected to leave hidden cells mostly empty, since no lidar or camera signal reached them. That gap is what radar is meant to close.
 7. **Statistics.** Each arm is trained 5 times. A table cell shows mean ± std over the repeats. Gap = difference of means. "sep" means the two arms' [min, max] ranges do not overlap. A gap is read only when it is larger than the spread within the arms.
 
@@ -247,6 +247,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | may_scene_a | may_scene_a_radar_init | may_scene_a_radar_init_loss |
 |---|---|---|---|
+| P2@0.5/recall/pooled | 0.278 ± 0.003 (n=5) | 0.221 ± 0.003 (n=5) | 0.370 ± 0.003 (n=5) |
+| P2@0.5/recall/mean | 0.421 ± 0.003 (n=5) | 0.341 ± 0.002 (n=5) | 0.509 ± 0.006 (n=5) |
+| P2@0.5/precision/pooled | 0.838 ± 0.004 (n=5) | 0.810 ± 0.005 (n=5) | 0.758 ± 0.006 (n=5) |
+| P2@0.5/precision/mean | 0.703 ± 0.012 (n=5) | 0.676 ± 0.020 (n=5) | 0.690 ± 0.011 (n=5) |
+| P2@0.5/iou/pooled | 0.264 ± 0.003 (n=5) | 0.210 ± 0.003 (n=5) | 0.331 ± 0.002 (n=5) |
+| P2@0.5/iou/mean | 0.343 ± 0.002 (n=5) | 0.275 ± 0.002 (n=5) | 0.375 ± 0.003 (n=5) |
+| P1/recall/pooled | 0.299 ± 0.001 (n=5) | 0.273 ± 0.002 (n=5) | 0.298 ± 0.002 (n=5) |
+| P1/recall/mean | 0.433 ± 0.003 (n=5) | 0.404 ± 0.002 (n=5) | 0.430 ± 0.002 (n=5) |
+| P1/precision/pooled | 0.680 ± 0.004 (n=5) | 0.660 ± 0.004 (n=5) | 0.673 ± 0.003 (n=5) |
+| P1/precision/mean | 0.590 ± 0.007 (n=5) | 0.586 ± 0.005 (n=5) | 0.604 ± 0.010 (n=5) |
 | P2@0.5/recall_Hnear/pooled | 0.140 ± 0.105 (n=5) | 0.080 ± 0.012 (n=5) | 0.215 ± 0.077 (n=5) |
 | P2@0.5/recall_Hnear/mean | 0.194 ± 0.059 (n=5) | 0.190 ± 0.049 (n=5) | 0.388 ± 0.038 (n=5) |
 | P2@0.5/precision_Hnear/pooled | 0.610 ± 0.152 (n=5) | 0.630 ± 0.088 (n=5) | 0.536 ± 0.095 (n=5) |
@@ -265,16 +275,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | P2@0.5/iou_H/mean | 0.060 ± 0.004 (n=5) | 0.033 ± 0.008 (n=5) | 0.116 ± 0.008 (n=5) |
 | hidden/gt_cells | 6231.000 ± 0.000 (n=5) | 6231.000 ± 0.000 (n=5) | 6231.000 ± 0.000 (n=5) |
 | hidden/objects_with_hidden_gt | 92.000 ± 0.000 (n=5) | 92.000 ± 0.000 (n=5) | 92.000 ± 0.000 (n=5) |
-| P2@0.5/recall/pooled | 0.278 ± 0.003 (n=5) | 0.221 ± 0.003 (n=5) | 0.370 ± 0.003 (n=5) |
-| P2@0.5/recall/mean | 0.421 ± 0.003 (n=5) | 0.341 ± 0.002 (n=5) | 0.509 ± 0.006 (n=5) |
-| P2@0.5/precision/pooled | 0.838 ± 0.004 (n=5) | 0.810 ± 0.005 (n=5) | 0.758 ± 0.006 (n=5) |
-| P2@0.5/precision/mean | 0.703 ± 0.012 (n=5) | 0.676 ± 0.020 (n=5) | 0.690 ± 0.011 (n=5) |
-| P2@0.5/iou/pooled | 0.264 ± 0.003 (n=5) | 0.210 ± 0.003 (n=5) | 0.331 ± 0.002 (n=5) |
-| P2@0.5/iou/mean | 0.343 ± 0.002 (n=5) | 0.275 ± 0.002 (n=5) | 0.375 ± 0.003 (n=5) |
-| P1/recall/pooled | 0.299 ± 0.001 (n=5) | 0.273 ± 0.002 (n=5) | 0.298 ± 0.002 (n=5) |
-| P1/recall/mean | 0.433 ± 0.003 (n=5) | 0.404 ± 0.002 (n=5) | 0.430 ± 0.002 (n=5) |
-| P1/precision/pooled | 0.680 ± 0.004 (n=5) | 0.660 ± 0.004 (n=5) | 0.673 ± 0.003 (n=5) |
-| P1/precision/mean | 0.590 ± 0.007 (n=5) | 0.586 ± 0.005 (n=5) | 0.604 ± 0.010 (n=5) |
 | P1/recall_H/pooled | 0.010 ± 0.001 (n=5) | 0.005 ± 0.002 (n=5) | 0.008 ± 0.002 (n=5) |
 | P1/recall_H/mean | 0.034 ± 0.005 (n=5) | 0.032 ± 0.013 (n=5) | 0.037 ± 0.010 (n=5) |
 
@@ -283,6 +283,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | may_scene_a | may_scene_a_radar_init | may_scene_a_radar_init_loss |
 |---|---|---|---|
+| P2@0.8/recall/pooled | 0.244 ± 0.002 (n=5) | 0.190 ± 0.002 (n=5) | 0.326 ± 0.001 (n=5) |
+| P2@0.8/recall/mean | 0.379 ± 0.002 (n=5) | 0.297 ± 0.003 (n=5) | 0.469 ± 0.003 (n=5) |
+| P2@0.8/precision/pooled | 0.863 ± 0.003 (n=5) | 0.831 ± 0.002 (n=5) | 0.772 ± 0.003 (n=5) |
+| P2@0.8/precision/mean | 0.716 ± 0.012 (n=5) | 0.685 ± 0.012 (n=5) | 0.714 ± 0.008 (n=5) |
+| P2@0.8/iou/pooled | 0.234 ± 0.002 (n=5) | 0.183 ± 0.002 (n=5) | 0.297 ± 0.001 (n=5) |
+| P2@0.8/iou/mean | 0.316 ± 0.002 (n=5) | 0.246 ± 0.003 (n=5) | 0.351 ± 0.003 (n=5) |
+| P1/recall/pooled | 0.299 ± 0.001 (n=5) | 0.273 ± 0.002 (n=5) | 0.298 ± 0.002 (n=5) |
+| P1/recall/mean | 0.433 ± 0.003 (n=5) | 0.404 ± 0.002 (n=5) | 0.430 ± 0.002 (n=5) |
+| P1/precision/pooled | 0.680 ± 0.004 (n=5) | 0.660 ± 0.004 (n=5) | 0.673 ± 0.003 (n=5) |
+| P1/precision/mean | 0.590 ± 0.007 (n=5) | 0.586 ± 0.005 (n=5) | 0.604 ± 0.010 (n=5) |
 | P2@0.8/recall_Hnear/pooled | 0.095 ± 0.070 (n=5) | 0.062 ± 0.013 (n=5) | 0.128 ± 0.041 (n=5) |
 | P2@0.8/recall_Hnear/mean | 0.168 ± 0.062 (n=5) | 0.144 ± 0.021 (n=5) | 0.337 ± 0.021 (n=5) |
 | P2@0.8/precision_Hnear/pooled | 0.627 ± 0.164 (n=5) | 0.605 ± 0.105 (n=5) | 0.514 ± 0.082 (n=5) |
@@ -301,16 +311,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | P2@0.8/iou_H/mean | 0.044 ± 0.004 (n=5) | 0.024 ± 0.008 (n=5) | 0.074 ± 0.008 (n=5) |
 | hidden/gt_cells | 6231.000 ± 0.000 (n=5) | 6231.000 ± 0.000 (n=5) | 6231.000 ± 0.000 (n=5) |
 | hidden/objects_with_hidden_gt | 92.000 ± 0.000 (n=5) | 92.000 ± 0.000 (n=5) | 92.000 ± 0.000 (n=5) |
-| P2@0.8/recall/pooled | 0.244 ± 0.002 (n=5) | 0.190 ± 0.002 (n=5) | 0.326 ± 0.001 (n=5) |
-| P2@0.8/recall/mean | 0.379 ± 0.002 (n=5) | 0.297 ± 0.003 (n=5) | 0.469 ± 0.003 (n=5) |
-| P2@0.8/precision/pooled | 0.863 ± 0.003 (n=5) | 0.831 ± 0.002 (n=5) | 0.772 ± 0.003 (n=5) |
-| P2@0.8/precision/mean | 0.716 ± 0.012 (n=5) | 0.685 ± 0.012 (n=5) | 0.714 ± 0.008 (n=5) |
-| P2@0.8/iou/pooled | 0.234 ± 0.002 (n=5) | 0.183 ± 0.002 (n=5) | 0.297 ± 0.001 (n=5) |
-| P2@0.8/iou/mean | 0.316 ± 0.002 (n=5) | 0.246 ± 0.003 (n=5) | 0.351 ± 0.003 (n=5) |
-| P1/recall/pooled | 0.299 ± 0.001 (n=5) | 0.273 ± 0.002 (n=5) | 0.298 ± 0.002 (n=5) |
-| P1/recall/mean | 0.433 ± 0.003 (n=5) | 0.404 ± 0.002 (n=5) | 0.430 ± 0.002 (n=5) |
-| P1/precision/pooled | 0.680 ± 0.004 (n=5) | 0.660 ± 0.004 (n=5) | 0.673 ± 0.003 (n=5) |
-| P1/precision/mean | 0.590 ± 0.007 (n=5) | 0.586 ± 0.005 (n=5) | 0.604 ± 0.010 (n=5) |
 | P1/recall_H/pooled | 0.010 ± 0.001 (n=5) | 0.005 ± 0.002 (n=5) | 0.008 ± 0.002 (n=5) |
 | P1/recall_H/mean | 0.034 ± 0.005 (n=5) | 0.032 ± 0.013 (n=5) | 0.037 ± 0.010 (n=5) |
 
@@ -319,6 +319,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | may_scene_a | may_scene_a_radar_init | may_scene_a_radar_init_loss |
 |---|---|---|---|
+| P2@0.5/recall/pooled | 0.375 ± 0.002 (n=5) | 0.302 ± 0.001 (n=5) | 0.433 ± 0.004 (n=5) |
+| P2@0.5/recall/mean | 0.491 ± 0.002 (n=5) | 0.400 ± 0.002 (n=5) | 0.548 ± 0.006 (n=5) |
+| P2@0.5/precision/pooled | 0.849 ± 0.005 (n=5) | 0.828 ± 0.002 (n=5) | 0.811 ± 0.009 (n=5) |
+| P2@0.5/precision/mean | 0.744 ± 0.014 (n=5) | 0.727 ± 0.020 (n=5) | 0.752 ± 0.011 (n=5) |
+| P2@0.5/iou/pooled | 0.351 ± 0.001 (n=5) | 0.284 ± 0.001 (n=5) | 0.393 ± 0.004 (n=5) |
+| P2@0.5/iou/mean | 0.406 ± 0.001 (n=5) | 0.328 ± 0.003 (n=5) | 0.432 ± 0.003 (n=5) |
+| P1/recall/pooled | 0.379 ± 0.002 (n=5) | 0.343 ± 0.002 (n=5) | 0.376 ± 0.003 (n=5) |
+| P1/recall/mean | 0.493 ± 0.002 (n=5) | 0.453 ± 0.002 (n=5) | 0.486 ± 0.003 (n=5) |
+| P1/precision/pooled | 0.711 ± 0.004 (n=5) | 0.687 ± 0.006 (n=5) | 0.712 ± 0.004 (n=5) |
+| P1/precision/mean | 0.649 ± 0.008 (n=5) | 0.643 ± 0.007 (n=5) | 0.668 ± 0.013 (n=5) |
 | P2@0.5/recall_Hnear/pooled | 0.320 ± 0.065 (n=5) | 0.253 ± 0.030 (n=5) | 0.333 ± 0.100 (n=5) |
 | P2@0.5/recall_Hnear/mean | 0.315 ± 0.099 (n=5) | 0.311 ± 0.101 (n=5) | 0.288 ± 0.059 (n=5) |
 | P2@0.5/precision_Hnear/pooled | 0.785 ± 0.128 (n=5) | 0.672 ± 0.102 (n=5) | 0.760 ± 0.074 (n=5) |
@@ -337,16 +347,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | P2@0.5/iou_H/mean | 0.078 ± 0.010 (n=5) | 0.043 ± 0.013 (n=5) | 0.132 ± 0.015 (n=5) |
 | hidden/gt_cells | 2983.000 ± 0.000 (n=5) | 2983.000 ± 0.000 (n=5) | 2983.000 ± 0.000 (n=5) |
 | hidden/objects_with_hidden_gt | 63.000 ± 0.000 (n=5) | 63.000 ± 0.000 (n=5) | 63.000 ± 0.000 (n=5) |
-| P2@0.5/recall/pooled | 0.375 ± 0.002 (n=5) | 0.302 ± 0.001 (n=5) | 0.433 ± 0.004 (n=5) |
-| P2@0.5/recall/mean | 0.491 ± 0.002 (n=5) | 0.400 ± 0.002 (n=5) | 0.548 ± 0.006 (n=5) |
-| P2@0.5/precision/pooled | 0.849 ± 0.005 (n=5) | 0.828 ± 0.002 (n=5) | 0.811 ± 0.009 (n=5) |
-| P2@0.5/precision/mean | 0.744 ± 0.014 (n=5) | 0.727 ± 0.020 (n=5) | 0.752 ± 0.011 (n=5) |
-| P2@0.5/iou/pooled | 0.351 ± 0.001 (n=5) | 0.284 ± 0.001 (n=5) | 0.393 ± 0.004 (n=5) |
-| P2@0.5/iou/mean | 0.406 ± 0.001 (n=5) | 0.328 ± 0.003 (n=5) | 0.432 ± 0.003 (n=5) |
-| P1/recall/pooled | 0.379 ± 0.002 (n=5) | 0.343 ± 0.002 (n=5) | 0.376 ± 0.003 (n=5) |
-| P1/recall/mean | 0.493 ± 0.002 (n=5) | 0.453 ± 0.002 (n=5) | 0.486 ± 0.003 (n=5) |
-| P1/precision/pooled | 0.711 ± 0.004 (n=5) | 0.687 ± 0.006 (n=5) | 0.712 ± 0.004 (n=5) |
-| P1/precision/mean | 0.649 ± 0.008 (n=5) | 0.643 ± 0.007 (n=5) | 0.668 ± 0.013 (n=5) |
 | P1/recall_H/pooled | 0.012 ± 0.002 (n=5) | 0.005 ± 0.002 (n=5) | 0.010 ± 0.001 (n=5) |
 | P1/recall_H/mean | 0.037 ± 0.010 (n=5) | 0.030 ± 0.019 (n=5) | 0.037 ± 0.015 (n=5) |
 
@@ -355,6 +355,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | may_scene_a | may_scene_a_radar_init | may_scene_a_radar_init_loss |
 |---|---|---|---|
+| P2@0.8/recall/pooled | 0.331 ± 0.001 (n=5) | 0.263 ± 0.003 (n=5) | 0.379 ± 0.002 (n=5) |
+| P2@0.8/recall/mean | 0.443 ± 0.001 (n=5) | 0.352 ± 0.003 (n=5) | 0.504 ± 0.004 (n=5) |
+| P2@0.8/precision/pooled | 0.872 ± 0.005 (n=5) | 0.848 ± 0.003 (n=5) | 0.825 ± 0.003 (n=5) |
+| P2@0.8/precision/mean | 0.751 ± 0.011 (n=5) | 0.738 ± 0.018 (n=5) | 0.770 ± 0.012 (n=5) |
+| P2@0.8/iou/pooled | 0.316 ± 0.001 (n=5) | 0.251 ± 0.003 (n=5) | 0.351 ± 0.002 (n=5) |
+| P2@0.8/iou/mean | 0.374 ± 0.001 (n=5) | 0.295 ± 0.003 (n=5) | 0.401 ± 0.003 (n=5) |
+| P1/recall/pooled | 0.379 ± 0.002 (n=5) | 0.343 ± 0.002 (n=5) | 0.376 ± 0.003 (n=5) |
+| P1/recall/mean | 0.493 ± 0.002 (n=5) | 0.453 ± 0.002 (n=5) | 0.486 ± 0.003 (n=5) |
+| P1/precision/pooled | 0.711 ± 0.004 (n=5) | 0.687 ± 0.006 (n=5) | 0.712 ± 0.004 (n=5) |
+| P1/precision/mean | 0.649 ± 0.008 (n=5) | 0.643 ± 0.007 (n=5) | 0.668 ± 0.013 (n=5) |
 | P2@0.8/recall_Hnear/pooled | 0.240 ± 0.080 (n=5) | 0.193 ± 0.055 (n=5) | 0.220 ± 0.061 (n=5) |
 | P2@0.8/recall_Hnear/mean | 0.284 ± 0.104 (n=5) | 0.229 ± 0.063 (n=5) | 0.239 ± 0.039 (n=5) |
 | P2@0.8/precision_Hnear/pooled | 0.817 ± 0.160 (n=5) | 0.645 ± 0.116 (n=5) | 0.707 ± 0.095 (n=5) |
@@ -373,16 +383,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | P2@0.8/iou_H/mean | 0.059 ± 0.005 (n=5) | 0.031 ± 0.013 (n=5) | 0.077 ± 0.012 (n=5) |
 | hidden/gt_cells | 2983.000 ± 0.000 (n=5) | 2983.000 ± 0.000 (n=5) | 2983.000 ± 0.000 (n=5) |
 | hidden/objects_with_hidden_gt | 63.000 ± 0.000 (n=5) | 63.000 ± 0.000 (n=5) | 63.000 ± 0.000 (n=5) |
-| P2@0.8/recall/pooled | 0.331 ± 0.001 (n=5) | 0.263 ± 0.003 (n=5) | 0.379 ± 0.002 (n=5) |
-| P2@0.8/recall/mean | 0.443 ± 0.001 (n=5) | 0.352 ± 0.003 (n=5) | 0.504 ± 0.004 (n=5) |
-| P2@0.8/precision/pooled | 0.872 ± 0.005 (n=5) | 0.848 ± 0.003 (n=5) | 0.825 ± 0.003 (n=5) |
-| P2@0.8/precision/mean | 0.751 ± 0.011 (n=5) | 0.738 ± 0.018 (n=5) | 0.770 ± 0.012 (n=5) |
-| P2@0.8/iou/pooled | 0.316 ± 0.001 (n=5) | 0.251 ± 0.003 (n=5) | 0.351 ± 0.002 (n=5) |
-| P2@0.8/iou/mean | 0.374 ± 0.001 (n=5) | 0.295 ± 0.003 (n=5) | 0.401 ± 0.003 (n=5) |
-| P1/recall/pooled | 0.379 ± 0.002 (n=5) | 0.343 ± 0.002 (n=5) | 0.376 ± 0.003 (n=5) |
-| P1/recall/mean | 0.493 ± 0.002 (n=5) | 0.453 ± 0.002 (n=5) | 0.486 ± 0.003 (n=5) |
-| P1/precision/pooled | 0.711 ± 0.004 (n=5) | 0.687 ± 0.006 (n=5) | 0.712 ± 0.004 (n=5) |
-| P1/precision/mean | 0.649 ± 0.008 (n=5) | 0.643 ± 0.007 (n=5) | 0.668 ± 0.013 (n=5) |
 | P1/recall_H/pooled | 0.012 ± 0.002 (n=5) | 0.005 ± 0.002 (n=5) | 0.010 ± 0.001 (n=5) |
 | P1/recall_H/mean | 0.037 ± 0.010 (n=5) | 0.030 ± 0.019 (n=5) | 0.037 ± 0.015 (n=5) |
 
@@ -391,6 +391,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | may_scene_a | may_scene_a_radar_init | may_scene_a_radar_init_loss |
 |---|---|---|---|
+| P2@0.5/recall/pooled | 0.253 ± 0.018 (n=5) | 0.206 ± 0.021 (n=5) | 0.284 ± 0.010 (n=5) |
+| P2@0.5/recall/mean | 0.237 ± 0.016 (n=5) | 0.195 ± 0.019 (n=5) | 0.282 ± 0.022 (n=5) |
+| P2@0.5/precision/pooled | 0.456 ± 0.011 (n=5) | 0.406 ± 0.034 (n=5) | 0.429 ± 0.020 (n=5) |
+| P2@0.5/precision/mean | 0.507 ± 0.039 (n=5) | 0.470 ± 0.056 (n=5) | 0.387 ± 0.056 (n=5) |
+| P2@0.5/iou/pooled | 0.194 ± 0.012 (n=5) | 0.158 ± 0.017 (n=5) | 0.206 ± 0.008 (n=5) |
+| P2@0.5/iou/mean | 0.146 ± 0.013 (n=5) | 0.117 ± 0.011 (n=5) | 0.156 ± 0.017 (n=5) |
+| P1/recall/pooled | 0.263 ± 0.023 (n=5) | 0.262 ± 0.005 (n=5) | 0.270 ± 0.016 (n=5) |
+| P1/recall/mean | 0.242 ± 0.023 (n=5) | 0.246 ± 0.010 (n=5) | 0.253 ± 0.010 (n=5) |
+| P1/precision/pooled | 0.304 ± 0.013 (n=5) | 0.299 ± 0.014 (n=5) | 0.308 ± 0.016 (n=5) |
+| P1/precision/mean | 0.281 ± 0.031 (n=5) | 0.300 ± 0.031 (n=5) | 0.286 ± 0.026 (n=5) |
 | P2@0.5/recall_Hnear/pooled | n/a (n=0) | n/a (n=0) | n/a (n=0) |
 | P2@0.5/recall_Hnear/mean | n/a (n=0) | n/a (n=0) | n/a (n=0) |
 | P2@0.5/precision_Hnear/pooled | n/a (n=0) | n/a (n=0) | n/a (n=0) |
@@ -409,16 +419,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | P2@0.5/iou_H/mean | 0.010 ± 0.014 (n=5) | 0.000 ± 0.000 (n=5) | 0.013 ± 0.024 (n=5) |
 | hidden/gt_cells | 99.000 ± 0.000 (n=5) | 99.000 ± 0.000 (n=5) | 99.000 ± 0.000 (n=5) |
 | hidden/objects_with_hidden_gt | 12.000 ± 0.000 (n=5) | 12.000 ± 0.000 (n=5) | 12.000 ± 0.000 (n=5) |
-| P2@0.5/recall/pooled | 0.253 ± 0.018 (n=5) | 0.206 ± 0.021 (n=5) | 0.284 ± 0.010 (n=5) |
-| P2@0.5/recall/mean | 0.237 ± 0.016 (n=5) | 0.195 ± 0.019 (n=5) | 0.282 ± 0.022 (n=5) |
-| P2@0.5/precision/pooled | 0.456 ± 0.011 (n=5) | 0.406 ± 0.034 (n=5) | 0.429 ± 0.020 (n=5) |
-| P2@0.5/precision/mean | 0.507 ± 0.039 (n=5) | 0.470 ± 0.056 (n=5) | 0.387 ± 0.056 (n=5) |
-| P2@0.5/iou/pooled | 0.194 ± 0.012 (n=5) | 0.158 ± 0.017 (n=5) | 0.206 ± 0.008 (n=5) |
-| P2@0.5/iou/mean | 0.146 ± 0.013 (n=5) | 0.117 ± 0.011 (n=5) | 0.156 ± 0.017 (n=5) |
-| P1/recall/pooled | 0.263 ± 0.023 (n=5) | 0.262 ± 0.005 (n=5) | 0.270 ± 0.016 (n=5) |
-| P1/recall/mean | 0.242 ± 0.023 (n=5) | 0.246 ± 0.010 (n=5) | 0.253 ± 0.010 (n=5) |
-| P1/precision/pooled | 0.304 ± 0.013 (n=5) | 0.299 ± 0.014 (n=5) | 0.308 ± 0.016 (n=5) |
-| P1/precision/mean | 0.281 ± 0.031 (n=5) | 0.300 ± 0.031 (n=5) | 0.286 ± 0.026 (n=5) |
 | P1/recall_H/pooled | 0.000 ± 0.000 (n=5) | 0.004 ± 0.006 (n=5) | 0.000 ± 0.000 (n=5) |
 | P1/recall_H/mean | 0.000 ± 0.000 (n=5) | 0.008 ± 0.011 (n=5) | 0.000 ± 0.000 (n=5) |
 
@@ -427,6 +427,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | may_scene_a | may_scene_a_radar_init | may_scene_a_radar_init_loss |
 |---|---|---|---|
+| P2@0.8/recall/pooled | 0.228 ± 0.015 (n=5) | 0.165 ± 0.011 (n=5) | 0.267 ± 0.010 (n=5) |
+| P2@0.8/recall/mean | 0.211 ± 0.017 (n=5) | 0.154 ± 0.011 (n=5) | 0.263 ± 0.010 (n=5) |
+| P2@0.8/precision/pooled | 0.478 ± 0.022 (n=5) | 0.408 ± 0.025 (n=5) | 0.458 ± 0.011 (n=5) |
+| P2@0.8/precision/mean | 0.526 ± 0.039 (n=5) | 0.477 ± 0.061 (n=5) | 0.460 ± 0.047 (n=5) |
+| P2@0.8/iou/pooled | 0.183 ± 0.012 (n=5) | 0.133 ± 0.010 (n=5) | 0.203 ± 0.007 (n=5) |
+| P2@0.8/iou/mean | 0.140 ± 0.014 (n=5) | 0.105 ± 0.009 (n=5) | 0.156 ± 0.009 (n=5) |
+| P1/recall/pooled | 0.263 ± 0.023 (n=5) | 0.262 ± 0.005 (n=5) | 0.270 ± 0.016 (n=5) |
+| P1/recall/mean | 0.242 ± 0.023 (n=5) | 0.246 ± 0.010 (n=5) | 0.253 ± 0.010 (n=5) |
+| P1/precision/pooled | 0.304 ± 0.013 (n=5) | 0.299 ± 0.014 (n=5) | 0.308 ± 0.016 (n=5) |
+| P1/precision/mean | 0.281 ± 0.031 (n=5) | 0.300 ± 0.031 (n=5) | 0.286 ± 0.026 (n=5) |
 | P2@0.8/recall_Hnear/pooled | n/a (n=0) | n/a (n=0) | n/a (n=0) |
 | P2@0.8/recall_Hnear/mean | n/a (n=0) | n/a (n=0) | n/a (n=0) |
 | P2@0.8/precision_Hnear/pooled | n/a (n=0) | n/a (n=0) | n/a (n=0) |
@@ -445,16 +455,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | P2@0.8/iou_H/mean | 0.007 ± 0.012 (n=5) | 0.000 ± 0.000 (n=5) | 0.008 ± 0.019 (n=5) |
 | hidden/gt_cells | 99.000 ± 0.000 (n=5) | 99.000 ± 0.000 (n=5) | 99.000 ± 0.000 (n=5) |
 | hidden/objects_with_hidden_gt | 12.000 ± 0.000 (n=5) | 12.000 ± 0.000 (n=5) | 12.000 ± 0.000 (n=5) |
-| P2@0.8/recall/pooled | 0.228 ± 0.015 (n=5) | 0.165 ± 0.011 (n=5) | 0.267 ± 0.010 (n=5) |
-| P2@0.8/recall/mean | 0.211 ± 0.017 (n=5) | 0.154 ± 0.011 (n=5) | 0.263 ± 0.010 (n=5) |
-| P2@0.8/precision/pooled | 0.478 ± 0.022 (n=5) | 0.408 ± 0.025 (n=5) | 0.458 ± 0.011 (n=5) |
-| P2@0.8/precision/mean | 0.526 ± 0.039 (n=5) | 0.477 ± 0.061 (n=5) | 0.460 ± 0.047 (n=5) |
-| P2@0.8/iou/pooled | 0.183 ± 0.012 (n=5) | 0.133 ± 0.010 (n=5) | 0.203 ± 0.007 (n=5) |
-| P2@0.8/iou/mean | 0.140 ± 0.014 (n=5) | 0.105 ± 0.009 (n=5) | 0.156 ± 0.009 (n=5) |
-| P1/recall/pooled | 0.263 ± 0.023 (n=5) | 0.262 ± 0.005 (n=5) | 0.270 ± 0.016 (n=5) |
-| P1/recall/mean | 0.242 ± 0.023 (n=5) | 0.246 ± 0.010 (n=5) | 0.253 ± 0.010 (n=5) |
-| P1/precision/pooled | 0.304 ± 0.013 (n=5) | 0.299 ± 0.014 (n=5) | 0.308 ± 0.016 (n=5) |
-| P1/precision/mean | 0.281 ± 0.031 (n=5) | 0.300 ± 0.031 (n=5) | 0.286 ± 0.026 (n=5) |
 | P1/recall_H/pooled | 0.000 ± 0.000 (n=5) | 0.004 ± 0.006 (n=5) | 0.000 ± 0.000 (n=5) |
 | P1/recall_H/mean | 0.000 ± 0.000 (n=5) | 0.008 ± 0.011 (n=5) | 0.000 ± 0.000 (n=5) |
 
@@ -463,6 +463,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | may_scene_a | may_scene_a_radar_init | may_scene_a_radar_init_loss |
 |---|---|---|---|
+| P2@0.5/recall/pooled | 0.127 ± 0.007 (n=5) | 0.093 ± 0.006 (n=5) | 0.274 ± 0.005 (n=5) |
+| P2@0.5/recall/mean | 0.185 ± 0.012 (n=5) | 0.131 ± 0.008 (n=5) | 0.451 ± 0.006 (n=5) |
+| P2@0.5/precision/pooled | 0.819 ± 0.012 (n=5) | 0.763 ± 0.020 (n=5) | 0.663 ± 0.007 (n=5) |
+| P2@0.5/precision/mean | 0.547 ± 0.033 (n=5) | 0.481 ± 0.043 (n=5) | 0.490 ± 0.015 (n=5) |
+| P2@0.5/iou/pooled | 0.124 ± 0.007 (n=5) | 0.091 ± 0.006 (n=5) | 0.241 ± 0.004 (n=5) |
+| P2@0.5/iou/mean | 0.147 ± 0.008 (n=5) | 0.104 ± 0.007 (n=5) | 0.230 ± 0.003 (n=5) |
+| P1/recall/pooled | 0.174 ± 0.002 (n=5) | 0.165 ± 0.003 (n=5) | 0.175 ± 0.001 (n=5) |
+| P1/recall/mean | 0.252 ± 0.003 (n=5) | 0.250 ± 0.002 (n=5) | 0.260 ± 0.006 (n=5) |
+| P1/precision/pooled | 0.615 ± 0.007 (n=5) | 0.607 ± 0.011 (n=5) | 0.589 ± 0.007 (n=5) |
+| P1/precision/mean | 0.376 ± 0.021 (n=5) | 0.398 ± 0.020 (n=5) | 0.360 ± 0.021 (n=5) |
 | P2@0.5/recall_Hnear/pooled | 0.107 ± 0.126 (n=5) | 0.048 ± 0.012 (n=5) | 0.193 ± 0.078 (n=5) |
 | P2@0.5/recall_Hnear/mean | 0.052 ± 0.047 (n=5) | 0.050 ± 0.038 (n=5) | 0.505 ± 0.029 (n=5) |
 | P2@0.5/precision_Hnear/pooled | 0.510 ± 0.234 (n=5) | 0.592 ± 0.100 (n=5) | 0.488 ± 0.100 (n=5) |
@@ -481,16 +491,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | P2@0.5/iou_H/mean | 0.024 ± 0.020 (n=5) | 0.017 ± 0.010 (n=5) | 0.120 ± 0.007 (n=5) |
 | hidden/gt_cells | 3149.000 ± 0.000 (n=5) | 3149.000 ± 0.000 (n=5) | 3149.000 ± 0.000 (n=5) |
 | hidden/objects_with_hidden_gt | 17.000 ± 0.000 (n=5) | 17.000 ± 0.000 (n=5) | 17.000 ± 0.000 (n=5) |
-| P2@0.5/recall/pooled | 0.127 ± 0.007 (n=5) | 0.093 ± 0.006 (n=5) | 0.274 ± 0.005 (n=5) |
-| P2@0.5/recall/mean | 0.185 ± 0.012 (n=5) | 0.131 ± 0.008 (n=5) | 0.451 ± 0.006 (n=5) |
-| P2@0.5/precision/pooled | 0.819 ± 0.012 (n=5) | 0.763 ± 0.020 (n=5) | 0.663 ± 0.007 (n=5) |
-| P2@0.5/precision/mean | 0.547 ± 0.033 (n=5) | 0.481 ± 0.043 (n=5) | 0.490 ± 0.015 (n=5) |
-| P2@0.5/iou/pooled | 0.124 ± 0.007 (n=5) | 0.091 ± 0.006 (n=5) | 0.241 ± 0.004 (n=5) |
-| P2@0.5/iou/mean | 0.147 ± 0.008 (n=5) | 0.104 ± 0.007 (n=5) | 0.230 ± 0.003 (n=5) |
-| P1/recall/pooled | 0.174 ± 0.002 (n=5) | 0.165 ± 0.003 (n=5) | 0.175 ± 0.001 (n=5) |
-| P1/recall/mean | 0.252 ± 0.003 (n=5) | 0.250 ± 0.002 (n=5) | 0.260 ± 0.006 (n=5) |
-| P1/precision/pooled | 0.615 ± 0.007 (n=5) | 0.607 ± 0.011 (n=5) | 0.589 ± 0.007 (n=5) |
-| P1/precision/mean | 0.376 ± 0.021 (n=5) | 0.398 ± 0.020 (n=5) | 0.360 ± 0.021 (n=5) |
 | P1/recall_H/pooled | 0.007 ± 0.003 (n=5) | 0.005 ± 0.004 (n=5) | 0.005 ± 0.003 (n=5) |
 | P1/recall_H/mean | 0.044 ± 0.032 (n=5) | 0.055 ± 0.010 (n=5) | 0.061 ± 0.030 (n=5) |
 
@@ -499,6 +499,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | may_scene_a | may_scene_a_radar_init | may_scene_a_radar_init_loss |
 |---|---|---|---|
+| P2@0.8/recall/pooled | 0.106 ± 0.005 (n=5) | 0.076 ± 0.003 (n=5) | 0.244 ± 0.003 (n=5) |
+| P2@0.8/recall/mean | 0.159 ± 0.003 (n=5) | 0.107 ± 0.007 (n=5) | 0.422 ± 0.004 (n=5) |
+| P2@0.8/precision/pooled | 0.853 ± 0.011 (n=5) | 0.779 ± 0.020 (n=5) | 0.677 ± 0.004 (n=5) |
+| P2@0.8/precision/mean | 0.598 ± 0.027 (n=5) | 0.487 ± 0.019 (n=5) | 0.531 ± 0.021 (n=5) |
+| P2@0.8/iou/pooled | 0.104 ± 0.005 (n=5) | 0.075 ± 0.003 (n=5) | 0.218 ± 0.002 (n=5) |
+| P2@0.8/iou/mean | 0.131 ± 0.002 (n=5) | 0.090 ± 0.007 (n=5) | 0.224 ± 0.002 (n=5) |
+| P1/recall/pooled | 0.174 ± 0.002 (n=5) | 0.165 ± 0.003 (n=5) | 0.175 ± 0.001 (n=5) |
+| P1/recall/mean | 0.252 ± 0.003 (n=5) | 0.250 ± 0.002 (n=5) | 0.260 ± 0.006 (n=5) |
+| P1/precision/pooled | 0.615 ± 0.007 (n=5) | 0.607 ± 0.011 (n=5) | 0.589 ± 0.007 (n=5) |
+| P1/precision/mean | 0.376 ± 0.021 (n=5) | 0.398 ± 0.020 (n=5) | 0.360 ± 0.021 (n=5) |
 | P2@0.8/recall_Hnear/pooled | 0.069 ± 0.085 (n=5) | 0.038 ± 0.009 (n=5) | 0.112 ± 0.041 (n=5) |
 | P2@0.8/recall_Hnear/mean | 0.033 ± 0.033 (n=5) | 0.045 ± 0.038 (n=5) | 0.451 ± 0.030 (n=5) |
 | P2@0.8/precision_Hnear/pooled | 0.498 ± 0.228 (n=5) | 0.568 ± 0.120 (n=5) | 0.468 ± 0.094 (n=5) |
@@ -517,16 +527,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | P2@0.8/iou_H/mean | 0.013 ± 0.010 (n=5) | 0.015 ± 0.009 (n=5) | 0.109 ± 0.005 (n=5) |
 | hidden/gt_cells | 3149.000 ± 0.000 (n=5) | 3149.000 ± 0.000 (n=5) | 3149.000 ± 0.000 (n=5) |
 | hidden/objects_with_hidden_gt | 17.000 ± 0.000 (n=5) | 17.000 ± 0.000 (n=5) | 17.000 ± 0.000 (n=5) |
-| P2@0.8/recall/pooled | 0.106 ± 0.005 (n=5) | 0.076 ± 0.003 (n=5) | 0.244 ± 0.003 (n=5) |
-| P2@0.8/recall/mean | 0.159 ± 0.003 (n=5) | 0.107 ± 0.007 (n=5) | 0.422 ± 0.004 (n=5) |
-| P2@0.8/precision/pooled | 0.853 ± 0.011 (n=5) | 0.779 ± 0.020 (n=5) | 0.677 ± 0.004 (n=5) |
-| P2@0.8/precision/mean | 0.598 ± 0.027 (n=5) | 0.487 ± 0.019 (n=5) | 0.531 ± 0.021 (n=5) |
-| P2@0.8/iou/pooled | 0.104 ± 0.005 (n=5) | 0.075 ± 0.003 (n=5) | 0.218 ± 0.002 (n=5) |
-| P2@0.8/iou/mean | 0.131 ± 0.002 (n=5) | 0.090 ± 0.007 (n=5) | 0.224 ± 0.002 (n=5) |
-| P1/recall/pooled | 0.174 ± 0.002 (n=5) | 0.165 ± 0.003 (n=5) | 0.175 ± 0.001 (n=5) |
-| P1/recall/mean | 0.252 ± 0.003 (n=5) | 0.250 ± 0.002 (n=5) | 0.260 ± 0.006 (n=5) |
-| P1/precision/pooled | 0.615 ± 0.007 (n=5) | 0.607 ± 0.011 (n=5) | 0.589 ± 0.007 (n=5) |
-| P1/precision/mean | 0.376 ± 0.021 (n=5) | 0.398 ± 0.020 (n=5) | 0.360 ± 0.021 (n=5) |
 | P1/recall_H/pooled | 0.007 ± 0.003 (n=5) | 0.005 ± 0.004 (n=5) | 0.005 ± 0.003 (n=5) |
 | P1/recall_H/mean | 0.044 ± 0.032 (n=5) | 0.055 ± 0.010 (n=5) | 0.061 ± 0.030 (n=5) |
 
@@ -539,6 +539,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| obstacles/P2@0.5/recall/pooled | -0.058 | 0.003 | 0.003 | 0.007 | 0.008 | True |
+| obstacles/P2@0.5/recall/mean | -0.081 | 0.002 | 0.003 | 0.005 | 0.007 | True |
+| obstacles/P2@0.5/precision/pooled | -0.027 | 0.005 | 0.004 | 0.012 | 0.009 | True |
+| obstacles/P2@0.5/precision/mean | -0.027 | 0.020 | 0.012 | 0.052 | 0.035 | False |
+| obstacles/P2@0.5/iou/pooled | -0.054 | 0.003 | 0.003 | 0.007 | 0.007 | True |
+| obstacles/P2@0.5/iou/mean | -0.068 | 0.002 | 0.002 | 0.006 | 0.005 | True |
+| obstacles/P1/recall/pooled | -0.026 | 0.002 | 0.001 | 0.005 | 0.003 | True |
+| obstacles/P1/recall/mean | -0.030 | 0.002 | 0.003 | 0.005 | 0.008 | True |
+| obstacles/P1/precision/pooled | -0.020 | 0.004 | 0.004 | 0.009 | 0.008 | True |
+| obstacles/P1/precision/mean | -0.003 | 0.005 | 0.007 | 0.010 | 0.016 | False |
 | obstacles/P2@0.5/recall_Hnear/pooled | -0.060 | 0.012 | 0.105 | 0.031 | 0.249 | False |
 | obstacles/P2@0.5/recall_Hnear/mean | -0.003 | 0.049 | 0.059 | 0.108 | 0.161 | False |
 | obstacles/P2@0.5/precision_Hnear/pooled | 0.020 | 0.088 | 0.152 | 0.207 | 0.387 | False |
@@ -557,16 +567,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | obstacles/P2@0.5/iou_H/mean | -0.027 | 0.008 | 0.004 | 0.021 | 0.011 | True |
 | obstacles/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | obstacles/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| obstacles/P2@0.5/recall/pooled | -0.058 | 0.003 | 0.003 | 0.007 | 0.008 | True |
-| obstacles/P2@0.5/recall/mean | -0.081 | 0.002 | 0.003 | 0.005 | 0.007 | True |
-| obstacles/P2@0.5/precision/pooled | -0.027 | 0.005 | 0.004 | 0.012 | 0.009 | True |
-| obstacles/P2@0.5/precision/mean | -0.027 | 0.020 | 0.012 | 0.052 | 0.035 | False |
-| obstacles/P2@0.5/iou/pooled | -0.054 | 0.003 | 0.003 | 0.007 | 0.007 | True |
-| obstacles/P2@0.5/iou/mean | -0.068 | 0.002 | 0.002 | 0.006 | 0.005 | True |
-| obstacles/P1/recall/pooled | -0.026 | 0.002 | 0.001 | 0.005 | 0.003 | True |
-| obstacles/P1/recall/mean | -0.030 | 0.002 | 0.003 | 0.005 | 0.008 | True |
-| obstacles/P1/precision/pooled | -0.020 | 0.004 | 0.004 | 0.009 | 0.008 | True |
-| obstacles/P1/precision/mean | -0.003 | 0.005 | 0.007 | 0.010 | 0.016 | False |
 | obstacles/P1/recall_H/pooled | -0.004 | 0.002 | 0.001 | 0.004 | 0.003 | False |
 | obstacles/P1/recall_H/mean | -0.002 | 0.013 | 0.005 | 0.032 | 0.013 | False |
 
@@ -574,6 +574,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| obstacles/P2@0.8/recall/pooled | -0.053 | 0.002 | 0.002 | 0.006 | 0.006 | True |
+| obstacles/P2@0.8/recall/mean | -0.082 | 0.003 | 0.002 | 0.007 | 0.005 | True |
+| obstacles/P2@0.8/precision/pooled | -0.032 | 0.002 | 0.003 | 0.007 | 0.006 | True |
+| obstacles/P2@0.8/precision/mean | -0.031 | 0.012 | 0.012 | 0.027 | 0.027 | True |
+| obstacles/P2@0.8/iou/pooled | -0.051 | 0.002 | 0.002 | 0.006 | 0.005 | True |
+| obstacles/P2@0.8/iou/mean | -0.069 | 0.003 | 0.002 | 0.007 | 0.004 | True |
+| obstacles/P1/recall/pooled | -0.026 | 0.002 | 0.001 | 0.005 | 0.003 | True |
+| obstacles/P1/recall/mean | -0.030 | 0.002 | 0.003 | 0.005 | 0.008 | True |
+| obstacles/P1/precision/pooled | -0.020 | 0.004 | 0.004 | 0.009 | 0.008 | True |
+| obstacles/P1/precision/mean | -0.003 | 0.005 | 0.007 | 0.010 | 0.016 | False |
 | obstacles/P2@0.8/recall_Hnear/pooled | -0.033 | 0.013 | 0.070 | 0.031 | 0.181 | False |
 | obstacles/P2@0.8/recall_Hnear/mean | -0.024 | 0.021 | 0.062 | 0.054 | 0.167 | False |
 | obstacles/P2@0.8/precision_Hnear/pooled | -0.022 | 0.105 | 0.164 | 0.234 | 0.413 | False |
@@ -592,16 +602,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | obstacles/P2@0.8/iou_H/mean | -0.019 | 0.008 | 0.004 | 0.021 | 0.010 | True |
 | obstacles/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | obstacles/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| obstacles/P2@0.8/recall/pooled | -0.053 | 0.002 | 0.002 | 0.006 | 0.006 | True |
-| obstacles/P2@0.8/recall/mean | -0.082 | 0.003 | 0.002 | 0.007 | 0.005 | True |
-| obstacles/P2@0.8/precision/pooled | -0.032 | 0.002 | 0.003 | 0.007 | 0.006 | True |
-| obstacles/P2@0.8/precision/mean | -0.031 | 0.012 | 0.012 | 0.027 | 0.027 | True |
-| obstacles/P2@0.8/iou/pooled | -0.051 | 0.002 | 0.002 | 0.006 | 0.005 | True |
-| obstacles/P2@0.8/iou/mean | -0.069 | 0.003 | 0.002 | 0.007 | 0.004 | True |
-| obstacles/P1/recall/pooled | -0.026 | 0.002 | 0.001 | 0.005 | 0.003 | True |
-| obstacles/P1/recall/mean | -0.030 | 0.002 | 0.003 | 0.005 | 0.008 | True |
-| obstacles/P1/precision/pooled | -0.020 | 0.004 | 0.004 | 0.009 | 0.008 | True |
-| obstacles/P1/precision/mean | -0.003 | 0.005 | 0.007 | 0.010 | 0.016 | False |
 | obstacles/P1/recall_H/pooled | -0.004 | 0.002 | 0.001 | 0.004 | 0.003 | False |
 | obstacles/P1/recall_H/mean | -0.002 | 0.013 | 0.005 | 0.032 | 0.013 | False |
 
@@ -609,6 +609,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| tree_trunk/P2@0.5/recall/pooled | -0.073 | 0.001 | 0.002 | 0.003 | 0.004 | True |
+| tree_trunk/P2@0.5/recall/mean | -0.090 | 0.002 | 0.002 | 0.005 | 0.004 | True |
+| tree_trunk/P2@0.5/precision/pooled | -0.021 | 0.002 | 0.005 | 0.004 | 0.011 | True |
+| tree_trunk/P2@0.5/precision/mean | -0.017 | 0.020 | 0.014 | 0.047 | 0.038 | False |
+| tree_trunk/P2@0.5/iou/pooled | -0.067 | 0.001 | 0.001 | 0.003 | 0.003 | True |
+| tree_trunk/P2@0.5/iou/mean | -0.078 | 0.003 | 0.001 | 0.006 | 0.004 | True |
+| tree_trunk/P1/recall/pooled | -0.037 | 0.002 | 0.002 | 0.005 | 0.005 | True |
+| tree_trunk/P1/recall/mean | -0.039 | 0.002 | 0.002 | 0.007 | 0.006 | True |
+| tree_trunk/P1/precision/pooled | -0.024 | 0.006 | 0.004 | 0.015 | 0.009 | True |
+| tree_trunk/P1/precision/mean | -0.006 | 0.007 | 0.008 | 0.017 | 0.021 | False |
 | tree_trunk/P2@0.5/recall_Hnear/pooled | -0.067 | 0.030 | 0.065 | 0.067 | 0.167 | False |
 | tree_trunk/P2@0.5/recall_Hnear/mean | -0.004 | 0.101 | 0.099 | 0.252 | 0.245 | False |
 | tree_trunk/P2@0.5/precision_Hnear/pooled | -0.113 | 0.102 | 0.128 | 0.280 | 0.333 | False |
@@ -627,16 +637,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | tree_trunk/P2@0.5/iou_H/mean | -0.035 | 0.013 | 0.010 | 0.036 | 0.025 | True |
 | tree_trunk/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | tree_trunk/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| tree_trunk/P2@0.5/recall/pooled | -0.073 | 0.001 | 0.002 | 0.003 | 0.004 | True |
-| tree_trunk/P2@0.5/recall/mean | -0.090 | 0.002 | 0.002 | 0.005 | 0.004 | True |
-| tree_trunk/P2@0.5/precision/pooled | -0.021 | 0.002 | 0.005 | 0.004 | 0.011 | True |
-| tree_trunk/P2@0.5/precision/mean | -0.017 | 0.020 | 0.014 | 0.047 | 0.038 | False |
-| tree_trunk/P2@0.5/iou/pooled | -0.067 | 0.001 | 0.001 | 0.003 | 0.003 | True |
-| tree_trunk/P2@0.5/iou/mean | -0.078 | 0.003 | 0.001 | 0.006 | 0.004 | True |
-| tree_trunk/P1/recall/pooled | -0.037 | 0.002 | 0.002 | 0.005 | 0.005 | True |
-| tree_trunk/P1/recall/mean | -0.039 | 0.002 | 0.002 | 0.007 | 0.006 | True |
-| tree_trunk/P1/precision/pooled | -0.024 | 0.006 | 0.004 | 0.015 | 0.009 | True |
-| tree_trunk/P1/precision/mean | -0.006 | 0.007 | 0.008 | 0.017 | 0.021 | False |
 | tree_trunk/P1/recall_H/pooled | -0.007 | 0.002 | 0.002 | 0.005 | 0.004 | True |
 | tree_trunk/P1/recall_H/mean | -0.007 | 0.019 | 0.010 | 0.047 | 0.024 | False |
 
@@ -644,6 +644,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| tree_trunk/P2@0.8/recall/pooled | -0.068 | 0.003 | 0.001 | 0.007 | 0.004 | True |
+| tree_trunk/P2@0.8/recall/mean | -0.091 | 0.003 | 0.001 | 0.008 | 0.003 | True |
+| tree_trunk/P2@0.8/precision/pooled | -0.024 | 0.003 | 0.005 | 0.007 | 0.010 | True |
+| tree_trunk/P2@0.8/precision/mean | -0.013 | 0.018 | 0.011 | 0.048 | 0.026 | False |
+| tree_trunk/P2@0.8/iou/pooled | -0.064 | 0.003 | 0.001 | 0.007 | 0.002 | True |
+| tree_trunk/P2@0.8/iou/mean | -0.079 | 0.003 | 0.001 | 0.007 | 0.003 | True |
+| tree_trunk/P1/recall/pooled | -0.037 | 0.002 | 0.002 | 0.005 | 0.005 | True |
+| tree_trunk/P1/recall/mean | -0.039 | 0.002 | 0.002 | 0.007 | 0.006 | True |
+| tree_trunk/P1/precision/pooled | -0.024 | 0.006 | 0.004 | 0.015 | 0.009 | True |
+| tree_trunk/P1/precision/mean | -0.006 | 0.007 | 0.008 | 0.017 | 0.021 | False |
 | tree_trunk/P2@0.8/recall_Hnear/pooled | -0.047 | 0.055 | 0.080 | 0.133 | 0.200 | False |
 | tree_trunk/P2@0.8/recall_Hnear/mean | -0.055 | 0.063 | 0.104 | 0.148 | 0.255 | False |
 | tree_trunk/P2@0.8/precision_Hnear/pooled | -0.171 | 0.116 | 0.160 | 0.278 | 0.429 | False |
@@ -662,16 +672,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | tree_trunk/P2@0.8/iou_H/mean | -0.027 | 0.013 | 0.005 | 0.034 | 0.014 | False |
 | tree_trunk/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | tree_trunk/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| tree_trunk/P2@0.8/recall/pooled | -0.068 | 0.003 | 0.001 | 0.007 | 0.004 | True |
-| tree_trunk/P2@0.8/recall/mean | -0.091 | 0.003 | 0.001 | 0.008 | 0.003 | True |
-| tree_trunk/P2@0.8/precision/pooled | -0.024 | 0.003 | 0.005 | 0.007 | 0.010 | True |
-| tree_trunk/P2@0.8/precision/mean | -0.013 | 0.018 | 0.011 | 0.048 | 0.026 | False |
-| tree_trunk/P2@0.8/iou/pooled | -0.064 | 0.003 | 0.001 | 0.007 | 0.002 | True |
-| tree_trunk/P2@0.8/iou/mean | -0.079 | 0.003 | 0.001 | 0.007 | 0.003 | True |
-| tree_trunk/P1/recall/pooled | -0.037 | 0.002 | 0.002 | 0.005 | 0.005 | True |
-| tree_trunk/P1/recall/mean | -0.039 | 0.002 | 0.002 | 0.007 | 0.006 | True |
-| tree_trunk/P1/precision/pooled | -0.024 | 0.006 | 0.004 | 0.015 | 0.009 | True |
-| tree_trunk/P1/precision/mean | -0.006 | 0.007 | 0.008 | 0.017 | 0.021 | False |
 | tree_trunk/P1/recall_H/pooled | -0.007 | 0.002 | 0.002 | 0.005 | 0.004 | True |
 | tree_trunk/P1/recall_H/mean | -0.007 | 0.019 | 0.010 | 0.047 | 0.024 | False |
 
@@ -679,6 +679,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| rock/P2@0.5/recall/pooled | -0.047 | 0.021 | 0.018 | 0.045 | 0.051 | True |
+| rock/P2@0.5/recall/mean | -0.042 | 0.019 | 0.016 | 0.038 | 0.037 | True |
+| rock/P2@0.5/precision/pooled | -0.050 | 0.034 | 0.011 | 0.088 | 0.031 | False |
+| rock/P2@0.5/precision/mean | -0.037 | 0.056 | 0.039 | 0.138 | 0.093 | False |
+| rock/P2@0.5/iou/pooled | -0.036 | 0.017 | 0.012 | 0.037 | 0.034 | True |
+| rock/P2@0.5/iou/mean | -0.028 | 0.011 | 0.013 | 0.023 | 0.027 | True |
+| rock/P1/recall/pooled | -0.001 | 0.005 | 0.023 | 0.011 | 0.051 | False |
+| rock/P1/recall/mean | 0.003 | 0.010 | 0.023 | 0.024 | 0.054 | False |
+| rock/P1/precision/pooled | -0.005 | 0.014 | 0.013 | 0.030 | 0.035 | False |
+| rock/P1/precision/mean | 0.020 | 0.031 | 0.031 | 0.074 | 0.079 | False |
 | rock/P2@0.5/recall_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.5/recall_Hnear/mean | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.5/precision_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
@@ -697,16 +707,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | rock/P2@0.5/iou_H/mean | -0.010 | 0.000 | 0.014 | 0.000 | 0.028 | False |
 | rock/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | rock/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| rock/P2@0.5/recall/pooled | -0.047 | 0.021 | 0.018 | 0.045 | 0.051 | True |
-| rock/P2@0.5/recall/mean | -0.042 | 0.019 | 0.016 | 0.038 | 0.037 | True |
-| rock/P2@0.5/precision/pooled | -0.050 | 0.034 | 0.011 | 0.088 | 0.031 | False |
-| rock/P2@0.5/precision/mean | -0.037 | 0.056 | 0.039 | 0.138 | 0.093 | False |
-| rock/P2@0.5/iou/pooled | -0.036 | 0.017 | 0.012 | 0.037 | 0.034 | True |
-| rock/P2@0.5/iou/mean | -0.028 | 0.011 | 0.013 | 0.023 | 0.027 | True |
-| rock/P1/recall/pooled | -0.001 | 0.005 | 0.023 | 0.011 | 0.051 | False |
-| rock/P1/recall/mean | 0.003 | 0.010 | 0.023 | 0.024 | 0.054 | False |
-| rock/P1/precision/pooled | -0.005 | 0.014 | 0.013 | 0.030 | 0.035 | False |
-| rock/P1/precision/mean | 0.020 | 0.031 | 0.031 | 0.074 | 0.079 | False |
 | rock/P1/recall_H/pooled | 0.004 | 0.006 | 0.000 | 0.010 | 0.000 | False |
 | rock/P1/recall_H/mean | 0.008 | 0.011 | 0.000 | 0.021 | 0.000 | False |
 
@@ -714,6 +714,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| rock/P2@0.8/recall/pooled | -0.063 | 0.011 | 0.015 | 0.022 | 0.034 | True |
+| rock/P2@0.8/recall/mean | -0.057 | 0.011 | 0.017 | 0.027 | 0.046 | True |
+| rock/P2@0.8/precision/pooled | -0.070 | 0.025 | 0.022 | 0.065 | 0.056 | True |
+| rock/P2@0.8/precision/mean | -0.049 | 0.061 | 0.039 | 0.141 | 0.108 | False |
+| rock/P2@0.8/iou/pooled | -0.049 | 0.010 | 0.012 | 0.022 | 0.029 | True |
+| rock/P2@0.8/iou/mean | -0.035 | 0.009 | 0.014 | 0.025 | 0.038 | True |
+| rock/P1/recall/pooled | -0.001 | 0.005 | 0.023 | 0.011 | 0.051 | False |
+| rock/P1/recall/mean | 0.003 | 0.010 | 0.023 | 0.024 | 0.054 | False |
+| rock/P1/precision/pooled | -0.005 | 0.014 | 0.013 | 0.030 | 0.035 | False |
+| rock/P1/precision/mean | 0.020 | 0.031 | 0.031 | 0.074 | 0.079 | False |
 | rock/P2@0.8/recall_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.8/recall_Hnear/mean | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.8/precision_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
@@ -732,16 +742,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | rock/P2@0.8/iou_H/mean | -0.007 | 0.000 | 0.012 | 0.000 | 0.028 | False |
 | rock/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | rock/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| rock/P2@0.8/recall/pooled | -0.063 | 0.011 | 0.015 | 0.022 | 0.034 | True |
-| rock/P2@0.8/recall/mean | -0.057 | 0.011 | 0.017 | 0.027 | 0.046 | True |
-| rock/P2@0.8/precision/pooled | -0.070 | 0.025 | 0.022 | 0.065 | 0.056 | True |
-| rock/P2@0.8/precision/mean | -0.049 | 0.061 | 0.039 | 0.141 | 0.108 | False |
-| rock/P2@0.8/iou/pooled | -0.049 | 0.010 | 0.012 | 0.022 | 0.029 | True |
-| rock/P2@0.8/iou/mean | -0.035 | 0.009 | 0.014 | 0.025 | 0.038 | True |
-| rock/P1/recall/pooled | -0.001 | 0.005 | 0.023 | 0.011 | 0.051 | False |
-| rock/P1/recall/mean | 0.003 | 0.010 | 0.023 | 0.024 | 0.054 | False |
-| rock/P1/precision/pooled | -0.005 | 0.014 | 0.013 | 0.030 | 0.035 | False |
-| rock/P1/precision/mean | 0.020 | 0.031 | 0.031 | 0.074 | 0.079 | False |
 | rock/P1/recall_H/pooled | 0.004 | 0.006 | 0.000 | 0.010 | 0.000 | False |
 | rock/P1/recall_H/mean | 0.008 | 0.011 | 0.000 | 0.021 | 0.000 | False |
 
@@ -749,6 +749,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| bush_or_small_tree/P2@0.5/recall/pooled | -0.034 | 0.006 | 0.007 | 0.015 | 0.016 | True |
+| bush_or_small_tree/P2@0.5/recall/mean | -0.054 | 0.008 | 0.012 | 0.020 | 0.034 | True |
+| bush_or_small_tree/P2@0.5/precision/pooled | -0.056 | 0.020 | 0.012 | 0.052 | 0.028 | True |
+| bush_or_small_tree/P2@0.5/precision/mean | -0.067 | 0.043 | 0.033 | 0.118 | 0.087 | False |
+| bush_or_small_tree/P2@0.5/iou/pooled | -0.033 | 0.006 | 0.007 | 0.015 | 0.016 | True |
+| bush_or_small_tree/P2@0.5/iou/mean | -0.043 | 0.007 | 0.008 | 0.017 | 0.023 | True |
+| bush_or_small_tree/P1/recall/pooled | -0.009 | 0.003 | 0.002 | 0.007 | 0.004 | True |
+| bush_or_small_tree/P1/recall/mean | -0.002 | 0.002 | 0.003 | 0.005 | 0.009 | False |
+| bush_or_small_tree/P1/precision/pooled | -0.008 | 0.011 | 0.007 | 0.028 | 0.017 | False |
+| bush_or_small_tree/P1/precision/mean | 0.022 | 0.020 | 0.021 | 0.053 | 0.051 | False |
 | bush_or_small_tree/P2@0.5/recall_Hnear/pooled | -0.059 | 0.012 | 0.126 | 0.031 | 0.288 | False |
 | bush_or_small_tree/P2@0.5/recall_Hnear/mean | -0.002 | 0.038 | 0.047 | 0.081 | 0.098 | False |
 | bush_or_small_tree/P2@0.5/precision_Hnear/pooled | 0.082 | 0.100 | 0.234 | 0.259 | 0.575 | False |
@@ -767,16 +777,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | bush_or_small_tree/P2@0.5/iou_H/mean | -0.007 | 0.010 | 0.020 | 0.023 | 0.047 | False |
 | bush_or_small_tree/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | bush_or_small_tree/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| bush_or_small_tree/P2@0.5/recall/pooled | -0.034 | 0.006 | 0.007 | 0.015 | 0.016 | True |
-| bush_or_small_tree/P2@0.5/recall/mean | -0.054 | 0.008 | 0.012 | 0.020 | 0.034 | True |
-| bush_or_small_tree/P2@0.5/precision/pooled | -0.056 | 0.020 | 0.012 | 0.052 | 0.028 | True |
-| bush_or_small_tree/P2@0.5/precision/mean | -0.067 | 0.043 | 0.033 | 0.118 | 0.087 | False |
-| bush_or_small_tree/P2@0.5/iou/pooled | -0.033 | 0.006 | 0.007 | 0.015 | 0.016 | True |
-| bush_or_small_tree/P2@0.5/iou/mean | -0.043 | 0.007 | 0.008 | 0.017 | 0.023 | True |
-| bush_or_small_tree/P1/recall/pooled | -0.009 | 0.003 | 0.002 | 0.007 | 0.004 | True |
-| bush_or_small_tree/P1/recall/mean | -0.002 | 0.002 | 0.003 | 0.005 | 0.009 | False |
-| bush_or_small_tree/P1/precision/pooled | -0.008 | 0.011 | 0.007 | 0.028 | 0.017 | False |
-| bush_or_small_tree/P1/precision/mean | 0.022 | 0.020 | 0.021 | 0.053 | 0.051 | False |
 | bush_or_small_tree/P1/recall_H/pooled | -0.002 | 0.004 | 0.003 | 0.009 | 0.008 | False |
 | bush_or_small_tree/P1/recall_H/mean | 0.012 | 0.010 | 0.032 | 0.026 | 0.069 | False |
 
@@ -784,6 +784,16 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| bush_or_small_tree/P2@0.8/recall/pooled | -0.030 | 0.003 | 0.005 | 0.008 | 0.011 | True |
+| bush_or_small_tree/P2@0.8/recall/mean | -0.051 | 0.007 | 0.003 | 0.018 | 0.007 | True |
+| bush_or_small_tree/P2@0.8/precision/pooled | -0.074 | 0.020 | 0.011 | 0.045 | 0.025 | True |
+| bush_or_small_tree/P2@0.8/precision/mean | -0.111 | 0.019 | 0.027 | 0.054 | 0.067 | True |
+| bush_or_small_tree/P2@0.8/iou/pooled | -0.030 | 0.003 | 0.005 | 0.008 | 0.011 | True |
+| bush_or_small_tree/P2@0.8/iou/mean | -0.041 | 0.007 | 0.002 | 0.017 | 0.005 | True |
+| bush_or_small_tree/P1/recall/pooled | -0.009 | 0.003 | 0.002 | 0.007 | 0.004 | True |
+| bush_or_small_tree/P1/recall/mean | -0.002 | 0.002 | 0.003 | 0.005 | 0.009 | False |
+| bush_or_small_tree/P1/precision/pooled | -0.008 | 0.011 | 0.007 | 0.028 | 0.017 | False |
+| bush_or_small_tree/P1/precision/mean | 0.022 | 0.020 | 0.021 | 0.053 | 0.051 | False |
 | bush_or_small_tree/P2@0.8/recall_Hnear/pooled | -0.031 | 0.009 | 0.085 | 0.025 | 0.202 | False |
 | bush_or_small_tree/P2@0.8/recall_Hnear/mean | 0.012 | 0.038 | 0.033 | 0.085 | 0.069 | False |
 | bush_or_small_tree/P2@0.8/precision_Hnear/pooled | 0.070 | 0.120 | 0.228 | 0.303 | 0.567 | False |
@@ -802,16 +812,6 @@ Descriptive only: a variant gap counts only when it exceeds the spread between r
 | bush_or_small_tree/P2@0.8/iou_H/mean | 0.002 | 0.009 | 0.010 | 0.022 | 0.023 | False |
 | bush_or_small_tree/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | bush_or_small_tree/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| bush_or_small_tree/P2@0.8/recall/pooled | -0.030 | 0.003 | 0.005 | 0.008 | 0.011 | True |
-| bush_or_small_tree/P2@0.8/recall/mean | -0.051 | 0.007 | 0.003 | 0.018 | 0.007 | True |
-| bush_or_small_tree/P2@0.8/precision/pooled | -0.074 | 0.020 | 0.011 | 0.045 | 0.025 | True |
-| bush_or_small_tree/P2@0.8/precision/mean | -0.111 | 0.019 | 0.027 | 0.054 | 0.067 | True |
-| bush_or_small_tree/P2@0.8/iou/pooled | -0.030 | 0.003 | 0.005 | 0.008 | 0.011 | True |
-| bush_or_small_tree/P2@0.8/iou/mean | -0.041 | 0.007 | 0.002 | 0.017 | 0.005 | True |
-| bush_or_small_tree/P1/recall/pooled | -0.009 | 0.003 | 0.002 | 0.007 | 0.004 | True |
-| bush_or_small_tree/P1/recall/mean | -0.002 | 0.002 | 0.003 | 0.005 | 0.009 | False |
-| bush_or_small_tree/P1/precision/pooled | -0.008 | 0.011 | 0.007 | 0.028 | 0.017 | False |
-| bush_or_small_tree/P1/precision/mean | 0.022 | 0.020 | 0.021 | 0.053 | 0.051 | False |
 | bush_or_small_tree/P1/recall_H/pooled | -0.002 | 0.004 | 0.003 | 0.009 | 0.008 | False |
 | bush_or_small_tree/P1/recall_H/mean | 0.012 | 0.010 | 0.032 | 0.026 | 0.069 | False |
 
@@ -823,6 +823,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| obstacles/P2@0.5/recall/pooled | 0.092 | 0.003 | 0.003 | 0.008 | 0.008 | True |
+| obstacles/P2@0.5/recall/mean | 0.088 | 0.006 | 0.003 | 0.013 | 0.007 | True |
+| obstacles/P2@0.5/precision/pooled | -0.079 | 0.006 | 0.004 | 0.014 | 0.009 | True |
+| obstacles/P2@0.5/precision/mean | -0.014 | 0.011 | 0.012 | 0.026 | 0.035 | False |
+| obstacles/P2@0.5/iou/pooled | 0.067 | 0.002 | 0.003 | 0.005 | 0.007 | True |
+| obstacles/P2@0.5/iou/mean | 0.033 | 0.003 | 0.002 | 0.008 | 0.005 | True |
+| obstacles/P1/recall/pooled | -0.001 | 0.002 | 0.001 | 0.005 | 0.003 | False |
+| obstacles/P1/recall/mean | -0.003 | 0.002 | 0.003 | 0.005 | 0.008 | False |
+| obstacles/P1/precision/pooled | -0.007 | 0.003 | 0.004 | 0.007 | 0.008 | False |
+| obstacles/P1/precision/mean | 0.014 | 0.010 | 0.007 | 0.024 | 0.016 | False |
 | obstacles/P2@0.5/recall_Hnear/pooled | 0.075 | 0.077 | 0.105 | 0.197 | 0.249 | False |
 | obstacles/P2@0.5/recall_Hnear/mean | 0.195 | 0.038 | 0.059 | 0.091 | 0.161 | True |
 | obstacles/P2@0.5/precision_Hnear/pooled | -0.074 | 0.095 | 0.152 | 0.242 | 0.387 | False |
@@ -841,16 +851,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | obstacles/P2@0.5/iou_H/mean | 0.055 | 0.008 | 0.004 | 0.021 | 0.011 | True |
 | obstacles/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | obstacles/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| obstacles/P2@0.5/recall/pooled | 0.092 | 0.003 | 0.003 | 0.008 | 0.008 | True |
-| obstacles/P2@0.5/recall/mean | 0.088 | 0.006 | 0.003 | 0.013 | 0.007 | True |
-| obstacles/P2@0.5/precision/pooled | -0.079 | 0.006 | 0.004 | 0.014 | 0.009 | True |
-| obstacles/P2@0.5/precision/mean | -0.014 | 0.011 | 0.012 | 0.026 | 0.035 | False |
-| obstacles/P2@0.5/iou/pooled | 0.067 | 0.002 | 0.003 | 0.005 | 0.007 | True |
-| obstacles/P2@0.5/iou/mean | 0.033 | 0.003 | 0.002 | 0.008 | 0.005 | True |
-| obstacles/P1/recall/pooled | -0.001 | 0.002 | 0.001 | 0.005 | 0.003 | False |
-| obstacles/P1/recall/mean | -0.003 | 0.002 | 0.003 | 0.005 | 0.008 | False |
-| obstacles/P1/precision/pooled | -0.007 | 0.003 | 0.004 | 0.007 | 0.008 | False |
-| obstacles/P1/precision/mean | 0.014 | 0.010 | 0.007 | 0.024 | 0.016 | False |
 | obstacles/P1/recall_H/pooled | -0.002 | 0.002 | 0.001 | 0.005 | 0.003 | False |
 | obstacles/P1/recall_H/mean | 0.003 | 0.010 | 0.005 | 0.024 | 0.013 | False |
 
@@ -858,6 +858,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| obstacles/P2@0.8/recall/pooled | 0.082 | 0.001 | 0.002 | 0.003 | 0.006 | True |
+| obstacles/P2@0.8/recall/mean | 0.091 | 0.003 | 0.002 | 0.007 | 0.005 | True |
+| obstacles/P2@0.8/precision/pooled | -0.091 | 0.003 | 0.003 | 0.006 | 0.006 | True |
+| obstacles/P2@0.8/precision/mean | -0.002 | 0.008 | 0.012 | 0.019 | 0.027 | False |
+| obstacles/P2@0.8/iou/pooled | 0.063 | 0.001 | 0.002 | 0.002 | 0.005 | True |
+| obstacles/P2@0.8/iou/mean | 0.036 | 0.003 | 0.002 | 0.006 | 0.004 | True |
+| obstacles/P1/recall/pooled | -0.001 | 0.002 | 0.001 | 0.005 | 0.003 | False |
+| obstacles/P1/recall/mean | -0.003 | 0.002 | 0.003 | 0.005 | 0.008 | False |
+| obstacles/P1/precision/pooled | -0.007 | 0.003 | 0.004 | 0.007 | 0.008 | False |
+| obstacles/P1/precision/mean | 0.014 | 0.010 | 0.007 | 0.024 | 0.016 | False |
 | obstacles/P2@0.8/recall_Hnear/pooled | 0.033 | 0.041 | 0.070 | 0.098 | 0.181 | False |
 | obstacles/P2@0.8/recall_Hnear/mean | 0.169 | 0.021 | 0.062 | 0.051 | 0.167 | True |
 | obstacles/P2@0.8/precision_Hnear/pooled | -0.112 | 0.082 | 0.164 | 0.219 | 0.413 | False |
@@ -876,16 +886,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | obstacles/P2@0.8/iou_H/mean | 0.030 | 0.008 | 0.004 | 0.019 | 0.010 | True |
 | obstacles/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | obstacles/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| obstacles/P2@0.8/recall/pooled | 0.082 | 0.001 | 0.002 | 0.003 | 0.006 | True |
-| obstacles/P2@0.8/recall/mean | 0.091 | 0.003 | 0.002 | 0.007 | 0.005 | True |
-| obstacles/P2@0.8/precision/pooled | -0.091 | 0.003 | 0.003 | 0.006 | 0.006 | True |
-| obstacles/P2@0.8/precision/mean | -0.002 | 0.008 | 0.012 | 0.019 | 0.027 | False |
-| obstacles/P2@0.8/iou/pooled | 0.063 | 0.001 | 0.002 | 0.002 | 0.005 | True |
-| obstacles/P2@0.8/iou/mean | 0.036 | 0.003 | 0.002 | 0.006 | 0.004 | True |
-| obstacles/P1/recall/pooled | -0.001 | 0.002 | 0.001 | 0.005 | 0.003 | False |
-| obstacles/P1/recall/mean | -0.003 | 0.002 | 0.003 | 0.005 | 0.008 | False |
-| obstacles/P1/precision/pooled | -0.007 | 0.003 | 0.004 | 0.007 | 0.008 | False |
-| obstacles/P1/precision/mean | 0.014 | 0.010 | 0.007 | 0.024 | 0.016 | False |
 | obstacles/P1/recall_H/pooled | -0.002 | 0.002 | 0.001 | 0.005 | 0.003 | False |
 | obstacles/P1/recall_H/mean | 0.003 | 0.010 | 0.005 | 0.024 | 0.013 | False |
 
@@ -893,6 +893,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| tree_trunk/P2@0.5/recall/pooled | 0.058 | 0.004 | 0.002 | 0.011 | 0.004 | True |
+| tree_trunk/P2@0.5/recall/mean | 0.057 | 0.006 | 0.002 | 0.012 | 0.004 | True |
+| tree_trunk/P2@0.5/precision/pooled | -0.038 | 0.009 | 0.005 | 0.022 | 0.011 | True |
+| tree_trunk/P2@0.5/precision/mean | 0.008 | 0.011 | 0.014 | 0.027 | 0.038 | False |
+| tree_trunk/P2@0.5/iou/pooled | 0.042 | 0.004 | 0.001 | 0.009 | 0.003 | True |
+| tree_trunk/P2@0.5/iou/mean | 0.026 | 0.003 | 0.001 | 0.008 | 0.004 | True |
+| tree_trunk/P1/recall/pooled | -0.003 | 0.003 | 0.002 | 0.008 | 0.005 | False |
+| tree_trunk/P1/recall/mean | -0.007 | 0.003 | 0.002 | 0.009 | 0.006 | False |
+| tree_trunk/P1/precision/pooled | 0.001 | 0.004 | 0.004 | 0.008 | 0.009 | False |
+| tree_trunk/P1/precision/mean | 0.019 | 0.013 | 0.008 | 0.033 | 0.021 | False |
 | tree_trunk/P2@0.5/recall_Hnear/pooled | 0.013 | 0.100 | 0.065 | 0.233 | 0.167 | False |
 | tree_trunk/P2@0.5/recall_Hnear/mean | -0.028 | 0.059 | 0.099 | 0.145 | 0.245 | False |
 | tree_trunk/P2@0.5/precision_Hnear/pooled | -0.025 | 0.074 | 0.128 | 0.152 | 0.333 | False |
@@ -911,16 +921,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | tree_trunk/P2@0.5/iou_H/mean | 0.054 | 0.015 | 0.010 | 0.033 | 0.025 | True |
 | tree_trunk/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | tree_trunk/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| tree_trunk/P2@0.5/recall/pooled | 0.058 | 0.004 | 0.002 | 0.011 | 0.004 | True |
-| tree_trunk/P2@0.5/recall/mean | 0.057 | 0.006 | 0.002 | 0.012 | 0.004 | True |
-| tree_trunk/P2@0.5/precision/pooled | -0.038 | 0.009 | 0.005 | 0.022 | 0.011 | True |
-| tree_trunk/P2@0.5/precision/mean | 0.008 | 0.011 | 0.014 | 0.027 | 0.038 | False |
-| tree_trunk/P2@0.5/iou/pooled | 0.042 | 0.004 | 0.001 | 0.009 | 0.003 | True |
-| tree_trunk/P2@0.5/iou/mean | 0.026 | 0.003 | 0.001 | 0.008 | 0.004 | True |
-| tree_trunk/P1/recall/pooled | -0.003 | 0.003 | 0.002 | 0.008 | 0.005 | False |
-| tree_trunk/P1/recall/mean | -0.007 | 0.003 | 0.002 | 0.009 | 0.006 | False |
-| tree_trunk/P1/precision/pooled | 0.001 | 0.004 | 0.004 | 0.008 | 0.009 | False |
-| tree_trunk/P1/precision/mean | 0.019 | 0.013 | 0.008 | 0.033 | 0.021 | False |
 | tree_trunk/P1/recall_H/pooled | -0.002 | 0.001 | 0.002 | 0.003 | 0.004 | False |
 | tree_trunk/P1/recall_H/mean | -0.000 | 0.015 | 0.010 | 0.037 | 0.024 | False |
 
@@ -928,6 +928,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| tree_trunk/P2@0.8/recall/pooled | 0.048 | 0.002 | 0.001 | 0.006 | 0.004 | True |
+| tree_trunk/P2@0.8/recall/mean | 0.061 | 0.004 | 0.001 | 0.008 | 0.003 | True |
+| tree_trunk/P2@0.8/precision/pooled | -0.047 | 0.003 | 0.005 | 0.007 | 0.010 | True |
+| tree_trunk/P2@0.8/precision/mean | 0.019 | 0.012 | 0.011 | 0.028 | 0.026 | False |
+| tree_trunk/P2@0.8/iou/pooled | 0.035 | 0.002 | 0.001 | 0.005 | 0.002 | True |
+| tree_trunk/P2@0.8/iou/mean | 0.027 | 0.003 | 0.001 | 0.007 | 0.003 | True |
+| tree_trunk/P1/recall/pooled | -0.003 | 0.003 | 0.002 | 0.008 | 0.005 | False |
+| tree_trunk/P1/recall/mean | -0.007 | 0.003 | 0.002 | 0.009 | 0.006 | False |
+| tree_trunk/P1/precision/pooled | 0.001 | 0.004 | 0.004 | 0.008 | 0.009 | False |
+| tree_trunk/P1/precision/mean | 0.019 | 0.013 | 0.008 | 0.033 | 0.021 | False |
 | tree_trunk/P2@0.8/recall_Hnear/pooled | -0.020 | 0.061 | 0.080 | 0.133 | 0.200 | False |
 | tree_trunk/P2@0.8/recall_Hnear/mean | -0.046 | 0.039 | 0.104 | 0.095 | 0.255 | False |
 | tree_trunk/P2@0.8/precision_Hnear/pooled | -0.109 | 0.095 | 0.160 | 0.233 | 0.429 | False |
@@ -946,16 +956,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | tree_trunk/P2@0.8/iou_H/mean | 0.018 | 0.012 | 0.005 | 0.027 | 0.014 | True |
 | tree_trunk/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | tree_trunk/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| tree_trunk/P2@0.8/recall/pooled | 0.048 | 0.002 | 0.001 | 0.006 | 0.004 | True |
-| tree_trunk/P2@0.8/recall/mean | 0.061 | 0.004 | 0.001 | 0.008 | 0.003 | True |
-| tree_trunk/P2@0.8/precision/pooled | -0.047 | 0.003 | 0.005 | 0.007 | 0.010 | True |
-| tree_trunk/P2@0.8/precision/mean | 0.019 | 0.012 | 0.011 | 0.028 | 0.026 | False |
-| tree_trunk/P2@0.8/iou/pooled | 0.035 | 0.002 | 0.001 | 0.005 | 0.002 | True |
-| tree_trunk/P2@0.8/iou/mean | 0.027 | 0.003 | 0.001 | 0.007 | 0.003 | True |
-| tree_trunk/P1/recall/pooled | -0.003 | 0.003 | 0.002 | 0.008 | 0.005 | False |
-| tree_trunk/P1/recall/mean | -0.007 | 0.003 | 0.002 | 0.009 | 0.006 | False |
-| tree_trunk/P1/precision/pooled | 0.001 | 0.004 | 0.004 | 0.008 | 0.009 | False |
-| tree_trunk/P1/precision/mean | 0.019 | 0.013 | 0.008 | 0.033 | 0.021 | False |
 | tree_trunk/P1/recall_H/pooled | -0.002 | 0.001 | 0.002 | 0.003 | 0.004 | False |
 | tree_trunk/P1/recall_H/mean | -0.000 | 0.015 | 0.010 | 0.037 | 0.024 | False |
 
@@ -963,6 +963,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| rock/P2@0.5/recall/pooled | 0.031 | 0.010 | 0.018 | 0.028 | 0.051 | False |
+| rock/P2@0.5/recall/mean | 0.045 | 0.022 | 0.016 | 0.057 | 0.037 | True |
+| rock/P2@0.5/precision/pooled | -0.027 | 0.020 | 0.011 | 0.050 | 0.031 | False |
+| rock/P2@0.5/precision/mean | -0.120 | 0.056 | 0.039 | 0.131 | 0.093 | True |
+| rock/P2@0.5/iou/pooled | 0.012 | 0.008 | 0.012 | 0.019 | 0.034 | False |
+| rock/P2@0.5/iou/mean | 0.010 | 0.017 | 0.013 | 0.042 | 0.027 | False |
+| rock/P1/recall/pooled | 0.007 | 0.016 | 0.023 | 0.039 | 0.051 | False |
+| rock/P1/recall/mean | 0.010 | 0.010 | 0.023 | 0.022 | 0.054 | False |
+| rock/P1/precision/pooled | 0.004 | 0.016 | 0.013 | 0.040 | 0.035 | False |
+| rock/P1/precision/mean | 0.005 | 0.026 | 0.031 | 0.073 | 0.079 | False |
 | rock/P2@0.5/recall_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.5/recall_Hnear/mean | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.5/precision_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
@@ -981,16 +991,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | rock/P2@0.5/iou_H/mean | 0.002 | 0.024 | 0.014 | 0.056 | 0.028 | False |
 | rock/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | rock/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| rock/P2@0.5/recall/pooled | 0.031 | 0.010 | 0.018 | 0.028 | 0.051 | False |
-| rock/P2@0.5/recall/mean | 0.045 | 0.022 | 0.016 | 0.057 | 0.037 | True |
-| rock/P2@0.5/precision/pooled | -0.027 | 0.020 | 0.011 | 0.050 | 0.031 | False |
-| rock/P2@0.5/precision/mean | -0.120 | 0.056 | 0.039 | 0.131 | 0.093 | True |
-| rock/P2@0.5/iou/pooled | 0.012 | 0.008 | 0.012 | 0.019 | 0.034 | False |
-| rock/P2@0.5/iou/mean | 0.010 | 0.017 | 0.013 | 0.042 | 0.027 | False |
-| rock/P1/recall/pooled | 0.007 | 0.016 | 0.023 | 0.039 | 0.051 | False |
-| rock/P1/recall/mean | 0.010 | 0.010 | 0.023 | 0.022 | 0.054 | False |
-| rock/P1/precision/pooled | 0.004 | 0.016 | 0.013 | 0.040 | 0.035 | False |
-| rock/P1/precision/mean | 0.005 | 0.026 | 0.031 | 0.073 | 0.079 | False |
 | rock/P1/recall_H/pooled | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | rock/P1/recall_H/mean | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 
@@ -998,6 +998,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| rock/P2@0.8/recall/pooled | 0.039 | 0.010 | 0.015 | 0.022 | 0.034 | True |
+| rock/P2@0.8/recall/mean | 0.051 | 0.010 | 0.017 | 0.026 | 0.046 | True |
+| rock/P2@0.8/precision/pooled | -0.021 | 0.011 | 0.022 | 0.028 | 0.056 | False |
+| rock/P2@0.8/precision/mean | -0.066 | 0.047 | 0.039 | 0.121 | 0.108 | False |
+| rock/P2@0.8/iou/pooled | 0.020 | 0.007 | 0.012 | 0.016 | 0.029 | True |
+| rock/P2@0.8/iou/mean | 0.016 | 0.009 | 0.014 | 0.023 | 0.038 | False |
+| rock/P1/recall/pooled | 0.007 | 0.016 | 0.023 | 0.039 | 0.051 | False |
+| rock/P1/recall/mean | 0.010 | 0.010 | 0.023 | 0.022 | 0.054 | False |
+| rock/P1/precision/pooled | 0.004 | 0.016 | 0.013 | 0.040 | 0.035 | False |
+| rock/P1/precision/mean | 0.005 | 0.026 | 0.031 | 0.073 | 0.079 | False |
 | rock/P2@0.8/recall_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.8/recall_Hnear/mean | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.8/precision_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
@@ -1016,16 +1026,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | rock/P2@0.8/iou_H/mean | 0.002 | 0.019 | 0.012 | 0.042 | 0.028 | False |
 | rock/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | rock/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| rock/P2@0.8/recall/pooled | 0.039 | 0.010 | 0.015 | 0.022 | 0.034 | True |
-| rock/P2@0.8/recall/mean | 0.051 | 0.010 | 0.017 | 0.026 | 0.046 | True |
-| rock/P2@0.8/precision/pooled | -0.021 | 0.011 | 0.022 | 0.028 | 0.056 | False |
-| rock/P2@0.8/precision/mean | -0.066 | 0.047 | 0.039 | 0.121 | 0.108 | False |
-| rock/P2@0.8/iou/pooled | 0.020 | 0.007 | 0.012 | 0.016 | 0.029 | True |
-| rock/P2@0.8/iou/mean | 0.016 | 0.009 | 0.014 | 0.023 | 0.038 | False |
-| rock/P1/recall/pooled | 0.007 | 0.016 | 0.023 | 0.039 | 0.051 | False |
-| rock/P1/recall/mean | 0.010 | 0.010 | 0.023 | 0.022 | 0.054 | False |
-| rock/P1/precision/pooled | 0.004 | 0.016 | 0.013 | 0.040 | 0.035 | False |
-| rock/P1/precision/mean | 0.005 | 0.026 | 0.031 | 0.073 | 0.079 | False |
 | rock/P1/recall_H/pooled | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | rock/P1/recall_H/mean | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 
@@ -1033,6 +1033,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| bush_or_small_tree/P2@0.5/recall/pooled | 0.147 | 0.005 | 0.007 | 0.010 | 0.016 | True |
+| bush_or_small_tree/P2@0.5/recall/mean | 0.265 | 0.006 | 0.012 | 0.013 | 0.034 | True |
+| bush_or_small_tree/P2@0.5/precision/pooled | -0.156 | 0.007 | 0.012 | 0.018 | 0.028 | True |
+| bush_or_small_tree/P2@0.5/precision/mean | -0.057 | 0.015 | 0.033 | 0.037 | 0.087 | False |
+| bush_or_small_tree/P2@0.5/iou/pooled | 0.117 | 0.004 | 0.007 | 0.010 | 0.016 | True |
+| bush_or_small_tree/P2@0.5/iou/mean | 0.083 | 0.003 | 0.008 | 0.006 | 0.023 | True |
+| bush_or_small_tree/P1/recall/pooled | 0.001 | 0.001 | 0.002 | 0.003 | 0.004 | False |
+| bush_or_small_tree/P1/recall/mean | 0.008 | 0.006 | 0.003 | 0.016 | 0.009 | False |
+| bush_or_small_tree/P1/precision/pooled | -0.026 | 0.007 | 0.007 | 0.016 | 0.017 | True |
+| bush_or_small_tree/P1/precision/mean | -0.016 | 0.021 | 0.021 | 0.050 | 0.051 | False |
 | bush_or_small_tree/P2@0.5/recall_Hnear/pooled | 0.086 | 0.078 | 0.126 | 0.190 | 0.288 | False |
 | bush_or_small_tree/P2@0.5/recall_Hnear/mean | 0.454 | 0.029 | 0.047 | 0.077 | 0.098 | True |
 | bush_or_small_tree/P2@0.5/precision_Hnear/pooled | -0.022 | 0.100 | 0.234 | 0.253 | 0.575 | False |
@@ -1051,16 +1061,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | bush_or_small_tree/P2@0.5/iou_H/mean | 0.096 | 0.007 | 0.020 | 0.020 | 0.047 | True |
 | bush_or_small_tree/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | bush_or_small_tree/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| bush_or_small_tree/P2@0.5/recall/pooled | 0.147 | 0.005 | 0.007 | 0.010 | 0.016 | True |
-| bush_or_small_tree/P2@0.5/recall/mean | 0.265 | 0.006 | 0.012 | 0.013 | 0.034 | True |
-| bush_or_small_tree/P2@0.5/precision/pooled | -0.156 | 0.007 | 0.012 | 0.018 | 0.028 | True |
-| bush_or_small_tree/P2@0.5/precision/mean | -0.057 | 0.015 | 0.033 | 0.037 | 0.087 | False |
-| bush_or_small_tree/P2@0.5/iou/pooled | 0.117 | 0.004 | 0.007 | 0.010 | 0.016 | True |
-| bush_or_small_tree/P2@0.5/iou/mean | 0.083 | 0.003 | 0.008 | 0.006 | 0.023 | True |
-| bush_or_small_tree/P1/recall/pooled | 0.001 | 0.001 | 0.002 | 0.003 | 0.004 | False |
-| bush_or_small_tree/P1/recall/mean | 0.008 | 0.006 | 0.003 | 0.016 | 0.009 | False |
-| bush_or_small_tree/P1/precision/pooled | -0.026 | 0.007 | 0.007 | 0.016 | 0.017 | True |
-| bush_or_small_tree/P1/precision/mean | -0.016 | 0.021 | 0.021 | 0.050 | 0.051 | False |
 | bush_or_small_tree/P1/recall_H/pooled | -0.002 | 0.003 | 0.003 | 0.008 | 0.008 | False |
 | bush_or_small_tree/P1/recall_H/mean | 0.017 | 0.030 | 0.032 | 0.071 | 0.069 | False |
 
@@ -1068,6 +1068,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| bush_or_small_tree/P2@0.8/recall/pooled | 0.138 | 0.003 | 0.005 | 0.006 | 0.011 | True |
+| bush_or_small_tree/P2@0.8/recall/mean | 0.264 | 0.004 | 0.003 | 0.007 | 0.007 | True |
+| bush_or_small_tree/P2@0.8/precision/pooled | -0.176 | 0.004 | 0.011 | 0.010 | 0.025 | True |
+| bush_or_small_tree/P2@0.8/precision/mean | -0.067 | 0.021 | 0.027 | 0.057 | 0.067 | True |
+| bush_or_small_tree/P2@0.8/iou/pooled | 0.114 | 0.002 | 0.005 | 0.006 | 0.011 | True |
+| bush_or_small_tree/P2@0.8/iou/mean | 0.093 | 0.002 | 0.002 | 0.006 | 0.005 | True |
+| bush_or_small_tree/P1/recall/pooled | 0.001 | 0.001 | 0.002 | 0.003 | 0.004 | False |
+| bush_or_small_tree/P1/recall/mean | 0.008 | 0.006 | 0.003 | 0.016 | 0.009 | False |
+| bush_or_small_tree/P1/precision/pooled | -0.026 | 0.007 | 0.007 | 0.016 | 0.017 | True |
+| bush_or_small_tree/P1/precision/mean | -0.016 | 0.021 | 0.021 | 0.050 | 0.051 | False |
 | bush_or_small_tree/P2@0.8/recall_Hnear/pooled | 0.043 | 0.041 | 0.085 | 0.098 | 0.202 | False |
 | bush_or_small_tree/P2@0.8/recall_Hnear/mean | 0.419 | 0.030 | 0.033 | 0.064 | 0.069 | True |
 | bush_or_small_tree/P2@0.8/precision_Hnear/pooled | -0.030 | 0.094 | 0.228 | 0.235 | 0.567 | False |
@@ -1086,16 +1096,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | bush_or_small_tree/P2@0.8/iou_H/mean | 0.096 | 0.005 | 0.010 | 0.012 | 0.023 | True |
 | bush_or_small_tree/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | bush_or_small_tree/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| bush_or_small_tree/P2@0.8/recall/pooled | 0.138 | 0.003 | 0.005 | 0.006 | 0.011 | True |
-| bush_or_small_tree/P2@0.8/recall/mean | 0.264 | 0.004 | 0.003 | 0.007 | 0.007 | True |
-| bush_or_small_tree/P2@0.8/precision/pooled | -0.176 | 0.004 | 0.011 | 0.010 | 0.025 | True |
-| bush_or_small_tree/P2@0.8/precision/mean | -0.067 | 0.021 | 0.027 | 0.057 | 0.067 | True |
-| bush_or_small_tree/P2@0.8/iou/pooled | 0.114 | 0.002 | 0.005 | 0.006 | 0.011 | True |
-| bush_or_small_tree/P2@0.8/iou/mean | 0.093 | 0.002 | 0.002 | 0.006 | 0.005 | True |
-| bush_or_small_tree/P1/recall/pooled | 0.001 | 0.001 | 0.002 | 0.003 | 0.004 | False |
-| bush_or_small_tree/P1/recall/mean | 0.008 | 0.006 | 0.003 | 0.016 | 0.009 | False |
-| bush_or_small_tree/P1/precision/pooled | -0.026 | 0.007 | 0.007 | 0.016 | 0.017 | True |
-| bush_or_small_tree/P1/precision/mean | -0.016 | 0.021 | 0.021 | 0.050 | 0.051 | False |
 | bush_or_small_tree/P1/recall_H/pooled | -0.002 | 0.003 | 0.003 | 0.008 | 0.008 | False |
 | bush_or_small_tree/P1/recall_H/mean | 0.017 | 0.030 | 0.032 | 0.071 | 0.069 | False |
 
@@ -1107,6 +1107,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| obstacles/P2@0.5/recall/pooled | 0.150 | 0.003 | 0.003 | 0.008 | 0.007 | True |
+| obstacles/P2@0.5/recall/mean | 0.168 | 0.006 | 0.002 | 0.013 | 0.005 | True |
+| obstacles/P2@0.5/precision/pooled | -0.052 | 0.006 | 0.005 | 0.014 | 0.012 | True |
+| obstacles/P2@0.5/precision/mean | 0.014 | 0.011 | 0.020 | 0.026 | 0.052 | False |
+| obstacles/P2@0.5/iou/pooled | 0.121 | 0.002 | 0.003 | 0.005 | 0.007 | True |
+| obstacles/P2@0.5/iou/mean | 0.101 | 0.003 | 0.002 | 0.008 | 0.006 | True |
+| obstacles/P1/recall/pooled | 0.024 | 0.002 | 0.002 | 0.005 | 0.005 | True |
+| obstacles/P1/recall/mean | 0.027 | 0.002 | 0.002 | 0.005 | 0.005 | True |
+| obstacles/P1/precision/pooled | 0.013 | 0.003 | 0.004 | 0.007 | 0.009 | True |
+| obstacles/P1/precision/mean | 0.017 | 0.010 | 0.005 | 0.024 | 0.010 | True |
 | obstacles/P2@0.5/recall_Hnear/pooled | 0.135 | 0.077 | 0.012 | 0.197 | 0.031 | True |
 | obstacles/P2@0.5/recall_Hnear/mean | 0.198 | 0.038 | 0.049 | 0.091 | 0.108 | True |
 | obstacles/P2@0.5/precision_Hnear/pooled | -0.094 | 0.095 | 0.088 | 0.242 | 0.207 | False |
@@ -1125,16 +1135,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | obstacles/P2@0.5/iou_H/mean | 0.083 | 0.008 | 0.008 | 0.021 | 0.021 | True |
 | obstacles/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | obstacles/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| obstacles/P2@0.5/recall/pooled | 0.150 | 0.003 | 0.003 | 0.008 | 0.007 | True |
-| obstacles/P2@0.5/recall/mean | 0.168 | 0.006 | 0.002 | 0.013 | 0.005 | True |
-| obstacles/P2@0.5/precision/pooled | -0.052 | 0.006 | 0.005 | 0.014 | 0.012 | True |
-| obstacles/P2@0.5/precision/mean | 0.014 | 0.011 | 0.020 | 0.026 | 0.052 | False |
-| obstacles/P2@0.5/iou/pooled | 0.121 | 0.002 | 0.003 | 0.005 | 0.007 | True |
-| obstacles/P2@0.5/iou/mean | 0.101 | 0.003 | 0.002 | 0.008 | 0.006 | True |
-| obstacles/P1/recall/pooled | 0.024 | 0.002 | 0.002 | 0.005 | 0.005 | True |
-| obstacles/P1/recall/mean | 0.027 | 0.002 | 0.002 | 0.005 | 0.005 | True |
-| obstacles/P1/precision/pooled | 0.013 | 0.003 | 0.004 | 0.007 | 0.009 | True |
-| obstacles/P1/precision/mean | 0.017 | 0.010 | 0.005 | 0.024 | 0.010 | True |
 | obstacles/P1/recall_H/pooled | 0.002 | 0.002 | 0.002 | 0.005 | 0.004 | False |
 | obstacles/P1/recall_H/mean | 0.005 | 0.010 | 0.013 | 0.024 | 0.032 | False |
 
@@ -1142,6 +1142,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| obstacles/P2@0.8/recall/pooled | 0.136 | 0.001 | 0.002 | 0.003 | 0.006 | True |
+| obstacles/P2@0.8/recall/mean | 0.173 | 0.003 | 0.003 | 0.007 | 0.007 | True |
+| obstacles/P2@0.8/precision/pooled | -0.058 | 0.003 | 0.002 | 0.006 | 0.007 | True |
+| obstacles/P2@0.8/precision/mean | 0.029 | 0.008 | 0.012 | 0.019 | 0.027 | True |
+| obstacles/P2@0.8/iou/pooled | 0.114 | 0.001 | 0.002 | 0.002 | 0.006 | True |
+| obstacles/P2@0.8/iou/mean | 0.105 | 0.003 | 0.003 | 0.006 | 0.007 | True |
+| obstacles/P1/recall/pooled | 0.024 | 0.002 | 0.002 | 0.005 | 0.005 | True |
+| obstacles/P1/recall/mean | 0.027 | 0.002 | 0.002 | 0.005 | 0.005 | True |
+| obstacles/P1/precision/pooled | 0.013 | 0.003 | 0.004 | 0.007 | 0.009 | True |
+| obstacles/P1/precision/mean | 0.017 | 0.010 | 0.005 | 0.024 | 0.010 | True |
 | obstacles/P2@0.8/recall_Hnear/pooled | 0.066 | 0.041 | 0.013 | 0.098 | 0.031 | True |
 | obstacles/P2@0.8/recall_Hnear/mean | 0.193 | 0.021 | 0.021 | 0.051 | 0.054 | True |
 | obstacles/P2@0.8/precision_Hnear/pooled | -0.090 | 0.082 | 0.105 | 0.219 | 0.234 | False |
@@ -1160,16 +1170,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | obstacles/P2@0.8/iou_H/mean | 0.050 | 0.008 | 0.008 | 0.019 | 0.021 | True |
 | obstacles/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | obstacles/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| obstacles/P2@0.8/recall/pooled | 0.136 | 0.001 | 0.002 | 0.003 | 0.006 | True |
-| obstacles/P2@0.8/recall/mean | 0.173 | 0.003 | 0.003 | 0.007 | 0.007 | True |
-| obstacles/P2@0.8/precision/pooled | -0.058 | 0.003 | 0.002 | 0.006 | 0.007 | True |
-| obstacles/P2@0.8/precision/mean | 0.029 | 0.008 | 0.012 | 0.019 | 0.027 | True |
-| obstacles/P2@0.8/iou/pooled | 0.114 | 0.001 | 0.002 | 0.002 | 0.006 | True |
-| obstacles/P2@0.8/iou/mean | 0.105 | 0.003 | 0.003 | 0.006 | 0.007 | True |
-| obstacles/P1/recall/pooled | 0.024 | 0.002 | 0.002 | 0.005 | 0.005 | True |
-| obstacles/P1/recall/mean | 0.027 | 0.002 | 0.002 | 0.005 | 0.005 | True |
-| obstacles/P1/precision/pooled | 0.013 | 0.003 | 0.004 | 0.007 | 0.009 | True |
-| obstacles/P1/precision/mean | 0.017 | 0.010 | 0.005 | 0.024 | 0.010 | True |
 | obstacles/P1/recall_H/pooled | 0.002 | 0.002 | 0.002 | 0.005 | 0.004 | False |
 | obstacles/P1/recall_H/mean | 0.005 | 0.010 | 0.013 | 0.024 | 0.032 | False |
 
@@ -1177,6 +1177,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| tree_trunk/P2@0.5/recall/pooled | 0.131 | 0.004 | 0.001 | 0.011 | 0.003 | True |
+| tree_trunk/P2@0.5/recall/mean | 0.148 | 0.006 | 0.002 | 0.012 | 0.005 | True |
+| tree_trunk/P2@0.5/precision/pooled | -0.017 | 0.009 | 0.002 | 0.022 | 0.004 | True |
+| tree_trunk/P2@0.5/precision/mean | 0.024 | 0.011 | 0.020 | 0.027 | 0.047 | False |
+| tree_trunk/P2@0.5/iou/pooled | 0.109 | 0.004 | 0.001 | 0.009 | 0.003 | True |
+| tree_trunk/P2@0.5/iou/mean | 0.104 | 0.003 | 0.003 | 0.008 | 0.006 | True |
+| tree_trunk/P1/recall/pooled | 0.034 | 0.003 | 0.002 | 0.008 | 0.005 | True |
+| tree_trunk/P1/recall/mean | 0.033 | 0.003 | 0.002 | 0.009 | 0.007 | True |
+| tree_trunk/P1/precision/pooled | 0.024 | 0.004 | 0.006 | 0.008 | 0.015 | True |
+| tree_trunk/P1/precision/mean | 0.026 | 0.013 | 0.007 | 0.033 | 0.017 | True |
 | tree_trunk/P2@0.5/recall_Hnear/pooled | 0.080 | 0.100 | 0.030 | 0.233 | 0.067 | False |
 | tree_trunk/P2@0.5/recall_Hnear/mean | -0.023 | 0.059 | 0.101 | 0.145 | 0.252 | False |
 | tree_trunk/P2@0.5/precision_Hnear/pooled | 0.088 | 0.074 | 0.102 | 0.152 | 0.280 | False |
@@ -1195,16 +1205,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | tree_trunk/P2@0.5/iou_H/mean | 0.090 | 0.015 | 0.013 | 0.033 | 0.036 | True |
 | tree_trunk/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | tree_trunk/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| tree_trunk/P2@0.5/recall/pooled | 0.131 | 0.004 | 0.001 | 0.011 | 0.003 | True |
-| tree_trunk/P2@0.5/recall/mean | 0.148 | 0.006 | 0.002 | 0.012 | 0.005 | True |
-| tree_trunk/P2@0.5/precision/pooled | -0.017 | 0.009 | 0.002 | 0.022 | 0.004 | True |
-| tree_trunk/P2@0.5/precision/mean | 0.024 | 0.011 | 0.020 | 0.027 | 0.047 | False |
-| tree_trunk/P2@0.5/iou/pooled | 0.109 | 0.004 | 0.001 | 0.009 | 0.003 | True |
-| tree_trunk/P2@0.5/iou/mean | 0.104 | 0.003 | 0.003 | 0.008 | 0.006 | True |
-| tree_trunk/P1/recall/pooled | 0.034 | 0.003 | 0.002 | 0.008 | 0.005 | True |
-| tree_trunk/P1/recall/mean | 0.033 | 0.003 | 0.002 | 0.009 | 0.007 | True |
-| tree_trunk/P1/precision/pooled | 0.024 | 0.004 | 0.006 | 0.008 | 0.015 | True |
-| tree_trunk/P1/precision/mean | 0.026 | 0.013 | 0.007 | 0.033 | 0.017 | True |
 | tree_trunk/P1/recall_H/pooled | 0.005 | 0.001 | 0.002 | 0.003 | 0.005 | True |
 | tree_trunk/P1/recall_H/mean | 0.007 | 0.015 | 0.019 | 0.037 | 0.047 | False |
 
@@ -1212,6 +1212,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| tree_trunk/P2@0.8/recall/pooled | 0.116 | 0.002 | 0.003 | 0.006 | 0.007 | True |
+| tree_trunk/P2@0.8/recall/mean | 0.152 | 0.004 | 0.003 | 0.008 | 0.008 | True |
+| tree_trunk/P2@0.8/precision/pooled | -0.023 | 0.003 | 0.003 | 0.007 | 0.007 | True |
+| tree_trunk/P2@0.8/precision/mean | 0.032 | 0.012 | 0.018 | 0.028 | 0.048 | False |
+| tree_trunk/P2@0.8/iou/pooled | 0.100 | 0.002 | 0.003 | 0.005 | 0.007 | True |
+| tree_trunk/P2@0.8/iou/mean | 0.106 | 0.003 | 0.003 | 0.007 | 0.007 | True |
+| tree_trunk/P1/recall/pooled | 0.034 | 0.003 | 0.002 | 0.008 | 0.005 | True |
+| tree_trunk/P1/recall/mean | 0.033 | 0.003 | 0.002 | 0.009 | 0.007 | True |
+| tree_trunk/P1/precision/pooled | 0.024 | 0.004 | 0.006 | 0.008 | 0.015 | True |
+| tree_trunk/P1/precision/mean | 0.026 | 0.013 | 0.007 | 0.033 | 0.017 | True |
 | tree_trunk/P2@0.8/recall_Hnear/pooled | 0.027 | 0.061 | 0.055 | 0.133 | 0.133 | False |
 | tree_trunk/P2@0.8/recall_Hnear/mean | 0.010 | 0.039 | 0.063 | 0.095 | 0.148 | False |
 | tree_trunk/P2@0.8/precision_Hnear/pooled | 0.062 | 0.095 | 0.116 | 0.233 | 0.278 | False |
@@ -1230,16 +1240,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | tree_trunk/P2@0.8/iou_H/mean | 0.045 | 0.012 | 0.013 | 0.027 | 0.034 | True |
 | tree_trunk/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | tree_trunk/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| tree_trunk/P2@0.8/recall/pooled | 0.116 | 0.002 | 0.003 | 0.006 | 0.007 | True |
-| tree_trunk/P2@0.8/recall/mean | 0.152 | 0.004 | 0.003 | 0.008 | 0.008 | True |
-| tree_trunk/P2@0.8/precision/pooled | -0.023 | 0.003 | 0.003 | 0.007 | 0.007 | True |
-| tree_trunk/P2@0.8/precision/mean | 0.032 | 0.012 | 0.018 | 0.028 | 0.048 | False |
-| tree_trunk/P2@0.8/iou/pooled | 0.100 | 0.002 | 0.003 | 0.005 | 0.007 | True |
-| tree_trunk/P2@0.8/iou/mean | 0.106 | 0.003 | 0.003 | 0.007 | 0.007 | True |
-| tree_trunk/P1/recall/pooled | 0.034 | 0.003 | 0.002 | 0.008 | 0.005 | True |
-| tree_trunk/P1/recall/mean | 0.033 | 0.003 | 0.002 | 0.009 | 0.007 | True |
-| tree_trunk/P1/precision/pooled | 0.024 | 0.004 | 0.006 | 0.008 | 0.015 | True |
-| tree_trunk/P1/precision/mean | 0.026 | 0.013 | 0.007 | 0.033 | 0.017 | True |
 | tree_trunk/P1/recall_H/pooled | 0.005 | 0.001 | 0.002 | 0.003 | 0.005 | True |
 | tree_trunk/P1/recall_H/mean | 0.007 | 0.015 | 0.019 | 0.037 | 0.047 | False |
 
@@ -1247,6 +1247,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| rock/P2@0.5/recall/pooled | 0.079 | 0.010 | 0.021 | 0.028 | 0.045 | True |
+| rock/P2@0.5/recall/mean | 0.088 | 0.022 | 0.019 | 0.057 | 0.038 | True |
+| rock/P2@0.5/precision/pooled | 0.023 | 0.020 | 0.034 | 0.050 | 0.088 | False |
+| rock/P2@0.5/precision/mean | -0.083 | 0.056 | 0.056 | 0.131 | 0.138 | False |
+| rock/P2@0.5/iou/pooled | 0.048 | 0.008 | 0.017 | 0.019 | 0.037 | True |
+| rock/P2@0.5/iou/mean | 0.038 | 0.017 | 0.011 | 0.042 | 0.023 | True |
+| rock/P1/recall/pooled | 0.008 | 0.016 | 0.005 | 0.039 | 0.011 | False |
+| rock/P1/recall/mean | 0.007 | 0.010 | 0.010 | 0.022 | 0.024 | False |
+| rock/P1/precision/pooled | 0.009 | 0.016 | 0.014 | 0.040 | 0.030 | False |
+| rock/P1/precision/mean | -0.014 | 0.026 | 0.031 | 0.073 | 0.074 | False |
 | rock/P2@0.5/recall_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.5/recall_Hnear/mean | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.5/precision_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
@@ -1265,16 +1275,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | rock/P2@0.5/iou_H/mean | 0.013 | 0.024 | 0.000 | 0.056 | 0.000 | False |
 | rock/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | rock/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| rock/P2@0.5/recall/pooled | 0.079 | 0.010 | 0.021 | 0.028 | 0.045 | True |
-| rock/P2@0.5/recall/mean | 0.088 | 0.022 | 0.019 | 0.057 | 0.038 | True |
-| rock/P2@0.5/precision/pooled | 0.023 | 0.020 | 0.034 | 0.050 | 0.088 | False |
-| rock/P2@0.5/precision/mean | -0.083 | 0.056 | 0.056 | 0.131 | 0.138 | False |
-| rock/P2@0.5/iou/pooled | 0.048 | 0.008 | 0.017 | 0.019 | 0.037 | True |
-| rock/P2@0.5/iou/mean | 0.038 | 0.017 | 0.011 | 0.042 | 0.023 | True |
-| rock/P1/recall/pooled | 0.008 | 0.016 | 0.005 | 0.039 | 0.011 | False |
-| rock/P1/recall/mean | 0.007 | 0.010 | 0.010 | 0.022 | 0.024 | False |
-| rock/P1/precision/pooled | 0.009 | 0.016 | 0.014 | 0.040 | 0.030 | False |
-| rock/P1/precision/mean | -0.014 | 0.026 | 0.031 | 0.073 | 0.074 | False |
 | rock/P1/recall_H/pooled | -0.004 | 0.000 | 0.006 | 0.000 | 0.010 | False |
 | rock/P1/recall_H/mean | -0.008 | 0.000 | 0.011 | 0.000 | 0.021 | False |
 
@@ -1282,6 +1282,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| rock/P2@0.8/recall/pooled | 0.102 | 0.010 | 0.011 | 0.022 | 0.022 | True |
+| rock/P2@0.8/recall/mean | 0.109 | 0.010 | 0.011 | 0.026 | 0.027 | True |
+| rock/P2@0.8/precision/pooled | 0.049 | 0.011 | 0.025 | 0.028 | 0.065 | True |
+| rock/P2@0.8/precision/mean | -0.017 | 0.047 | 0.061 | 0.121 | 0.141 | False |
+| rock/P2@0.8/iou/pooled | 0.070 | 0.007 | 0.010 | 0.016 | 0.022 | True |
+| rock/P2@0.8/iou/mean | 0.051 | 0.009 | 0.009 | 0.023 | 0.025 | True |
+| rock/P1/recall/pooled | 0.008 | 0.016 | 0.005 | 0.039 | 0.011 | False |
+| rock/P1/recall/mean | 0.007 | 0.010 | 0.010 | 0.022 | 0.024 | False |
+| rock/P1/precision/pooled | 0.009 | 0.016 | 0.014 | 0.040 | 0.030 | False |
+| rock/P1/precision/mean | -0.014 | 0.026 | 0.031 | 0.073 | 0.074 | False |
 | rock/P2@0.8/recall_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.8/recall_Hnear/mean | n/a | n/a | n/a | n/a | n/a | None |
 | rock/P2@0.8/precision_Hnear/pooled | n/a | n/a | n/a | n/a | n/a | None |
@@ -1300,16 +1310,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | rock/P2@0.8/iou_H/mean | 0.008 | 0.019 | 0.000 | 0.042 | 0.000 | False |
 | rock/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | rock/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| rock/P2@0.8/recall/pooled | 0.102 | 0.010 | 0.011 | 0.022 | 0.022 | True |
-| rock/P2@0.8/recall/mean | 0.109 | 0.010 | 0.011 | 0.026 | 0.027 | True |
-| rock/P2@0.8/precision/pooled | 0.049 | 0.011 | 0.025 | 0.028 | 0.065 | True |
-| rock/P2@0.8/precision/mean | -0.017 | 0.047 | 0.061 | 0.121 | 0.141 | False |
-| rock/P2@0.8/iou/pooled | 0.070 | 0.007 | 0.010 | 0.016 | 0.022 | True |
-| rock/P2@0.8/iou/mean | 0.051 | 0.009 | 0.009 | 0.023 | 0.025 | True |
-| rock/P1/recall/pooled | 0.008 | 0.016 | 0.005 | 0.039 | 0.011 | False |
-| rock/P1/recall/mean | 0.007 | 0.010 | 0.010 | 0.022 | 0.024 | False |
-| rock/P1/precision/pooled | 0.009 | 0.016 | 0.014 | 0.040 | 0.030 | False |
-| rock/P1/precision/mean | -0.014 | 0.026 | 0.031 | 0.073 | 0.074 | False |
 | rock/P1/recall_H/pooled | -0.004 | 0.000 | 0.006 | 0.000 | 0.010 | False |
 | rock/P1/recall_H/mean | -0.008 | 0.000 | 0.011 | 0.000 | 0.021 | False |
 
@@ -1317,6 +1317,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| bush_or_small_tree/P2@0.5/recall/pooled | 0.181 | 0.005 | 0.006 | 0.010 | 0.015 | True |
+| bush_or_small_tree/P2@0.5/recall/mean | 0.319 | 0.006 | 0.008 | 0.013 | 0.020 | True |
+| bush_or_small_tree/P2@0.5/precision/pooled | -0.100 | 0.007 | 0.020 | 0.018 | 0.052 | True |
+| bush_or_small_tree/P2@0.5/precision/mean | 0.009 | 0.015 | 0.043 | 0.037 | 0.118 | False |
+| bush_or_small_tree/P2@0.5/iou/pooled | 0.150 | 0.004 | 0.006 | 0.010 | 0.015 | True |
+| bush_or_small_tree/P2@0.5/iou/mean | 0.126 | 0.003 | 0.007 | 0.006 | 0.017 | True |
+| bush_or_small_tree/P1/recall/pooled | 0.010 | 0.001 | 0.003 | 0.003 | 0.007 | True |
+| bush_or_small_tree/P1/recall/mean | 0.010 | 0.006 | 0.002 | 0.016 | 0.005 | True |
+| bush_or_small_tree/P1/precision/pooled | -0.018 | 0.007 | 0.011 | 0.016 | 0.028 | False |
+| bush_or_small_tree/P1/precision/mean | -0.038 | 0.021 | 0.020 | 0.050 | 0.053 | False |
 | bush_or_small_tree/P2@0.5/recall_Hnear/pooled | 0.145 | 0.078 | 0.012 | 0.190 | 0.031 | True |
 | bush_or_small_tree/P2@0.5/recall_Hnear/mean | 0.456 | 0.029 | 0.038 | 0.077 | 0.081 | True |
 | bush_or_small_tree/P2@0.5/precision_Hnear/pooled | -0.104 | 0.100 | 0.100 | 0.253 | 0.259 | False |
@@ -1335,16 +1345,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | bush_or_small_tree/P2@0.5/iou_H/mean | 0.103 | 0.007 | 0.010 | 0.020 | 0.023 | True |
 | bush_or_small_tree/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | bush_or_small_tree/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| bush_or_small_tree/P2@0.5/recall/pooled | 0.181 | 0.005 | 0.006 | 0.010 | 0.015 | True |
-| bush_or_small_tree/P2@0.5/recall/mean | 0.319 | 0.006 | 0.008 | 0.013 | 0.020 | True |
-| bush_or_small_tree/P2@0.5/precision/pooled | -0.100 | 0.007 | 0.020 | 0.018 | 0.052 | True |
-| bush_or_small_tree/P2@0.5/precision/mean | 0.009 | 0.015 | 0.043 | 0.037 | 0.118 | False |
-| bush_or_small_tree/P2@0.5/iou/pooled | 0.150 | 0.004 | 0.006 | 0.010 | 0.015 | True |
-| bush_or_small_tree/P2@0.5/iou/mean | 0.126 | 0.003 | 0.007 | 0.006 | 0.017 | True |
-| bush_or_small_tree/P1/recall/pooled | 0.010 | 0.001 | 0.003 | 0.003 | 0.007 | True |
-| bush_or_small_tree/P1/recall/mean | 0.010 | 0.006 | 0.002 | 0.016 | 0.005 | True |
-| bush_or_small_tree/P1/precision/pooled | -0.018 | 0.007 | 0.011 | 0.016 | 0.028 | False |
-| bush_or_small_tree/P1/precision/mean | -0.038 | 0.021 | 0.020 | 0.050 | 0.053 | False |
 | bush_or_small_tree/P1/recall_H/pooled | 0.000 | 0.003 | 0.004 | 0.008 | 0.009 | False |
 | bush_or_small_tree/P1/recall_H/mean | 0.006 | 0.030 | 0.010 | 0.071 | 0.026 | False |
 
@@ -1352,6 +1352,16 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 
 | metric | gap | first std | second std | first range | second range | separated |
 |---|---|---|---|---|---|---|
+| bush_or_small_tree/P2@0.8/recall/pooled | 0.167 | 0.003 | 0.003 | 0.006 | 0.008 | True |
+| bush_or_small_tree/P2@0.8/recall/mean | 0.315 | 0.004 | 0.007 | 0.007 | 0.018 | True |
+| bush_or_small_tree/P2@0.8/precision/pooled | -0.102 | 0.004 | 0.020 | 0.010 | 0.045 | True |
+| bush_or_small_tree/P2@0.8/precision/mean | 0.044 | 0.021 | 0.019 | 0.057 | 0.054 | False |
+| bush_or_small_tree/P2@0.8/iou/pooled | 0.144 | 0.002 | 0.003 | 0.006 | 0.008 | True |
+| bush_or_small_tree/P2@0.8/iou/mean | 0.134 | 0.002 | 0.007 | 0.006 | 0.017 | True |
+| bush_or_small_tree/P1/recall/pooled | 0.010 | 0.001 | 0.003 | 0.003 | 0.007 | True |
+| bush_or_small_tree/P1/recall/mean | 0.010 | 0.006 | 0.002 | 0.016 | 0.005 | True |
+| bush_or_small_tree/P1/precision/pooled | -0.018 | 0.007 | 0.011 | 0.016 | 0.028 | False |
+| bush_or_small_tree/P1/precision/mean | -0.038 | 0.021 | 0.020 | 0.050 | 0.053 | False |
 | bush_or_small_tree/P2@0.8/recall_Hnear/pooled | 0.074 | 0.041 | 0.009 | 0.098 | 0.025 | True |
 | bush_or_small_tree/P2@0.8/recall_Hnear/mean | 0.407 | 0.030 | 0.038 | 0.064 | 0.085 | True |
 | bush_or_small_tree/P2@0.8/precision_Hnear/pooled | -0.100 | 0.094 | 0.120 | 0.235 | 0.303 | False |
@@ -1370,16 +1380,6 @@ GT cells occupied in every repeat of one arm and none of the other: {"bush_or_sm
 | bush_or_small_tree/P2@0.8/iou_H/mean | 0.094 | 0.005 | 0.009 | 0.012 | 0.022 | True |
 | bush_or_small_tree/hidden/gt_cells | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
 | bush_or_small_tree/hidden/objects_with_hidden_gt | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | False |
-| bush_or_small_tree/P2@0.8/recall/pooled | 0.167 | 0.003 | 0.003 | 0.006 | 0.008 | True |
-| bush_or_small_tree/P2@0.8/recall/mean | 0.315 | 0.004 | 0.007 | 0.007 | 0.018 | True |
-| bush_or_small_tree/P2@0.8/precision/pooled | -0.102 | 0.004 | 0.020 | 0.010 | 0.045 | True |
-| bush_or_small_tree/P2@0.8/precision/mean | 0.044 | 0.021 | 0.019 | 0.057 | 0.054 | False |
-| bush_or_small_tree/P2@0.8/iou/pooled | 0.144 | 0.002 | 0.003 | 0.006 | 0.008 | True |
-| bush_or_small_tree/P2@0.8/iou/mean | 0.134 | 0.002 | 0.007 | 0.006 | 0.017 | True |
-| bush_or_small_tree/P1/recall/pooled | 0.010 | 0.001 | 0.003 | 0.003 | 0.007 | True |
-| bush_or_small_tree/P1/recall/mean | 0.010 | 0.006 | 0.002 | 0.016 | 0.005 | True |
-| bush_or_small_tree/P1/precision/pooled | -0.018 | 0.007 | 0.011 | 0.016 | 0.028 | False |
-| bush_or_small_tree/P1/precision/mean | -0.038 | 0.021 | 0.020 | 0.050 | 0.053 | False |
 | bush_or_small_tree/P1/recall_H/pooled | 0.000 | 0.003 | 0.004 | 0.008 | 0.009 | False |
 | bush_or_small_tree/P1/recall_H/mean | 0.006 | 0.030 | 0.010 | 0.071 | 0.026 | False |
 

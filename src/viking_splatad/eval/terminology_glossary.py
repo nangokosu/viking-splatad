@@ -213,7 +213,7 @@ GLOSSARY: Tuple[GlossaryEntry, ...] = (
                   None, _refs(("src/viking_splatad/labels/cuboids.py", "Cuboid"), (CLAUDE, "Ground-truth cuboids stay separate"))),
     GlossaryEntry(TOPIC_GROUND_TRUTH, "Classes and the obstacles group",
                   "The scored classes are tree_trunk, rock and bush_or_small_tree. The group `obstacles` is the union of the three and "
-                  "is the headline class.",
+                  "is the class the whole-scene tables lead with.",
                   None, _refs((EVAL_YAML, "obstacles = tree_trunk"), (EVAL_YAML, "class_groups"))),
     GlossaryEntry(TOPIC_GROUND_TRUTH, "Cell (voxel) and its edge",
                   "A cube of the grid the scene is cut into. Its edge is `voxel_size_m` (see the value table); all scoring counts cells.",
@@ -322,7 +322,7 @@ GLOSSARY: Tuple[GlossaryEntry, ...] = (
                   "H = NOT seen AND blocked AND NOT passed_through",
                   _refs((HIDDEN_GEOMETRY, "hidden_space_mask"), (SESSION_HIDDEN, "Session-wide hidden space H"))),
     GlossaryEntry(TOPIC_HIDDEN, "Near band and H_near",
-                  "The near band is the horizontal distance from the driven path that bounds the headline hidden space. H_near is the "
+                  "The near band is the horizontal distance from the driven path that bounds the hidden space read after the whole scene. H_near is the "
                   "hidden cells within it.",
                   "H_near = H AND d_nearest <= near band",
                   _refs((SESSION_HIDDEN, "near_band_hidden_mask"), (EVAL_YAML, "near_band_m"))),

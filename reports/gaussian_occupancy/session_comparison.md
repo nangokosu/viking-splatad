@@ -1,6 +1,6 @@
 # Radar arms across sessions: june_tall_grass vs may_short_grass
 
-Descriptive only: repeats share one seed and are not paired. Gap = radar variant - baseline (gain positive for higher-is-better metrics). `sep` = the two arms' [min, max] do not overlap; `n/a` = an arm has fewer than 2 repeats (no spread). Δ = gap in may_short_grass - gap in june_tall_grass. P1cuboid = scripts/13 ungated cuboid detection rate (T45) and point precision (T46); P1/P2 = scripts/19 voxel metrics on the rendered lidar (P1) and the Gaussians (P2); `_Hnear` = restricted to the hidden cells within the near band of the path (headline), `_H` = to all hidden cells, pooled over cells or mean over objects; P2@t = Gaussians occupied at probability >= t.
+Descriptive only: repeats share one seed and are not paired. Gap = radar variant - baseline (gain positive for higher-is-better metrics). `sep` = the two arms' [min, max] do not overlap; `n/a` = an arm has fewer than 2 repeats (no spread). Δ = gap in may_short_grass - gap in june_tall_grass. P1cuboid = scripts/13 ungated cuboid detection rate (T45) and point precision (T46); P1/P2 = scripts/19 voxel metrics on the rendered lidar (P1) and the Gaussians (P2). Whole-scene rows (no suffix) come first; `_Hnear` = restricted to the hidden cells within the near band of the path (read second), `_H` = to all hidden cells, pooled over cells or mean over objects; P2@t = Gaussians occupied at probability >= t.
 
 *The definitions below are rendered once, with the values of session june_tall_grass; the per-session values table and sections give the other sessions' values.*
 
@@ -59,10 +59,10 @@ Plain words first, the formula last. Every number is read from the run reports, 
      - **Reading the two together:** for recall, when objects share no cells, the pooled value is the average of the per-object recalls weighted by each object's cell count. So a mean above the pooled value means objects with few cells are recovered better, relative to their size, than objects with many cells; a mean below means the large objects carry the score.
    - **(g) Why precision stays below 1.** "Next to an obstacle" is not "empty space". The ring also holds things nobody labelled: grass (tall in June), ground and small plants, which really are solid. It also catches the edges of a trunk's own Gaussians, because a trunk is thinner than one cell. So precision stays below 1 even for a correct model. This is a likely cause, not a tested finding.
    - **(h) How the threshold changes both.** Raising t moves cells from filled to empty, so recall can only fall; precision usually rises.
-6. **Hidden cells (reference for the later round).** We replay every recorded lidar beam.
+6. **Hidden cells (the second part of the evaluation, read after the whole scene).** We replay every recorded lidar beam.
    - A cell is *hidden* if no beam reached it, none passed through it, and at least one was stopped before it (by grass, for example).
    - *H_near* keeps the hidden cells within 20 m of the driven path.
-   - Hidden-cell metrics are the formulas of point 5, restricted to H_near. The figures will take the same form as the whole-scene ones.
+   - Hidden-cell metrics are the formulas of point 5, restricted to H_near. Their figures take the same form as the whole-scene ones, and are read after them.
    - Stock SplatAD is expected to leave hidden cells mostly empty, since no lidar or camera signal reached them. That gap is what radar is meant to close.
 7. **Statistics.** Each arm is trained 5 times. A table cell shows mean ± std over the repeats. Gap = difference of means. "sep" means the two arms' [min, max] ranges do not overlap. A gap is read only when it is larger than the spread within the arms.
 
@@ -431,6 +431,22 @@ Plain words first, the formula last. Every number is read from the run reports, 
 
 | metric | session | stock | radar init | radar init + loss |
 |---|---|---|---|---|
+| P2@0.5/recall/pooled | june_tall_grass | 0.342 ± 0.006 [0.336, 0.351] (n=5) | 0.312 ± 0.002 [0.310, 0.314] (n=5) | 0.380 ± 0.003 [0.376, 0.383] (n=5) |
+| P2@0.5/recall/pooled | may_short_grass | 0.278 ± 0.003 [0.275, 0.283] (n=5) | 0.221 ± 0.003 [0.218, 0.225] (n=5) | 0.370 ± 0.003 [0.366, 0.374] (n=5) |
+| P2@0.5/precision/pooled | june_tall_grass | 0.789 ± 0.005 [0.783, 0.796] (n=5) | 0.784 ± 0.004 [0.778, 0.788] (n=5) | 0.796 ± 0.004 [0.790, 0.801] (n=5) |
+| P2@0.5/precision/pooled | may_short_grass | 0.838 ± 0.004 [0.834, 0.843] (n=5) | 0.810 ± 0.005 [0.805, 0.817] (n=5) | 0.758 ± 0.006 [0.749, 0.762] (n=5) |
+| P2@0.5/iou/pooled | june_tall_grass | 0.313 ± 0.005 [0.309, 0.320] (n=5) | 0.287 ± 0.002 [0.285, 0.290] (n=5) | 0.346 ± 0.003 [0.342, 0.349] (n=5) |
+| P2@0.5/iou/pooled | may_short_grass | 0.264 ± 0.003 [0.261, 0.268] (n=5) | 0.210 ± 0.003 [0.208, 0.215] (n=5) | 0.331 ± 0.002 [0.328, 0.333] (n=5) |
+| P2@0.8/recall/pooled | june_tall_grass | 0.304 ± 0.002 [0.302, 0.307] (n=5) | 0.276 ± 0.002 [0.274, 0.279] (n=5) | 0.338 ± 0.002 [0.335, 0.341] (n=5) |
+| P2@0.8/recall/pooled | may_short_grass | 0.244 ± 0.002 [0.241, 0.247] (n=5) | 0.190 ± 0.002 [0.187, 0.193] (n=5) | 0.326 ± 0.001 [0.324, 0.327] (n=5) |
+| P2@0.8/precision/pooled | june_tall_grass | 0.813 ± 0.005 [0.806, 0.821] (n=5) | 0.803 ± 0.005 [0.798, 0.807] (n=5) | 0.823 ± 0.003 [0.820, 0.826] (n=5) |
+| P2@0.8/precision/pooled | may_short_grass | 0.863 ± 0.003 [0.859, 0.866] (n=5) | 0.831 ± 0.002 [0.827, 0.834] (n=5) | 0.772 ± 0.003 [0.768, 0.774] (n=5) |
+| P2@0.8/iou/pooled | june_tall_grass | 0.284 ± 0.002 [0.282, 0.286] (n=5) | 0.259 ± 0.002 [0.256, 0.261] (n=5) | 0.315 ± 0.002 [0.312, 0.318] (n=5) |
+| P2@0.8/iou/pooled | may_short_grass | 0.234 ± 0.002 [0.232, 0.237] (n=5) | 0.183 ± 0.002 [0.180, 0.186] (n=5) | 0.297 ± 0.001 [0.296, 0.298] (n=5) |
+| P1/recall/pooled | june_tall_grass | 0.322 ± 0.003 [0.319, 0.327] (n=5) | 0.311 ± 0.003 [0.308, 0.314] (n=5) | 0.329 ± 0.003 [0.326, 0.333] (n=5) |
+| P1/recall/pooled | may_short_grass | 0.299 ± 0.001 [0.298, 0.301] (n=5) | 0.273 ± 0.002 [0.270, 0.275] (n=5) | 0.298 ± 0.002 [0.295, 0.300] (n=5) |
+| P1/precision/pooled | june_tall_grass | 0.644 ± 0.003 [0.639, 0.647] (n=5) | 0.640 ± 0.003 [0.638, 0.646] (n=5) | 0.644 ± 0.002 [0.641, 0.646] (n=5) |
+| P1/precision/pooled | may_short_grass | 0.680 ± 0.004 [0.677, 0.685] (n=5) | 0.660 ± 0.004 [0.654, 0.663] (n=5) | 0.673 ± 0.003 [0.670, 0.677] (n=5) |
 | P2@0.5/recall_Hnear/pooled | june_tall_grass | 0.116 ± 0.036 [0.066, 0.166] (n=5) | 0.060 ± 0.015 [0.042, 0.078] (n=5) | 0.145 ± 0.029 [0.111, 0.190] (n=5) |
 | P2@0.5/recall_Hnear/pooled | may_short_grass | 0.140 ± 0.105 [0.078, 0.326] (n=5) | 0.080 ± 0.012 [0.067, 0.098] (n=5) | 0.215 ± 0.077 [0.145, 0.342] (n=5) |
 | P2@0.5/recall_Hnear/mean | june_tall_grass | 0.124 ± 0.038 [0.082, 0.175] (n=5) | 0.085 ± 0.029 [0.052, 0.131] (n=5) | 0.228 ± 0.034 [0.201, 0.275] (n=5) |
@@ -455,12 +471,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | P2@0.5/iou_H/pooled | may_short_grass | 0.019 ± 0.005 [0.013, 0.024] (n=5) | 0.006 ± 0.002 [0.004, 0.009] (n=5) | 0.091 ± 0.001 [0.089, 0.092] (n=5) |
 | P2@0.5/iou_H/mean | june_tall_grass | 0.056 ± 0.008 [0.044, 0.065] (n=5) | 0.046 ± 0.006 [0.041, 0.057] (n=5) | 0.064 ± 0.009 [0.052, 0.077] (n=5) |
 | P2@0.5/iou_H/mean | may_short_grass | 0.060 ± 0.004 [0.056, 0.067] (n=5) | 0.033 ± 0.008 [0.022, 0.044] (n=5) | 0.116 ± 0.008 [0.104, 0.125] (n=5) |
-| P2@0.5/recall/pooled | june_tall_grass | 0.342 ± 0.006 [0.336, 0.351] (n=5) | 0.312 ± 0.002 [0.310, 0.314] (n=5) | 0.380 ± 0.003 [0.376, 0.383] (n=5) |
-| P2@0.5/recall/pooled | may_short_grass | 0.278 ± 0.003 [0.275, 0.283] (n=5) | 0.221 ± 0.003 [0.218, 0.225] (n=5) | 0.370 ± 0.003 [0.366, 0.374] (n=5) |
-| P2@0.5/precision/pooled | june_tall_grass | 0.789 ± 0.005 [0.783, 0.796] (n=5) | 0.784 ± 0.004 [0.778, 0.788] (n=5) | 0.796 ± 0.004 [0.790, 0.801] (n=5) |
-| P2@0.5/precision/pooled | may_short_grass | 0.838 ± 0.004 [0.834, 0.843] (n=5) | 0.810 ± 0.005 [0.805, 0.817] (n=5) | 0.758 ± 0.006 [0.749, 0.762] (n=5) |
-| P2@0.5/iou/pooled | june_tall_grass | 0.313 ± 0.005 [0.309, 0.320] (n=5) | 0.287 ± 0.002 [0.285, 0.290] (n=5) | 0.346 ± 0.003 [0.342, 0.349] (n=5) |
-| P2@0.5/iou/pooled | may_short_grass | 0.264 ± 0.003 [0.261, 0.268] (n=5) | 0.210 ± 0.003 [0.208, 0.215] (n=5) | 0.331 ± 0.002 [0.328, 0.333] (n=5) |
 | P2@0.8/recall_Hnear/pooled | june_tall_grass | 0.073 ± 0.013 [0.054, 0.090] (n=5) | 0.039 ± 0.009 [0.027, 0.051] (n=5) | 0.046 ± 0.012 [0.036, 0.066] (n=5) |
 | P2@0.8/recall_Hnear/pooled | may_short_grass | 0.095 ± 0.070 [0.036, 0.218] (n=5) | 0.062 ± 0.013 [0.047, 0.078] (n=5) | 0.128 ± 0.041 [0.104, 0.202] (n=5) |
 | P2@0.8/recall_Hnear/mean | june_tall_grass | 0.080 ± 0.025 [0.050, 0.106] (n=5) | 0.063 ± 0.035 [0.037, 0.118] (n=5) | 0.148 ± 0.022 [0.120, 0.182] (n=5) |
@@ -485,16 +495,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | P2@0.8/iou_H/pooled | may_short_grass | 0.010 ± 0.004 [0.008, 0.017] (n=5) | 0.005 ± 0.002 [0.002, 0.007] (n=5) | 0.065 ± 0.001 [0.064, 0.066] (n=5) |
 | P2@0.8/iou_H/mean | june_tall_grass | 0.038 ± 0.006 [0.030, 0.043] (n=5) | 0.037 ± 0.007 [0.032, 0.049] (n=5) | 0.035 ± 0.006 [0.025, 0.042] (n=5) |
 | P2@0.8/iou_H/mean | may_short_grass | 0.044 ± 0.004 [0.038, 0.048] (n=5) | 0.024 ± 0.008 [0.017, 0.038] (n=5) | 0.074 ± 0.008 [0.069, 0.087] (n=5) |
-| P2@0.8/recall/pooled | june_tall_grass | 0.304 ± 0.002 [0.302, 0.307] (n=5) | 0.276 ± 0.002 [0.274, 0.279] (n=5) | 0.338 ± 0.002 [0.335, 0.341] (n=5) |
-| P2@0.8/recall/pooled | may_short_grass | 0.244 ± 0.002 [0.241, 0.247] (n=5) | 0.190 ± 0.002 [0.187, 0.193] (n=5) | 0.326 ± 0.001 [0.324, 0.327] (n=5) |
-| P2@0.8/precision/pooled | june_tall_grass | 0.813 ± 0.005 [0.806, 0.821] (n=5) | 0.803 ± 0.005 [0.798, 0.807] (n=5) | 0.823 ± 0.003 [0.820, 0.826] (n=5) |
-| P2@0.8/precision/pooled | may_short_grass | 0.863 ± 0.003 [0.859, 0.866] (n=5) | 0.831 ± 0.002 [0.827, 0.834] (n=5) | 0.772 ± 0.003 [0.768, 0.774] (n=5) |
-| P2@0.8/iou/pooled | june_tall_grass | 0.284 ± 0.002 [0.282, 0.286] (n=5) | 0.259 ± 0.002 [0.256, 0.261] (n=5) | 0.315 ± 0.002 [0.312, 0.318] (n=5) |
-| P2@0.8/iou/pooled | may_short_grass | 0.234 ± 0.002 [0.232, 0.237] (n=5) | 0.183 ± 0.002 [0.180, 0.186] (n=5) | 0.297 ± 0.001 [0.296, 0.298] (n=5) |
-| P1/recall/pooled | june_tall_grass | 0.322 ± 0.003 [0.319, 0.327] (n=5) | 0.311 ± 0.003 [0.308, 0.314] (n=5) | 0.329 ± 0.003 [0.326, 0.333] (n=5) |
-| P1/recall/pooled | may_short_grass | 0.299 ± 0.001 [0.298, 0.301] (n=5) | 0.273 ± 0.002 [0.270, 0.275] (n=5) | 0.298 ± 0.002 [0.295, 0.300] (n=5) |
-| P1/precision/pooled | june_tall_grass | 0.644 ± 0.003 [0.639, 0.647] (n=5) | 0.640 ± 0.003 [0.638, 0.646] (n=5) | 0.644 ± 0.002 [0.641, 0.646] (n=5) |
-| P1/precision/pooled | may_short_grass | 0.680 ± 0.004 [0.677, 0.685] (n=5) | 0.660 ± 0.004 [0.654, 0.663] (n=5) | 0.673 ± 0.003 [0.670, 0.677] (n=5) |
 | P1/recall_Hnear/pooled | june_tall_grass | 0.043 ± 0.004 [0.039, 0.048] (n=5) | 0.020 ± 0.003 [0.015, 0.024] (n=5) | 0.029 ± 0.007 [0.021, 0.039] (n=5) |
 | P1/recall_Hnear/pooled | may_short_grass | 0.033 ± 0.012 [0.021, 0.047] (n=5) | 0.031 ± 0.008 [0.021, 0.041] (n=5) | 0.046 ± 0.015 [0.026, 0.062] (n=5) |
 | P1/recall_H/pooled | june_tall_grass | 0.011 ± 0.002 [0.009, 0.013] (n=5) | 0.005 ± 0.001 [0.003, 0.006] (n=5) | 0.012 ± 0.001 [0.010, 0.013] (n=5) |
@@ -508,6 +508,22 @@ Plain words first, the formula last. Every number is read from the run reports, 
 
 | metric | session | stock | radar init | radar init + loss |
 |---|---|---|---|---|
+| P2@0.5/recall/pooled | june_tall_grass | 0.435 ± 0.004 [0.431, 0.440] (n=5) | 0.417 ± 0.002 [0.415, 0.419] (n=5) | 0.467 ± 0.004 [0.461, 0.471] (n=5) |
+| P2@0.5/recall/pooled | may_short_grass | 0.375 ± 0.002 [0.372, 0.376] (n=5) | 0.302 ± 0.001 [0.300, 0.303] (n=5) | 0.433 ± 0.004 [0.426, 0.438] (n=5) |
+| P2@0.5/precision/pooled | june_tall_grass | 0.828 ± 0.003 [0.825, 0.833] (n=5) | 0.823 ± 0.004 [0.817, 0.828] (n=5) | 0.834 ± 0.004 [0.829, 0.839] (n=5) |
+| P2@0.5/precision/pooled | may_short_grass | 0.849 ± 0.005 [0.845, 0.856] (n=5) | 0.828 ± 0.002 [0.826, 0.830] (n=5) | 0.811 ± 0.009 [0.795, 0.817] (n=5) |
+| P2@0.5/iou/pooled | june_tall_grass | 0.399 ± 0.003 [0.397, 0.403] (n=5) | 0.382 ± 0.002 [0.380, 0.384] (n=5) | 0.427 ± 0.004 [0.421, 0.430] (n=5) |
+| P2@0.5/iou/pooled | may_short_grass | 0.351 ± 0.001 [0.349, 0.352] (n=5) | 0.284 ± 0.001 [0.283, 0.286] (n=5) | 0.393 ± 0.004 [0.389, 0.398] (n=5) |
+| P2@0.8/recall/pooled | june_tall_grass | 0.397 ± 0.003 [0.394, 0.401] (n=5) | 0.376 ± 0.002 [0.373, 0.379] (n=5) | 0.429 ± 0.002 [0.426, 0.431] (n=5) |
+| P2@0.8/recall/pooled | may_short_grass | 0.331 ± 0.001 [0.329, 0.332] (n=5) | 0.263 ± 0.003 [0.258, 0.266] (n=5) | 0.379 ± 0.002 [0.377, 0.383] (n=5) |
+| P2@0.8/precision/pooled | june_tall_grass | 0.845 ± 0.003 [0.843, 0.850] (n=5) | 0.838 ± 0.004 [0.832, 0.842] (n=5) | 0.847 ± 0.002 [0.845, 0.851] (n=5) |
+| P2@0.8/precision/pooled | may_short_grass | 0.872 ± 0.005 [0.868, 0.878] (n=5) | 0.848 ± 0.003 [0.846, 0.852] (n=5) | 0.825 ± 0.003 [0.821, 0.828] (n=5) |
+| P2@0.8/iou/pooled | june_tall_grass | 0.370 ± 0.002 [0.367, 0.374] (n=5) | 0.350 ± 0.003 [0.347, 0.353] (n=5) | 0.398 ± 0.002 [0.395, 0.401] (n=5) |
+| P2@0.8/iou/pooled | may_short_grass | 0.316 ± 0.001 [0.314, 0.317] (n=5) | 0.251 ± 0.003 [0.247, 0.253] (n=5) | 0.351 ± 0.002 [0.349, 0.354] (n=5) |
+| P1/recall/pooled | june_tall_grass | 0.408 ± 0.004 [0.403, 0.412] (n=5) | 0.399 ± 0.003 [0.396, 0.403] (n=5) | 0.416 ± 0.002 [0.413, 0.419] (n=5) |
+| P1/recall/pooled | may_short_grass | 0.379 ± 0.002 [0.377, 0.382] (n=5) | 0.343 ± 0.002 [0.340, 0.345] (n=5) | 0.376 ± 0.003 [0.372, 0.380] (n=5) |
+| P1/precision/pooled | june_tall_grass | 0.680 ± 0.003 [0.676, 0.684] (n=5) | 0.678 ± 0.004 [0.674, 0.685] (n=5) | 0.680 ± 0.002 [0.678, 0.682] (n=5) |
+| P1/precision/pooled | may_short_grass | 0.711 ± 0.004 [0.706, 0.716] (n=5) | 0.687 ± 0.006 [0.679, 0.694] (n=5) | 0.712 ± 0.004 [0.708, 0.716] (n=5) |
 | P2@0.5/recall_Hnear/pooled | june_tall_grass | 0.065 ± 0.014 [0.057, 0.089] (n=5) | 0.058 ± 0.019 [0.044, 0.089] (n=5) | 0.053 ± 0.018 [0.038, 0.082] (n=5) |
 | P2@0.5/recall_Hnear/pooled | may_short_grass | 0.320 ± 0.065 [0.233, 0.400] (n=5) | 0.253 ± 0.030 [0.233, 0.300] (n=5) | 0.333 ± 0.100 [0.200, 0.433] (n=5) |
 | P2@0.5/recall_Hnear/mean | june_tall_grass | 0.097 ± 0.044 [0.066, 0.174] (n=5) | 0.074 ± 0.017 [0.049, 0.095] (n=5) | 0.069 ± 0.047 [0.034, 0.149] (n=5) |
@@ -532,12 +548,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | P2@0.5/iou_H/pooled | may_short_grass | 0.027 ± 0.003 [0.024, 0.031] (n=5) | 0.009 ± 0.004 [0.005, 0.016] (n=5) | 0.091 ± 0.003 [0.088, 0.096] (n=5) |
 | P2@0.5/iou_H/mean | june_tall_grass | 0.056 ± 0.014 [0.037, 0.070] (n=5) | 0.049 ± 0.004 [0.044, 0.054] (n=5) | 0.062 ± 0.015 [0.040, 0.077] (n=5) |
 | P2@0.5/iou_H/mean | may_short_grass | 0.078 ± 0.010 [0.069, 0.094] (n=5) | 0.043 ± 0.013 [0.024, 0.061] (n=5) | 0.132 ± 0.015 [0.117, 0.151] (n=5) |
-| P2@0.5/recall/pooled | june_tall_grass | 0.435 ± 0.004 [0.431, 0.440] (n=5) | 0.417 ± 0.002 [0.415, 0.419] (n=5) | 0.467 ± 0.004 [0.461, 0.471] (n=5) |
-| P2@0.5/recall/pooled | may_short_grass | 0.375 ± 0.002 [0.372, 0.376] (n=5) | 0.302 ± 0.001 [0.300, 0.303] (n=5) | 0.433 ± 0.004 [0.426, 0.438] (n=5) |
-| P2@0.5/precision/pooled | june_tall_grass | 0.828 ± 0.003 [0.825, 0.833] (n=5) | 0.823 ± 0.004 [0.817, 0.828] (n=5) | 0.834 ± 0.004 [0.829, 0.839] (n=5) |
-| P2@0.5/precision/pooled | may_short_grass | 0.849 ± 0.005 [0.845, 0.856] (n=5) | 0.828 ± 0.002 [0.826, 0.830] (n=5) | 0.811 ± 0.009 [0.795, 0.817] (n=5) |
-| P2@0.5/iou/pooled | june_tall_grass | 0.399 ± 0.003 [0.397, 0.403] (n=5) | 0.382 ± 0.002 [0.380, 0.384] (n=5) | 0.427 ± 0.004 [0.421, 0.430] (n=5) |
-| P2@0.5/iou/pooled | may_short_grass | 0.351 ± 0.001 [0.349, 0.352] (n=5) | 0.284 ± 0.001 [0.283, 0.286] (n=5) | 0.393 ± 0.004 [0.389, 0.398] (n=5) |
 | P2@0.8/recall_Hnear/pooled | june_tall_grass | 0.048 ± 0.017 [0.025, 0.070] (n=5) | 0.043 ± 0.014 [0.025, 0.063] (n=5) | 0.022 ± 0.007 [0.013, 0.032] (n=5) |
 | P2@0.8/recall_Hnear/pooled | may_short_grass | 0.240 ± 0.080 [0.133, 0.333] (n=5) | 0.193 ± 0.055 [0.133, 0.267] (n=5) | 0.220 ± 0.061 [0.167, 0.300] (n=5) |
 | P2@0.8/recall_Hnear/mean | june_tall_grass | 0.065 ± 0.017 [0.048, 0.090] (n=5) | 0.056 ± 0.014 [0.043, 0.072] (n=5) | 0.032 ± 0.043 [0.004, 0.105] (n=5) |
@@ -562,16 +572,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | P2@0.8/iou_H/pooled | may_short_grass | 0.017 ± 0.003 [0.015, 0.022] (n=5) | 0.007 ± 0.004 [0.003, 0.011] (n=5) | 0.047 ± 0.002 [0.045, 0.051] (n=5) |
 | P2@0.8/iou_H/mean | june_tall_grass | 0.038 ± 0.008 [0.030, 0.049] (n=5) | 0.038 ± 0.005 [0.033, 0.043] (n=5) | 0.025 ± 0.010 [0.016, 0.042] (n=5) |
 | P2@0.8/iou_H/mean | may_short_grass | 0.059 ± 0.005 [0.049, 0.063] (n=5) | 0.031 ± 0.013 [0.018, 0.052] (n=5) | 0.077 ± 0.012 [0.071, 0.098] (n=5) |
-| P2@0.8/recall/pooled | june_tall_grass | 0.397 ± 0.003 [0.394, 0.401] (n=5) | 0.376 ± 0.002 [0.373, 0.379] (n=5) | 0.429 ± 0.002 [0.426, 0.431] (n=5) |
-| P2@0.8/recall/pooled | may_short_grass | 0.331 ± 0.001 [0.329, 0.332] (n=5) | 0.263 ± 0.003 [0.258, 0.266] (n=5) | 0.379 ± 0.002 [0.377, 0.383] (n=5) |
-| P2@0.8/precision/pooled | june_tall_grass | 0.845 ± 0.003 [0.843, 0.850] (n=5) | 0.838 ± 0.004 [0.832, 0.842] (n=5) | 0.847 ± 0.002 [0.845, 0.851] (n=5) |
-| P2@0.8/precision/pooled | may_short_grass | 0.872 ± 0.005 [0.868, 0.878] (n=5) | 0.848 ± 0.003 [0.846, 0.852] (n=5) | 0.825 ± 0.003 [0.821, 0.828] (n=5) |
-| P2@0.8/iou/pooled | june_tall_grass | 0.370 ± 0.002 [0.367, 0.374] (n=5) | 0.350 ± 0.003 [0.347, 0.353] (n=5) | 0.398 ± 0.002 [0.395, 0.401] (n=5) |
-| P2@0.8/iou/pooled | may_short_grass | 0.316 ± 0.001 [0.314, 0.317] (n=5) | 0.251 ± 0.003 [0.247, 0.253] (n=5) | 0.351 ± 0.002 [0.349, 0.354] (n=5) |
-| P1/recall/pooled | june_tall_grass | 0.408 ± 0.004 [0.403, 0.412] (n=5) | 0.399 ± 0.003 [0.396, 0.403] (n=5) | 0.416 ± 0.002 [0.413, 0.419] (n=5) |
-| P1/recall/pooled | may_short_grass | 0.379 ± 0.002 [0.377, 0.382] (n=5) | 0.343 ± 0.002 [0.340, 0.345] (n=5) | 0.376 ± 0.003 [0.372, 0.380] (n=5) |
-| P1/precision/pooled | june_tall_grass | 0.680 ± 0.003 [0.676, 0.684] (n=5) | 0.678 ± 0.004 [0.674, 0.685] (n=5) | 0.680 ± 0.002 [0.678, 0.682] (n=5) |
-| P1/precision/pooled | may_short_grass | 0.711 ± 0.004 [0.706, 0.716] (n=5) | 0.687 ± 0.006 [0.679, 0.694] (n=5) | 0.712 ± 0.004 [0.708, 0.716] (n=5) |
 | P1/recall_Hnear/pooled | june_tall_grass | 0.024 ± 0.005 [0.019, 0.032] (n=5) | 0.010 ± 0.003 [0.006, 0.013] (n=5) | 0.011 ± 0.005 [0.006, 0.019] (n=5) |
 | P1/recall_Hnear/pooled | may_short_grass | 0.147 ± 0.038 [0.100, 0.200] (n=5) | 0.093 ± 0.049 [0.033, 0.167] (n=5) | 0.147 ± 0.061 [0.067, 0.233] (n=5) |
 | P1/recall_H/pooled | june_tall_grass | 0.014 ± 0.004 [0.010, 0.019] (n=5) | 0.007 ± 0.001 [0.005, 0.009] (n=5) | 0.015 ± 0.002 [0.013, 0.019] (n=5) |
@@ -585,6 +585,22 @@ Plain words first, the formula last. Every number is read from the run reports, 
 
 | metric | session | stock | radar init | radar init + loss |
 |---|---|---|---|---|
+| P2@0.5/recall/pooled | june_tall_grass | 0.198 ± 0.015 [0.176, 0.212] (n=5) | 0.167 ± 0.017 [0.141, 0.188] (n=5) | 0.266 ± 0.006 [0.259, 0.271] (n=5) |
+| P2@0.5/recall/pooled | may_short_grass | 0.253 ± 0.018 [0.230, 0.281] (n=5) | 0.206 ± 0.021 [0.180, 0.225] (n=5) | 0.284 ± 0.010 [0.270, 0.298] (n=5) |
+| P2@0.5/precision/pooled | june_tall_grass | 0.210 ± 0.024 [0.179, 0.234] (n=5) | 0.209 ± 0.017 [0.185, 0.232] (n=5) | 0.219 ± 0.005 [0.214, 0.228] (n=5) |
+| P2@0.5/precision/pooled | may_short_grass | 0.456 ± 0.011 [0.441, 0.472] (n=5) | 0.406 ± 0.034 [0.367, 0.455] (n=5) | 0.429 ± 0.020 [0.395, 0.445] (n=5) |
+| P2@0.5/iou/pooled | june_tall_grass | 0.113 ± 0.012 [0.097, 0.125] (n=5) | 0.102 ± 0.011 [0.087, 0.116] (n=5) | 0.136 ± 0.003 [0.133, 0.141] (n=5) |
+| P2@0.5/iou/pooled | may_short_grass | 0.194 ± 0.012 [0.180, 0.214] (n=5) | 0.158 ± 0.017 [0.140, 0.177] (n=5) | 0.206 ± 0.008 [0.198, 0.217] (n=5) |
+| P2@0.8/recall/pooled | june_tall_grass | 0.186 ± 0.013 [0.176, 0.200] (n=5) | 0.153 ± 0.019 [0.129, 0.176] (n=5) | 0.240 ± 0.011 [0.224, 0.247] (n=5) |
+| P2@0.8/recall/pooled | may_short_grass | 0.228 ± 0.015 [0.202, 0.236] (n=5) | 0.165 ± 0.011 [0.157, 0.180] (n=5) | 0.267 ± 0.010 [0.258, 0.281] (n=5) |
+| P2@0.8/precision/pooled | june_tall_grass | 0.224 ± 0.017 [0.203, 0.239] (n=5) | 0.227 ± 0.023 [0.200, 0.263] (n=5) | 0.216 ± 0.006 [0.207, 0.221] (n=5) |
+| P2@0.8/precision/pooled | may_short_grass | 0.478 ± 0.022 [0.444, 0.500] (n=5) | 0.408 ± 0.025 [0.373, 0.438] (n=5) | 0.458 ± 0.011 [0.447, 0.475] (n=5) |
+| P2@0.8/iou/pooled | june_tall_grass | 0.113 ± 0.009 [0.104, 0.122] (n=5) | 0.101 ± 0.012 [0.085, 0.118] (n=5) | 0.128 ± 0.005 [0.120, 0.132] (n=5) |
+| P2@0.8/iou/pooled | may_short_grass | 0.183 ± 0.012 [0.161, 0.191] (n=5) | 0.133 ± 0.010 [0.124, 0.146] (n=5) | 0.203 ± 0.007 [0.196, 0.212] (n=5) |
+| P1/recall/pooled | june_tall_grass | 0.242 ± 0.018 [0.224, 0.271] (n=5) | 0.221 ± 0.017 [0.200, 0.247] (n=5) | 0.256 ± 0.019 [0.235, 0.282] (n=5) |
+| P1/recall/pooled | may_short_grass | 0.263 ± 0.023 [0.236, 0.287] (n=5) | 0.262 ± 0.005 [0.258, 0.270] (n=5) | 0.270 ± 0.016 [0.253, 0.292] (n=5) |
+| P1/precision/pooled | june_tall_grass | 0.206 ± 0.013 [0.192, 0.219] (n=5) | 0.186 ± 0.013 [0.176, 0.206] (n=5) | 0.201 ± 0.015 [0.186, 0.222] (n=5) |
+| P1/precision/pooled | may_short_grass | 0.304 ± 0.013 [0.286, 0.320] (n=5) | 0.299 ± 0.014 [0.280, 0.311] (n=5) | 0.308 ± 0.016 [0.281, 0.321] (n=5) |
 | P2@0.5/recall_Hnear/pooled | june_tall_grass | 0.050 ± 0.112 [0.000, 0.250] (n=5) | 0.050 ± 0.112 [0.000, 0.250] (n=5) | 0.300 ± 0.112 [0.250, 0.500] (n=5) |
 | P2@0.5/recall_Hnear/pooled | may_short_grass | n/a ± n/a [n/a, n/a] (n=0) | n/a ± n/a [n/a, n/a] (n=0) | n/a ± n/a [n/a, n/a] (n=0) |
 | P2@0.5/recall_Hnear/mean | june_tall_grass | 0.050 ± 0.112 [0.000, 0.250] (n=5) | 0.050 ± 0.112 [0.000, 0.250] (n=5) | 0.300 ± 0.112 [0.250, 0.500] (n=5) |
@@ -609,12 +625,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | P2@0.5/iou_H/pooled | may_short_grass | 0.012 ± 0.021 [0.000, 0.050] (n=5) | 0.000 ± 0.000 [0.000, 0.000] (n=5) | 0.010 ± 0.017 [0.000, 0.039] (n=5) |
 | P2@0.5/iou_H/mean | june_tall_grass | 0.007 ± 0.016 [0.000, 0.036] (n=5) | 0.007 ± 0.016 [0.000, 0.036] (n=5) | 0.039 ± 0.011 [0.029, 0.057] (n=5) |
 | P2@0.5/iou_H/mean | may_short_grass | 0.010 ± 0.014 [0.000, 0.028] (n=5) | 0.000 ± 0.000 [0.000, 0.000] (n=5) | 0.013 ± 0.024 [0.000, 0.056] (n=5) |
-| P2@0.5/recall/pooled | june_tall_grass | 0.198 ± 0.015 [0.176, 0.212] (n=5) | 0.167 ± 0.017 [0.141, 0.188] (n=5) | 0.266 ± 0.006 [0.259, 0.271] (n=5) |
-| P2@0.5/recall/pooled | may_short_grass | 0.253 ± 0.018 [0.230, 0.281] (n=5) | 0.206 ± 0.021 [0.180, 0.225] (n=5) | 0.284 ± 0.010 [0.270, 0.298] (n=5) |
-| P2@0.5/precision/pooled | june_tall_grass | 0.210 ± 0.024 [0.179, 0.234] (n=5) | 0.209 ± 0.017 [0.185, 0.232] (n=5) | 0.219 ± 0.005 [0.214, 0.228] (n=5) |
-| P2@0.5/precision/pooled | may_short_grass | 0.456 ± 0.011 [0.441, 0.472] (n=5) | 0.406 ± 0.034 [0.367, 0.455] (n=5) | 0.429 ± 0.020 [0.395, 0.445] (n=5) |
-| P2@0.5/iou/pooled | june_tall_grass | 0.113 ± 0.012 [0.097, 0.125] (n=5) | 0.102 ± 0.011 [0.087, 0.116] (n=5) | 0.136 ± 0.003 [0.133, 0.141] (n=5) |
-| P2@0.5/iou/pooled | may_short_grass | 0.194 ± 0.012 [0.180, 0.214] (n=5) | 0.158 ± 0.017 [0.140, 0.177] (n=5) | 0.206 ± 0.008 [0.198, 0.217] (n=5) |
 | P2@0.8/recall_Hnear/pooled | june_tall_grass | 0.050 ± 0.112 [0.000, 0.250] (n=5) | 0.000 ± 0.000 [0.000, 0.000] (n=5) | 0.300 ± 0.112 [0.250, 0.500] (n=5) |
 | P2@0.8/recall_Hnear/pooled | may_short_grass | n/a ± n/a [n/a, n/a] (n=0) | n/a ± n/a [n/a, n/a] (n=0) | n/a ± n/a [n/a, n/a] (n=0) |
 | P2@0.8/recall_Hnear/mean | june_tall_grass | 0.050 ± 0.112 [0.000, 0.250] (n=5) | 0.000 ± 0.000 [0.000, 0.000] (n=5) | 0.300 ± 0.112 [0.250, 0.500] (n=5) |
@@ -639,16 +649,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | P2@0.8/iou_H/pooled | may_short_grass | 0.004 ± 0.006 [0.000, 0.010] (n=5) | 0.000 ± 0.000 [0.000, 0.000] (n=5) | 0.004 ± 0.009 [0.000, 0.020] (n=5) |
 | P2@0.8/iou_H/mean | june_tall_grass | 0.007 ± 0.016 [0.000, 0.036] (n=5) | 0.000 ± 0.000 [0.000, 0.000] (n=5) | 0.041 ± 0.017 [0.029, 0.071] (n=5) |
 | P2@0.8/iou_H/mean | may_short_grass | 0.007 ± 0.012 [0.000, 0.028] (n=5) | 0.000 ± 0.000 [0.000, 0.000] (n=5) | 0.008 ± 0.019 [0.000, 0.042] (n=5) |
-| P2@0.8/recall/pooled | june_tall_grass | 0.186 ± 0.013 [0.176, 0.200] (n=5) | 0.153 ± 0.019 [0.129, 0.176] (n=5) | 0.240 ± 0.011 [0.224, 0.247] (n=5) |
-| P2@0.8/recall/pooled | may_short_grass | 0.228 ± 0.015 [0.202, 0.236] (n=5) | 0.165 ± 0.011 [0.157, 0.180] (n=5) | 0.267 ± 0.010 [0.258, 0.281] (n=5) |
-| P2@0.8/precision/pooled | june_tall_grass | 0.224 ± 0.017 [0.203, 0.239] (n=5) | 0.227 ± 0.023 [0.200, 0.263] (n=5) | 0.216 ± 0.006 [0.207, 0.221] (n=5) |
-| P2@0.8/precision/pooled | may_short_grass | 0.478 ± 0.022 [0.444, 0.500] (n=5) | 0.408 ± 0.025 [0.373, 0.438] (n=5) | 0.458 ± 0.011 [0.447, 0.475] (n=5) |
-| P2@0.8/iou/pooled | june_tall_grass | 0.113 ± 0.009 [0.104, 0.122] (n=5) | 0.101 ± 0.012 [0.085, 0.118] (n=5) | 0.128 ± 0.005 [0.120, 0.132] (n=5) |
-| P2@0.8/iou/pooled | may_short_grass | 0.183 ± 0.012 [0.161, 0.191] (n=5) | 0.133 ± 0.010 [0.124, 0.146] (n=5) | 0.203 ± 0.007 [0.196, 0.212] (n=5) |
-| P1/recall/pooled | june_tall_grass | 0.242 ± 0.018 [0.224, 0.271] (n=5) | 0.221 ± 0.017 [0.200, 0.247] (n=5) | 0.256 ± 0.019 [0.235, 0.282] (n=5) |
-| P1/recall/pooled | may_short_grass | 0.263 ± 0.023 [0.236, 0.287] (n=5) | 0.262 ± 0.005 [0.258, 0.270] (n=5) | 0.270 ± 0.016 [0.253, 0.292] (n=5) |
-| P1/precision/pooled | june_tall_grass | 0.206 ± 0.013 [0.192, 0.219] (n=5) | 0.186 ± 0.013 [0.176, 0.206] (n=5) | 0.201 ± 0.015 [0.186, 0.222] (n=5) |
-| P1/precision/pooled | may_short_grass | 0.304 ± 0.013 [0.286, 0.320] (n=5) | 0.299 ± 0.014 [0.280, 0.311] (n=5) | 0.308 ± 0.016 [0.281, 0.321] (n=5) |
 | P1/recall_Hnear/pooled | june_tall_grass | 0.000 ± 0.000 [0.000, 0.000] (n=5) | 0.000 ± 0.000 [0.000, 0.000] (n=5) | 0.000 ± 0.000 [0.000, 0.000] (n=5) |
 | P1/recall_Hnear/pooled | may_short_grass | n/a ± n/a [n/a, n/a] (n=0) | n/a ± n/a [n/a, n/a] (n=0) | n/a ± n/a [n/a, n/a] (n=0) |
 | P1/recall_H/pooled | june_tall_grass | 0.000 ± 0.000 [0.000, 0.000] (n=5) | 0.000 ± 0.000 [0.000, 0.000] (n=5) | 0.000 ± 0.000 [0.000, 0.000] (n=5) |
@@ -662,6 +662,22 @@ Plain words first, the formula last. Every number is read from the run reports, 
 
 | metric | session | stock | radar init | radar init + loss |
 |---|---|---|---|---|
+| P2@0.5/recall/pooled | june_tall_grass | 0.144 ± 0.020 [0.132, 0.180] (n=5) | 0.090 ± 0.007 [0.084, 0.099] (n=5) | 0.196 ± 0.008 [0.187, 0.207] (n=5) |
+| P2@0.5/recall/pooled | may_short_grass | 0.127 ± 0.007 [0.122, 0.138] (n=5) | 0.093 ± 0.006 [0.088, 0.104] (n=5) | 0.274 ± 0.005 [0.269, 0.280] (n=5) |
+| P2@0.5/precision/pooled | june_tall_grass | 0.640 ± 0.015 [0.624, 0.657] (n=5) | 0.575 ± 0.020 [0.550, 0.596] (n=5) | 0.688 ± 0.022 [0.661, 0.719] (n=5) |
+| P2@0.5/precision/pooled | may_short_grass | 0.819 ± 0.012 [0.807, 0.835] (n=5) | 0.763 ± 0.020 [0.739, 0.791] (n=5) | 0.663 ± 0.007 [0.655, 0.672] (n=5) |
+| P2@0.5/iou/pooled | june_tall_grass | 0.133 ± 0.017 [0.122, 0.163] (n=5) | 0.084 ± 0.006 [0.078, 0.092] (n=5) | 0.180 ± 0.008 [0.170, 0.192] (n=5) |
+| P2@0.5/iou/pooled | may_short_grass | 0.124 ± 0.007 [0.119, 0.134] (n=5) | 0.091 ± 0.006 [0.086, 0.101] (n=5) | 0.241 ± 0.004 [0.236, 0.246] (n=5) |
+| P2@0.8/recall/pooled | june_tall_grass | 0.106 ± 0.008 [0.101, 0.121] (n=5) | 0.065 ± 0.003 [0.062, 0.071] (n=5) | 0.145 ± 0.005 [0.140, 0.152] (n=5) |
+| P2@0.8/recall/pooled | may_short_grass | 0.106 ± 0.005 [0.102, 0.113] (n=5) | 0.076 ± 0.003 [0.073, 0.081] (n=5) | 0.244 ± 0.003 [0.241, 0.247] (n=5) |
+| P2@0.8/precision/pooled | june_tall_grass | 0.671 ± 0.016 [0.652, 0.694] (n=5) | 0.579 ± 0.011 [0.567, 0.597] (n=5) | 0.760 ± 0.015 [0.740, 0.782] (n=5) |
+| P2@0.8/precision/pooled | may_short_grass | 0.853 ± 0.011 [0.839, 0.864] (n=5) | 0.779 ± 0.020 [0.758, 0.803] (n=5) | 0.677 ± 0.004 [0.673, 0.684] (n=5) |
+| P2@0.8/iou/pooled | june_tall_grass | 0.101 ± 0.007 [0.096, 0.113] (n=5) | 0.062 ± 0.003 [0.060, 0.067] (n=5) | 0.139 ± 0.005 [0.134, 0.146] (n=5) |
+| P2@0.8/iou/pooled | may_short_grass | 0.104 ± 0.005 [0.100, 0.111] (n=5) | 0.075 ± 0.003 [0.071, 0.079] (n=5) | 0.218 ± 0.002 [0.216, 0.222] (n=5) |
+| P1/recall/pooled | june_tall_grass | 0.136 ± 0.006 [0.130, 0.145] (n=5) | 0.122 ± 0.004 [0.116, 0.126] (n=5) | 0.143 ± 0.004 [0.137, 0.148] (n=5) |
+| P1/recall/pooled | may_short_grass | 0.174 ± 0.002 [0.172, 0.176] (n=5) | 0.165 ± 0.003 [0.161, 0.168] (n=5) | 0.175 ± 0.001 [0.174, 0.177] (n=5) |
+| P1/precision/pooled | june_tall_grass | 0.508 ± 0.010 [0.494, 0.517] (n=5) | 0.491 ± 0.012 [0.477, 0.507] (n=5) | 0.516 ± 0.013 [0.501, 0.532] (n=5) |
+| P1/precision/pooled | may_short_grass | 0.615 ± 0.007 [0.607, 0.625] (n=5) | 0.607 ± 0.011 [0.590, 0.619] (n=5) | 0.589 ± 0.007 [0.582, 0.598] (n=5) |
 | P2@0.5/recall_Hnear/pooled | june_tall_grass | 0.165 ± 0.067 [0.076, 0.265] (n=5) | 0.062 ± 0.018 [0.035, 0.076] (n=5) | 0.226 ± 0.042 [0.176, 0.288] (n=5) |
 | P2@0.5/recall_Hnear/pooled | may_short_grass | 0.107 ± 0.126 [0.043, 0.331] (n=5) | 0.048 ± 0.012 [0.037, 0.067] (n=5) | 0.193 ± 0.078 [0.135, 0.325] (n=5) |
 | P2@0.5/recall_Hnear/mean | june_tall_grass | 0.173 ± 0.092 [0.108, 0.318] (n=5) | 0.107 ± 0.071 [0.017, 0.205] (n=5) | 0.457 ± 0.038 [0.422, 0.517] (n=5) |
@@ -686,12 +702,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | P2@0.5/iou_H/pooled | may_short_grass | 0.010 ± 0.007 [0.003, 0.019] (n=5) | 0.003 ± 0.001 [0.002, 0.004] (n=5) | 0.094 ± 0.002 [0.092, 0.096] (n=5) |
 | P2@0.5/iou_H/mean | june_tall_grass | 0.069 ± 0.018 [0.051, 0.096] (n=5) | 0.049 ± 0.017 [0.029, 0.075] (n=5) | 0.075 ± 0.013 [0.061, 0.094] (n=5) |
 | P2@0.5/iou_H/mean | may_short_grass | 0.024 ± 0.020 [0.003, 0.049] (n=5) | 0.017 ± 0.010 [0.008, 0.031] (n=5) | 0.120 ± 0.007 [0.109, 0.129] (n=5) |
-| P2@0.5/recall/pooled | june_tall_grass | 0.144 ± 0.020 [0.132, 0.180] (n=5) | 0.090 ± 0.007 [0.084, 0.099] (n=5) | 0.196 ± 0.008 [0.187, 0.207] (n=5) |
-| P2@0.5/recall/pooled | may_short_grass | 0.127 ± 0.007 [0.122, 0.138] (n=5) | 0.093 ± 0.006 [0.088, 0.104] (n=5) | 0.274 ± 0.005 [0.269, 0.280] (n=5) |
-| P2@0.5/precision/pooled | june_tall_grass | 0.640 ± 0.015 [0.624, 0.657] (n=5) | 0.575 ± 0.020 [0.550, 0.596] (n=5) | 0.688 ± 0.022 [0.661, 0.719] (n=5) |
-| P2@0.5/precision/pooled | may_short_grass | 0.819 ± 0.012 [0.807, 0.835] (n=5) | 0.763 ± 0.020 [0.739, 0.791] (n=5) | 0.663 ± 0.007 [0.655, 0.672] (n=5) |
-| P2@0.5/iou/pooled | june_tall_grass | 0.133 ± 0.017 [0.122, 0.163] (n=5) | 0.084 ± 0.006 [0.078, 0.092] (n=5) | 0.180 ± 0.008 [0.170, 0.192] (n=5) |
-| P2@0.5/iou/pooled | may_short_grass | 0.124 ± 0.007 [0.119, 0.134] (n=5) | 0.091 ± 0.006 [0.086, 0.101] (n=5) | 0.241 ± 0.004 [0.236, 0.246] (n=5) |
 | P2@0.8/recall_Hnear/pooled | june_tall_grass | 0.096 ± 0.022 [0.059, 0.112] (n=5) | 0.036 ± 0.013 [0.024, 0.053] (n=5) | 0.064 ± 0.018 [0.047, 0.094] (n=5) |
 | P2@0.8/recall_Hnear/pooled | may_short_grass | 0.069 ± 0.085 [0.018, 0.221] (n=5) | 0.038 ± 0.009 [0.025, 0.049] (n=5) | 0.112 ± 0.041 [0.086, 0.184] (n=5) |
 | P2@0.8/recall_Hnear/mean | june_tall_grass | 0.106 ± 0.058 [0.037, 0.173] (n=5) | 0.080 ± 0.084 [0.006, 0.204] (n=5) | 0.302 ± 0.035 [0.270, 0.344] (n=5) |
@@ -716,16 +726,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | P2@0.8/iou_H/pooled | may_short_grass | 0.005 ± 0.004 [0.002, 0.013] (n=5) | 0.003 ± 0.001 [0.002, 0.004] (n=5) | 0.082 ± 0.001 [0.082, 0.084] (n=5) |
 | P2@0.8/iou_H/mean | june_tall_grass | 0.045 ± 0.008 [0.037, 0.054] (n=5) | 0.045 ± 0.021 [0.018, 0.075] (n=5) | 0.053 ± 0.013 [0.044, 0.075] (n=5) |
 | P2@0.8/iou_H/mean | may_short_grass | 0.013 ± 0.010 [0.002, 0.026] (n=5) | 0.015 ± 0.009 [0.005, 0.027] (n=5) | 0.109 ± 0.005 [0.104, 0.116] (n=5) |
-| P2@0.8/recall/pooled | june_tall_grass | 0.106 ± 0.008 [0.101, 0.121] (n=5) | 0.065 ± 0.003 [0.062, 0.071] (n=5) | 0.145 ± 0.005 [0.140, 0.152] (n=5) |
-| P2@0.8/recall/pooled | may_short_grass | 0.106 ± 0.005 [0.102, 0.113] (n=5) | 0.076 ± 0.003 [0.073, 0.081] (n=5) | 0.244 ± 0.003 [0.241, 0.247] (n=5) |
-| P2@0.8/precision/pooled | june_tall_grass | 0.671 ± 0.016 [0.652, 0.694] (n=5) | 0.579 ± 0.011 [0.567, 0.597] (n=5) | 0.760 ± 0.015 [0.740, 0.782] (n=5) |
-| P2@0.8/precision/pooled | may_short_grass | 0.853 ± 0.011 [0.839, 0.864] (n=5) | 0.779 ± 0.020 [0.758, 0.803] (n=5) | 0.677 ± 0.004 [0.673, 0.684] (n=5) |
-| P2@0.8/iou/pooled | june_tall_grass | 0.101 ± 0.007 [0.096, 0.113] (n=5) | 0.062 ± 0.003 [0.060, 0.067] (n=5) | 0.139 ± 0.005 [0.134, 0.146] (n=5) |
-| P2@0.8/iou/pooled | may_short_grass | 0.104 ± 0.005 [0.100, 0.111] (n=5) | 0.075 ± 0.003 [0.071, 0.079] (n=5) | 0.218 ± 0.002 [0.216, 0.222] (n=5) |
-| P1/recall/pooled | june_tall_grass | 0.136 ± 0.006 [0.130, 0.145] (n=5) | 0.122 ± 0.004 [0.116, 0.126] (n=5) | 0.143 ± 0.004 [0.137, 0.148] (n=5) |
-| P1/recall/pooled | may_short_grass | 0.174 ± 0.002 [0.172, 0.176] (n=5) | 0.165 ± 0.003 [0.161, 0.168] (n=5) | 0.175 ± 0.001 [0.174, 0.177] (n=5) |
-| P1/precision/pooled | june_tall_grass | 0.508 ± 0.010 [0.494, 0.517] (n=5) | 0.491 ± 0.012 [0.477, 0.507] (n=5) | 0.516 ± 0.013 [0.501, 0.532] (n=5) |
-| P1/precision/pooled | may_short_grass | 0.615 ± 0.007 [0.607, 0.625] (n=5) | 0.607 ± 0.011 [0.590, 0.619] (n=5) | 0.589 ± 0.007 [0.582, 0.598] (n=5) |
 | P1/recall_Hnear/pooled | june_tall_grass | 0.061 ± 0.005 [0.059, 0.071] (n=5) | 0.031 ± 0.008 [0.018, 0.035] (n=5) | 0.046 ± 0.015 [0.035, 0.071] (n=5) |
 | P1/recall_Hnear/pooled | may_short_grass | 0.012 ± 0.011 [0.000, 0.025] (n=5) | 0.020 ± 0.007 [0.012, 0.031] (n=5) | 0.027 ± 0.014 [0.012, 0.049] (n=5) |
 | P1/recall_H/pooled | june_tall_grass | 0.008 ± 0.002 [0.006, 0.012] (n=5) | 0.003 ± 0.001 [0.002, 0.005] (n=5) | 0.009 ± 0.002 [0.006, 0.012] (n=5) |
@@ -739,6 +739,14 @@ Plain words first, the formula last. Every number is read from the run reports, 
 
 | metric | june_tall_grass gap (sep) | may_short_grass gap (sep) | Δ |
 |---|---|---|---|
+| obstacles/P2@0.5/recall/pooled | -0.030 (sep) | -0.058 (sep) | -0.028 |
+| obstacles/P2@0.5/precision/pooled | -0.005 (ovl) | -0.027 (sep) | -0.023 |
+| obstacles/P2@0.5/iou/pooled | -0.026 (sep) | -0.054 (sep) | -0.028 |
+| obstacles/P2@0.8/recall/pooled | -0.028 (sep) | -0.053 (sep) | -0.025 |
+| obstacles/P2@0.8/precision/pooled | -0.010 (ovl) | -0.032 (sep) | -0.023 |
+| obstacles/P2@0.8/iou/pooled | -0.025 (sep) | -0.051 (sep) | -0.026 |
+| obstacles/P1/recall/pooled | -0.011 (sep) | -0.026 (sep) | -0.015 |
+| obstacles/P1/precision/pooled | -0.003 (ovl) | -0.020 (sep) | -0.017 |
 | obstacles/P2@0.5/recall_Hnear/pooled | -0.055 (ovl) | -0.060 (ovl) | -0.005 |
 | obstacles/P2@0.5/recall_Hnear/mean | -0.038 (ovl) | -0.003 (ovl) | 0.035 |
 | obstacles/P2@0.5/precision_Hnear/pooled | 0.114 (ovl) | 0.020 (ovl) | -0.094 |
@@ -751,9 +759,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | obstacles/P2@0.5/precision_H/mean | 0.019 (ovl) | 0.036 (ovl) | 0.016 |
 | obstacles/P2@0.5/iou_H/pooled | -0.010 (ovl) | -0.012 (sep) | -0.003 |
 | obstacles/P2@0.5/iou_H/mean | -0.011 (ovl) | -0.027 (sep) | -0.017 |
-| obstacles/P2@0.5/recall/pooled | -0.030 (sep) | -0.058 (sep) | -0.028 |
-| obstacles/P2@0.5/precision/pooled | -0.005 (ovl) | -0.027 (sep) | -0.023 |
-| obstacles/P2@0.5/iou/pooled | -0.026 (sep) | -0.054 (sep) | -0.028 |
 | obstacles/P2@0.8/recall_Hnear/pooled | -0.034 (sep) | -0.033 (ovl) | 0.001 |
 | obstacles/P2@0.8/recall_Hnear/mean | -0.017 (ovl) | -0.024 (ovl) | -0.007 |
 | obstacles/P2@0.8/precision_Hnear/pooled | 0.073 (ovl) | -0.022 (ovl) | -0.095 |
@@ -766,13 +771,16 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | obstacles/P2@0.8/precision_H/mean | 0.025 (ovl) | -0.016 (ovl) | -0.041 |
 | obstacles/P2@0.8/iou_H/pooled | -0.004 (ovl) | -0.006 (sep) | -0.002 |
 | obstacles/P2@0.8/iou_H/mean | -0.001 (ovl) | -0.019 (sep) | -0.019 |
-| obstacles/P2@0.8/recall/pooled | -0.028 (sep) | -0.053 (sep) | -0.025 |
-| obstacles/P2@0.8/precision/pooled | -0.010 (ovl) | -0.032 (sep) | -0.023 |
-| obstacles/P2@0.8/iou/pooled | -0.025 (sep) | -0.051 (sep) | -0.026 |
-| obstacles/P1/recall/pooled | -0.011 (sep) | -0.026 (sep) | -0.015 |
-| obstacles/P1/precision/pooled | -0.003 (ovl) | -0.020 (sep) | -0.017 |
 | obstacles/P1/recall_Hnear/pooled | -0.022 (sep) | -0.002 (ovl) | 0.020 |
 | obstacles/P1/recall_H/pooled | -0.006 (sep) | -0.004 (ovl) | 0.001 |
+| tree_trunk/P2@0.5/recall/pooled | -0.019 (sep) | -0.073 (sep) | -0.054 |
+| tree_trunk/P2@0.5/precision/pooled | -0.006 (ovl) | -0.021 (sep) | -0.015 |
+| tree_trunk/P2@0.5/iou/pooled | -0.017 (sep) | -0.067 (sep) | -0.050 |
+| tree_trunk/P2@0.8/recall/pooled | -0.022 (sep) | -0.068 (sep) | -0.046 |
+| tree_trunk/P2@0.8/precision/pooled | -0.008 (sep) | -0.024 (sep) | -0.016 |
+| tree_trunk/P2@0.8/iou/pooled | -0.020 (sep) | -0.064 (sep) | -0.044 |
+| tree_trunk/P1/recall/pooled | -0.009 (ovl) | -0.037 (sep) | -0.028 |
+| tree_trunk/P1/precision/pooled | -0.002 (ovl) | -0.024 (sep) | -0.022 |
 | tree_trunk/P2@0.5/recall_Hnear/pooled | -0.006 (ovl) | -0.067 (ovl) | -0.060 |
 | tree_trunk/P2@0.5/recall_Hnear/mean | -0.023 (ovl) | -0.004 (ovl) | 0.019 |
 | tree_trunk/P2@0.5/precision_Hnear/pooled | -0.086 (ovl) | -0.113 (ovl) | -0.027 |
@@ -785,9 +793,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | tree_trunk/P2@0.5/precision_H/mean | 0.040 (ovl) | 0.044 (ovl) | 0.004 |
 | tree_trunk/P2@0.5/iou_H/pooled | 0.006 (ovl) | -0.018 (sep) | -0.025 |
 | tree_trunk/P2@0.5/iou_H/mean | -0.007 (ovl) | -0.035 (sep) | -0.028 |
-| tree_trunk/P2@0.5/recall/pooled | -0.019 (sep) | -0.073 (sep) | -0.054 |
-| tree_trunk/P2@0.5/precision/pooled | -0.006 (ovl) | -0.021 (sep) | -0.015 |
-| tree_trunk/P2@0.5/iou/pooled | -0.017 (sep) | -0.067 (sep) | -0.050 |
 | tree_trunk/P2@0.8/recall_Hnear/pooled | -0.005 (ovl) | -0.047 (ovl) | -0.042 |
 | tree_trunk/P2@0.8/recall_Hnear/mean | -0.008 (ovl) | -0.055 (ovl) | -0.047 |
 | tree_trunk/P2@0.8/precision_Hnear/pooled | -0.096 (ovl) | -0.171 (ovl) | -0.075 |
@@ -800,15 +805,18 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | tree_trunk/P2@0.8/precision_H/mean | 0.063 (ovl) | 0.009 (ovl) | -0.054 |
 | tree_trunk/P2@0.8/iou_H/pooled | 0.007 (ovl) | -0.010 (sep) | -0.018 |
 | tree_trunk/P2@0.8/iou_H/mean | 0.000 (ovl) | -0.027 (ovl) | -0.028 |
-| tree_trunk/P2@0.8/recall/pooled | -0.022 (sep) | -0.068 (sep) | -0.046 |
-| tree_trunk/P2@0.8/precision/pooled | -0.008 (sep) | -0.024 (sep) | -0.016 |
-| tree_trunk/P2@0.8/iou/pooled | -0.020 (sep) | -0.064 (sep) | -0.044 |
-| tree_trunk/P1/recall/pooled | -0.009 (ovl) | -0.037 (sep) | -0.028 |
-| tree_trunk/P1/precision/pooled | -0.002 (ovl) | -0.024 (sep) | -0.022 |
 | tree_trunk/P1/recall_Hnear/pooled | -0.014 (sep) | -0.053 (ovl) | -0.039 |
 | tree_trunk/P1/recall_H/pooled | -0.007 (sep) | -0.007 (sep) | -0.000 |
 | tree_trunk/P1cuboid/detection_rate | -0.018 (sep) | -0.065 (sep) | -0.046 |
 | tree_trunk/P1cuboid/point_precision | -0.004 (ovl) | -0.019 (sep) | -0.015 |
+| rock/P2@0.5/recall/pooled | -0.031 (ovl) | -0.047 (sep) | -0.017 |
+| rock/P2@0.5/precision/pooled | -0.001 (ovl) | -0.050 (ovl) | -0.049 |
+| rock/P2@0.5/iou/pooled | -0.011 (ovl) | -0.036 (sep) | -0.025 |
+| rock/P2@0.8/recall/pooled | -0.033 (ovl) | -0.063 (sep) | -0.030 |
+| rock/P2@0.8/precision/pooled | 0.003 (ovl) | -0.070 (sep) | -0.073 |
+| rock/P2@0.8/iou/pooled | -0.012 (ovl) | -0.049 (sep) | -0.037 |
+| rock/P1/recall/pooled | -0.021 (ovl) | -0.001 (ovl) | 0.020 |
+| rock/P1/precision/pooled | -0.019 (ovl) | -0.005 (ovl) | 0.014 |
 | rock/P2@0.5/recall_Hnear/pooled | 0.000 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.5/recall_Hnear/mean | 0.000 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.5/precision_Hnear/pooled | 0.133 (ovl) | n/a (n/a) | n/a |
@@ -821,9 +829,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | rock/P2@0.5/precision_H/mean | -0.033 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.5/iou_H/pooled | -0.000 (ovl) | -0.012 (ovl) | -0.012 |
 | rock/P2@0.5/iou_H/mean | 0.000 (ovl) | -0.010 (ovl) | -0.010 |
-| rock/P2@0.5/recall/pooled | -0.031 (ovl) | -0.047 (sep) | -0.017 |
-| rock/P2@0.5/precision/pooled | -0.001 (ovl) | -0.050 (ovl) | -0.049 |
-| rock/P2@0.5/iou/pooled | -0.011 (ovl) | -0.036 (sep) | -0.025 |
 | rock/P2@0.8/recall_Hnear/pooled | -0.050 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.8/recall_Hnear/mean | -0.050 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.8/precision_Hnear/pooled | -0.333 (n/a) | n/a (n/a) | n/a |
@@ -836,15 +841,18 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | rock/P2@0.8/precision_H/mean | -0.333 (n/a) | n/a (n/a) | n/a |
 | rock/P2@0.8/iou_H/pooled | -0.004 (ovl) | -0.004 (ovl) | -0.000 |
 | rock/P2@0.8/iou_H/mean | -0.007 (ovl) | -0.007 (ovl) | 0.001 |
-| rock/P2@0.8/recall/pooled | -0.033 (ovl) | -0.063 (sep) | -0.030 |
-| rock/P2@0.8/precision/pooled | 0.003 (ovl) | -0.070 (sep) | -0.073 |
-| rock/P2@0.8/iou/pooled | -0.012 (ovl) | -0.049 (sep) | -0.037 |
-| rock/P1/recall/pooled | -0.021 (ovl) | -0.001 (ovl) | 0.020 |
-| rock/P1/precision/pooled | -0.019 (ovl) | -0.005 (ovl) | 0.014 |
 | rock/P1/recall_Hnear/pooled | 0.000 (ovl) | n/a (n/a) | n/a |
 | rock/P1/recall_H/pooled | 0.000 (ovl) | 0.004 (ovl) | 0.004 |
 | rock/P1cuboid/detection_rate | 0.000 (ovl) | 0.000 (ovl) | 0.000 |
 | rock/P1cuboid/point_precision | -0.002 (ovl) | -0.002 (ovl) | 0.000 |
+| bush_or_small_tree/P2@0.5/recall/pooled | -0.054 (sep) | -0.034 (sep) | 0.020 |
+| bush_or_small_tree/P2@0.5/precision/pooled | -0.064 (sep) | -0.056 (sep) | 0.008 |
+| bush_or_small_tree/P2@0.5/iou/pooled | -0.048 (sep) | -0.033 (sep) | 0.015 |
+| bush_or_small_tree/P2@0.8/recall/pooled | -0.041 (sep) | -0.030 (sep) | 0.011 |
+| bush_or_small_tree/P2@0.8/precision/pooled | -0.092 (sep) | -0.074 (sep) | 0.018 |
+| bush_or_small_tree/P2@0.8/iou/pooled | -0.039 (sep) | -0.030 (sep) | 0.009 |
+| bush_or_small_tree/P1/recall/pooled | -0.015 (sep) | -0.009 (sep) | 0.005 |
+| bush_or_small_tree/P1/precision/pooled | -0.016 (ovl) | -0.008 (ovl) | 0.008 |
 | bush_or_small_tree/P2@0.5/recall_Hnear/pooled | -0.102 (ovl) | -0.059 (ovl) | 0.043 |
 | bush_or_small_tree/P2@0.5/recall_Hnear/mean | -0.066 (ovl) | -0.002 (ovl) | 0.064 |
 | bush_or_small_tree/P2@0.5/precision_Hnear/pooled | 0.087 (ovl) | 0.082 (ovl) | -0.005 |
@@ -857,9 +865,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | bush_or_small_tree/P2@0.5/precision_H/mean | 0.015 (ovl) | 0.096 (ovl) | 0.081 |
 | bush_or_small_tree/P2@0.5/iou_H/pooled | -0.021 (sep) | -0.007 (ovl) | 0.014 |
 | bush_or_small_tree/P2@0.5/iou_H/mean | -0.019 (ovl) | -0.007 (ovl) | 0.012 |
-| bush_or_small_tree/P2@0.5/recall/pooled | -0.054 (sep) | -0.034 (sep) | 0.020 |
-| bush_or_small_tree/P2@0.5/precision/pooled | -0.064 (sep) | -0.056 (sep) | 0.008 |
-| bush_or_small_tree/P2@0.5/iou/pooled | -0.048 (sep) | -0.033 (sep) | 0.015 |
 | bush_or_small_tree/P2@0.8/recall_Hnear/pooled | -0.060 (sep) | -0.031 (ovl) | 0.029 |
 | bush_or_small_tree/P2@0.8/recall_Hnear/mean | -0.026 (ovl) | 0.012 (ovl) | 0.038 |
 | bush_or_small_tree/P2@0.8/precision_Hnear/pooled | 0.034 (ovl) | 0.070 (ovl) | 0.036 |
@@ -872,11 +877,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | bush_or_small_tree/P2@0.8/precision_H/mean | 0.000 (ovl) | 0.036 (ovl) | 0.036 |
 | bush_or_small_tree/P2@0.8/iou_H/pooled | -0.011 (sep) | -0.002 (ovl) | 0.009 |
 | bush_or_small_tree/P2@0.8/iou_H/mean | -0.000 (ovl) | 0.002 (ovl) | 0.002 |
-| bush_or_small_tree/P2@0.8/recall/pooled | -0.041 (sep) | -0.030 (sep) | 0.011 |
-| bush_or_small_tree/P2@0.8/precision/pooled | -0.092 (sep) | -0.074 (sep) | 0.018 |
-| bush_or_small_tree/P2@0.8/iou/pooled | -0.039 (sep) | -0.030 (sep) | 0.009 |
-| bush_or_small_tree/P1/recall/pooled | -0.015 (sep) | -0.009 (sep) | 0.005 |
-| bush_or_small_tree/P1/precision/pooled | -0.016 (ovl) | -0.008 (ovl) | 0.008 |
 | bush_or_small_tree/P1/recall_Hnear/pooled | -0.031 (sep) | 0.007 (ovl) | 0.038 |
 | bush_or_small_tree/P1/recall_H/pooled | -0.005 (sep) | -0.002 (ovl) | 0.003 |
 | bush_or_small_tree/P1cuboid/detection_rate | -0.009 (ovl) | -0.096 (sep) | -0.087 |
@@ -886,6 +886,14 @@ Plain words first, the formula last. Every number is read from the run reports, 
 
 | metric | june_tall_grass gap (sep) | may_short_grass gap (sep) | Δ |
 |---|---|---|---|
+| obstacles/P2@0.5/recall/pooled | 0.038 (sep) | 0.092 (sep) | 0.054 |
+| obstacles/P2@0.5/precision/pooled | 0.007 (ovl) | -0.079 (sep) | -0.087 |
+| obstacles/P2@0.5/iou/pooled | 0.033 (sep) | 0.067 (sep) | 0.034 |
+| obstacles/P2@0.8/recall/pooled | 0.034 (sep) | 0.082 (sep) | 0.048 |
+| obstacles/P2@0.8/precision/pooled | 0.010 (ovl) | -0.091 (sep) | -0.101 |
+| obstacles/P2@0.8/iou/pooled | 0.031 (sep) | 0.063 (sep) | 0.032 |
+| obstacles/P1/recall/pooled | 0.007 (ovl) | -0.001 (ovl) | -0.008 |
+| obstacles/P1/precision/pooled | 0.000 (ovl) | -0.007 (ovl) | -0.007 |
 | obstacles/P2@0.5/recall_Hnear/pooled | 0.029 (ovl) | 0.075 (ovl) | 0.046 |
 | obstacles/P2@0.5/recall_Hnear/mean | 0.104 (sep) | 0.195 (sep) | 0.090 |
 | obstacles/P2@0.5/precision_Hnear/pooled | 0.108 (ovl) | -0.074 (ovl) | -0.182 |
@@ -898,9 +906,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | obstacles/P2@0.5/precision_H/mean | 0.029 (ovl) | 0.067 (sep) | 0.037 |
 | obstacles/P2@0.5/iou_H/pooled | 0.014 (sep) | 0.073 (sep) | 0.059 |
 | obstacles/P2@0.5/iou_H/mean | 0.008 (ovl) | 0.055 (sep) | 0.047 |
-| obstacles/P2@0.5/recall/pooled | 0.038 (sep) | 0.092 (sep) | 0.054 |
-| obstacles/P2@0.5/precision/pooled | 0.007 (ovl) | -0.079 (sep) | -0.087 |
-| obstacles/P2@0.5/iou/pooled | 0.033 (sep) | 0.067 (sep) | 0.034 |
 | obstacles/P2@0.8/recall_Hnear/pooled | -0.027 (ovl) | 0.033 (ovl) | 0.060 |
 | obstacles/P2@0.8/recall_Hnear/mean | 0.068 (sep) | 0.169 (sep) | 0.101 |
 | obstacles/P2@0.8/precision_Hnear/pooled | 0.024 (ovl) | -0.112 (ovl) | -0.136 |
@@ -913,13 +918,16 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | obstacles/P2@0.8/precision_H/mean | 0.017 (ovl) | 0.025 (ovl) | 0.008 |
 | obstacles/P2@0.8/iou_H/pooled | -0.002 (ovl) | 0.054 (sep) | 0.056 |
 | obstacles/P2@0.8/iou_H/mean | -0.003 (ovl) | 0.030 (sep) | 0.033 |
-| obstacles/P2@0.8/recall/pooled | 0.034 (sep) | 0.082 (sep) | 0.048 |
-| obstacles/P2@0.8/precision/pooled | 0.010 (ovl) | -0.091 (sep) | -0.101 |
-| obstacles/P2@0.8/iou/pooled | 0.031 (sep) | 0.063 (sep) | 0.032 |
-| obstacles/P1/recall/pooled | 0.007 (ovl) | -0.001 (ovl) | -0.008 |
-| obstacles/P1/precision/pooled | 0.000 (ovl) | -0.007 (ovl) | -0.007 |
 | obstacles/P1/recall_Hnear/pooled | -0.014 (ovl) | 0.012 (ovl) | 0.026 |
 | obstacles/P1/recall_H/pooled | 0.001 (ovl) | -0.002 (ovl) | -0.003 |
+| tree_trunk/P2@0.5/recall/pooled | 0.031 (sep) | 0.058 (sep) | 0.027 |
+| tree_trunk/P2@0.5/precision/pooled | 0.005 (ovl) | -0.038 (sep) | -0.043 |
+| tree_trunk/P2@0.5/iou/pooled | 0.028 (sep) | 0.042 (sep) | 0.014 |
+| tree_trunk/P2@0.8/recall/pooled | 0.032 (sep) | 0.048 (sep) | 0.016 |
+| tree_trunk/P2@0.8/precision/pooled | 0.002 (ovl) | -0.047 (sep) | -0.048 |
+| tree_trunk/P2@0.8/iou/pooled | 0.028 (sep) | 0.035 (sep) | 0.007 |
+| tree_trunk/P1/recall/pooled | 0.007 (sep) | -0.003 (ovl) | -0.010 |
+| tree_trunk/P1/precision/pooled | -0.001 (ovl) | 0.001 (ovl) | 0.001 |
 | tree_trunk/P2@0.5/recall_Hnear/pooled | -0.011 (ovl) | 0.013 (ovl) | 0.025 |
 | tree_trunk/P2@0.5/recall_Hnear/mean | -0.028 (ovl) | -0.028 (ovl) | -0.000 |
 | tree_trunk/P2@0.5/precision_Hnear/pooled | -0.242 (ovl) | -0.025 (ovl) | 0.217 |
@@ -932,9 +940,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | tree_trunk/P2@0.5/precision_H/mean | 0.018 (ovl) | 0.086 (sep) | 0.068 |
 | tree_trunk/P2@0.5/iou_H/pooled | 0.019 (sep) | 0.064 (sep) | 0.045 |
 | tree_trunk/P2@0.5/iou_H/mean | 0.006 (ovl) | 0.054 (sep) | 0.048 |
-| tree_trunk/P2@0.5/recall/pooled | 0.031 (sep) | 0.058 (sep) | 0.027 |
-| tree_trunk/P2@0.5/precision/pooled | 0.005 (ovl) | -0.038 (sep) | -0.043 |
-| tree_trunk/P2@0.5/iou/pooled | 0.028 (sep) | 0.042 (sep) | 0.014 |
 | tree_trunk/P2@0.8/recall_Hnear/pooled | -0.027 (ovl) | -0.020 (ovl) | 0.007 |
 | tree_trunk/P2@0.8/recall_Hnear/mean | -0.032 (ovl) | -0.046 (ovl) | -0.013 |
 | tree_trunk/P2@0.8/precision_Hnear/pooled | -0.402 (ovl) | -0.109 (ovl) | 0.293 |
@@ -947,15 +952,18 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | tree_trunk/P2@0.8/precision_H/mean | -0.030 (ovl) | 0.028 (ovl) | 0.058 |
 | tree_trunk/P2@0.8/iou_H/pooled | -0.003 (ovl) | 0.030 (sep) | 0.033 |
 | tree_trunk/P2@0.8/iou_H/mean | -0.013 (ovl) | 0.018 (sep) | 0.031 |
-| tree_trunk/P2@0.8/recall/pooled | 0.032 (sep) | 0.048 (sep) | 0.016 |
-| tree_trunk/P2@0.8/precision/pooled | 0.002 (ovl) | -0.047 (sep) | -0.048 |
-| tree_trunk/P2@0.8/iou/pooled | 0.028 (sep) | 0.035 (sep) | 0.007 |
-| tree_trunk/P1/recall/pooled | 0.007 (sep) | -0.003 (ovl) | -0.010 |
-| tree_trunk/P1/precision/pooled | -0.001 (ovl) | 0.001 (ovl) | 0.001 |
 | tree_trunk/P1/recall_Hnear/pooled | -0.013 (ovl) | 0.000 (ovl) | 0.013 |
 | tree_trunk/P1/recall_H/pooled | 0.001 (ovl) | -0.002 (ovl) | -0.003 |
 | tree_trunk/P1cuboid/detection_rate | 0.023 (ovl) | -0.012 (ovl) | -0.034 |
 | tree_trunk/P1cuboid/point_precision | -0.001 (ovl) | -0.011 (sep) | -0.009 |
+| rock/P2@0.5/recall/pooled | 0.068 (sep) | 0.031 (ovl) | -0.037 |
+| rock/P2@0.5/precision/pooled | 0.009 (ovl) | -0.027 (ovl) | -0.036 |
+| rock/P2@0.5/iou/pooled | 0.023 (sep) | 0.012 (ovl) | -0.011 |
+| rock/P2@0.8/recall/pooled | 0.054 (sep) | 0.039 (sep) | -0.015 |
+| rock/P2@0.8/precision/pooled | -0.008 (ovl) | -0.021 (ovl) | -0.013 |
+| rock/P2@0.8/iou/pooled | 0.015 (ovl) | 0.020 (sep) | 0.005 |
+| rock/P1/recall/pooled | 0.014 (ovl) | 0.007 (ovl) | -0.007 |
+| rock/P1/precision/pooled | -0.004 (ovl) | 0.004 (ovl) | 0.008 |
 | rock/P2@0.5/recall_Hnear/pooled | 0.250 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.5/recall_Hnear/mean | 0.250 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.5/precision_Hnear/pooled | 0.633 (ovl) | n/a (n/a) | n/a |
@@ -968,9 +976,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | rock/P2@0.5/precision_H/mean | 0.183 (ovl) | -0.575 (sep) | -0.758 |
 | rock/P2@0.5/iou_H/pooled | 0.018 (ovl) | -0.002 (ovl) | -0.020 |
 | rock/P2@0.5/iou_H/mean | 0.031 (ovl) | 0.002 (ovl) | -0.029 |
-| rock/P2@0.5/recall/pooled | 0.068 (sep) | 0.031 (ovl) | -0.037 |
-| rock/P2@0.5/precision/pooled | 0.009 (ovl) | -0.027 (ovl) | -0.036 |
-| rock/P2@0.5/iou/pooled | 0.023 (sep) | 0.012 (ovl) | -0.011 |
 | rock/P2@0.8/recall_Hnear/pooled | 0.250 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.8/recall_Hnear/mean | 0.250 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.8/precision_Hnear/pooled | 0.567 (ovl) | n/a (n/a) | n/a |
@@ -983,15 +988,18 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | rock/P2@0.8/precision_H/mean | 0.383 (ovl) | -0.417 (ovl) | -0.800 |
 | rock/P2@0.8/iou_H/pooled | 0.018 (ovl) | 0.000 (ovl) | -0.018 |
 | rock/P2@0.8/iou_H/mean | 0.034 (ovl) | 0.002 (ovl) | -0.033 |
-| rock/P2@0.8/recall/pooled | 0.054 (sep) | 0.039 (sep) | -0.015 |
-| rock/P2@0.8/precision/pooled | -0.008 (ovl) | -0.021 (ovl) | -0.013 |
-| rock/P2@0.8/iou/pooled | 0.015 (ovl) | 0.020 (sep) | 0.005 |
-| rock/P1/recall/pooled | 0.014 (ovl) | 0.007 (ovl) | -0.007 |
-| rock/P1/precision/pooled | -0.004 (ovl) | 0.004 (ovl) | 0.008 |
 | rock/P1/recall_Hnear/pooled | 0.000 (ovl) | n/a (n/a) | n/a |
 | rock/P1/recall_H/pooled | 0.000 (ovl) | 0.000 (ovl) | 0.000 |
 | rock/P1cuboid/detection_rate | 0.010 (ovl) | -0.057 (sep) | -0.067 |
 | rock/P1cuboid/point_precision | -0.005 (ovl) | -0.003 (ovl) | 0.002 |
+| bush_or_small_tree/P2@0.5/recall/pooled | 0.052 (sep) | 0.147 (sep) | 0.095 |
+| bush_or_small_tree/P2@0.5/precision/pooled | 0.048 (sep) | -0.156 (sep) | -0.204 |
+| bush_or_small_tree/P2@0.5/iou/pooled | 0.047 (sep) | 0.117 (sep) | 0.070 |
+| bush_or_small_tree/P2@0.8/recall/pooled | 0.039 (sep) | 0.138 (sep) | 0.098 |
+| bush_or_small_tree/P2@0.8/precision/pooled | 0.088 (sep) | -0.176 (sep) | -0.264 |
+| bush_or_small_tree/P2@0.8/iou/pooled | 0.038 (sep) | 0.114 (sep) | 0.076 |
+| bush_or_small_tree/P1/recall/pooled | 0.007 (ovl) | 0.001 (ovl) | -0.005 |
+| bush_or_small_tree/P1/precision/pooled | 0.008 (ovl) | -0.026 (sep) | -0.034 |
 | bush_or_small_tree/P2@0.5/recall_Hnear/pooled | 0.061 (ovl) | 0.086 (ovl) | 0.025 |
 | bush_or_small_tree/P2@0.5/recall_Hnear/mean | 0.284 (sep) | 0.454 (sep) | 0.170 |
 | bush_or_small_tree/P2@0.5/precision_Hnear/pooled | 0.150 (ovl) | -0.022 (ovl) | -0.172 |
@@ -1004,9 +1012,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | bush_or_small_tree/P2@0.5/precision_H/mean | 0.057 (ovl) | 0.129 (ovl) | 0.072 |
 | bush_or_small_tree/P2@0.5/iou_H/pooled | 0.010 (ovl) | 0.083 (sep) | 0.073 |
 | bush_or_small_tree/P2@0.5/iou_H/mean | 0.006 (ovl) | 0.096 (sep) | 0.090 |
-| bush_or_small_tree/P2@0.5/recall/pooled | 0.052 (sep) | 0.147 (sep) | 0.095 |
-| bush_or_small_tree/P2@0.5/precision/pooled | 0.048 (sep) | -0.156 (sep) | -0.204 |
-| bush_or_small_tree/P2@0.5/iou/pooled | 0.047 (sep) | 0.117 (sep) | 0.070 |
 | bush_or_small_tree/P2@0.8/recall_Hnear/pooled | -0.033 (ovl) | 0.043 (ovl) | 0.076 |
 | bush_or_small_tree/P2@0.8/recall_Hnear/mean | 0.196 (sep) | 0.419 (sep) | 0.223 |
 | bush_or_small_tree/P2@0.8/precision_Hnear/pooled | 0.090 (ovl) | -0.030 (ovl) | -0.120 |
@@ -1019,11 +1024,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | bush_or_small_tree/P2@0.8/precision_H/mean | 0.086 (ovl) | 0.138 (ovl) | 0.052 |
 | bush_or_small_tree/P2@0.8/iou_H/pooled | -0.002 (ovl) | 0.078 (sep) | 0.080 |
 | bush_or_small_tree/P2@0.8/iou_H/mean | 0.008 (ovl) | 0.096 (sep) | 0.088 |
-| bush_or_small_tree/P2@0.8/recall/pooled | 0.039 (sep) | 0.138 (sep) | 0.098 |
-| bush_or_small_tree/P2@0.8/precision/pooled | 0.088 (sep) | -0.176 (sep) | -0.264 |
-| bush_or_small_tree/P2@0.8/iou/pooled | 0.038 (sep) | 0.114 (sep) | 0.076 |
-| bush_or_small_tree/P1/recall/pooled | 0.007 (ovl) | 0.001 (ovl) | -0.005 |
-| bush_or_small_tree/P1/precision/pooled | 0.008 (ovl) | -0.026 (sep) | -0.034 |
 | bush_or_small_tree/P1/recall_Hnear/pooled | -0.015 (ovl) | 0.015 (ovl) | 0.030 |
 | bush_or_small_tree/P1/recall_H/pooled | 0.001 (ovl) | -0.002 (ovl) | -0.003 |
 | bush_or_small_tree/P1cuboid/detection_rate | 0.020 (ovl) | -0.067 (sep) | -0.087 |
@@ -1033,6 +1033,14 @@ Plain words first, the formula last. Every number is read from the run reports, 
 
 | metric | june_tall_grass gap (sep) | may_short_grass gap (sep) | Δ |
 |---|---|---|---|
+| obstacles/P2@0.5/recall/pooled | 0.068 (sep) | 0.150 (sep) | 0.082 |
+| obstacles/P2@0.5/precision/pooled | 0.012 (sep) | -0.052 (sep) | -0.064 |
+| obstacles/P2@0.5/iou/pooled | 0.059 (sep) | 0.121 (sep) | 0.062 |
+| obstacles/P2@0.8/recall/pooled | 0.062 (sep) | 0.136 (sep) | 0.074 |
+| obstacles/P2@0.8/precision/pooled | 0.020 (sep) | -0.058 (sep) | -0.078 |
+| obstacles/P2@0.8/iou/pooled | 0.057 (sep) | 0.114 (sep) | 0.058 |
+| obstacles/P1/recall/pooled | 0.018 (sep) | 0.024 (sep) | 0.007 |
+| obstacles/P1/precision/pooled | 0.004 (ovl) | 0.013 (sep) | 0.009 |
 | obstacles/P2@0.5/recall_Hnear/pooled | 0.084 (sep) | 0.135 (sep) | 0.050 |
 | obstacles/P2@0.5/recall_Hnear/mean | 0.143 (sep) | 0.198 (sep) | 0.055 |
 | obstacles/P2@0.5/precision_Hnear/pooled | -0.006 (ovl) | -0.094 (ovl) | -0.088 |
@@ -1045,9 +1053,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | obstacles/P2@0.5/precision_H/mean | 0.010 (ovl) | 0.031 (ovl) | 0.021 |
 | obstacles/P2@0.5/iou_H/pooled | 0.023 (sep) | 0.085 (sep) | 0.062 |
 | obstacles/P2@0.5/iou_H/mean | 0.019 (ovl) | 0.083 (sep) | 0.064 |
-| obstacles/P2@0.5/recall/pooled | 0.068 (sep) | 0.150 (sep) | 0.082 |
-| obstacles/P2@0.5/precision/pooled | 0.012 (sep) | -0.052 (sep) | -0.064 |
-| obstacles/P2@0.5/iou/pooled | 0.059 (sep) | 0.121 (sep) | 0.062 |
 | obstacles/P2@0.8/recall_Hnear/pooled | 0.007 (ovl) | 0.066 (sep) | 0.059 |
 | obstacles/P2@0.8/recall_Hnear/mean | 0.085 (sep) | 0.193 (sep) | 0.108 |
 | obstacles/P2@0.8/precision_Hnear/pooled | -0.048 (ovl) | -0.090 (ovl) | -0.042 |
@@ -1060,13 +1065,16 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | obstacles/P2@0.8/precision_H/mean | -0.008 (ovl) | 0.041 (ovl) | 0.049 |
 | obstacles/P2@0.8/iou_H/pooled | 0.001 (ovl) | 0.060 (sep) | 0.059 |
 | obstacles/P2@0.8/iou_H/mean | -0.002 (ovl) | 0.050 (sep) | 0.052 |
-| obstacles/P2@0.8/recall/pooled | 0.062 (sep) | 0.136 (sep) | 0.074 |
-| obstacles/P2@0.8/precision/pooled | 0.020 (sep) | -0.058 (sep) | -0.078 |
-| obstacles/P2@0.8/iou/pooled | 0.057 (sep) | 0.114 (sep) | 0.058 |
-| obstacles/P1/recall/pooled | 0.018 (sep) | 0.024 (sep) | 0.007 |
-| obstacles/P1/precision/pooled | 0.004 (ovl) | 0.013 (sep) | 0.009 |
 | obstacles/P1/recall_Hnear/pooled | 0.008 (ovl) | 0.015 (ovl) | 0.006 |
 | obstacles/P1/recall_H/pooled | 0.007 (sep) | 0.002 (ovl) | -0.004 |
+| tree_trunk/P2@0.5/recall/pooled | 0.050 (sep) | 0.131 (sep) | 0.081 |
+| tree_trunk/P2@0.5/precision/pooled | 0.011 (sep) | -0.017 (sep) | -0.028 |
+| tree_trunk/P2@0.5/iou/pooled | 0.045 (sep) | 0.109 (sep) | 0.064 |
+| tree_trunk/P2@0.8/recall/pooled | 0.053 (sep) | 0.116 (sep) | 0.063 |
+| tree_trunk/P2@0.8/precision/pooled | 0.010 (sep) | -0.023 (sep) | -0.033 |
+| tree_trunk/P2@0.8/iou/pooled | 0.048 (sep) | 0.100 (sep) | 0.052 |
+| tree_trunk/P1/recall/pooled | 0.016 (sep) | 0.034 (sep) | 0.018 |
+| tree_trunk/P1/precision/pooled | 0.002 (ovl) | 0.024 (sep) | 0.023 |
 | tree_trunk/P2@0.5/recall_Hnear/pooled | -0.005 (ovl) | 0.080 (ovl) | 0.085 |
 | tree_trunk/P2@0.5/recall_Hnear/mean | -0.005 (ovl) | -0.023 (ovl) | -0.019 |
 | tree_trunk/P2@0.5/precision_Hnear/pooled | -0.156 (ovl) | 0.088 (ovl) | 0.244 |
@@ -1079,9 +1087,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | tree_trunk/P2@0.5/precision_H/mean | -0.022 (ovl) | 0.042 (ovl) | 0.064 |
 | tree_trunk/P2@0.5/iou_H/pooled | 0.012 (ovl) | 0.082 (sep) | 0.070 |
 | tree_trunk/P2@0.5/iou_H/mean | 0.013 (ovl) | 0.090 (sep) | 0.076 |
-| tree_trunk/P2@0.5/recall/pooled | 0.050 (sep) | 0.131 (sep) | 0.081 |
-| tree_trunk/P2@0.5/precision/pooled | 0.011 (sep) | -0.017 (sep) | -0.028 |
-| tree_trunk/P2@0.5/iou/pooled | 0.045 (sep) | 0.109 (sep) | 0.064 |
 | tree_trunk/P2@0.8/recall_Hnear/pooled | -0.022 (ovl) | 0.027 (ovl) | 0.048 |
 | tree_trunk/P2@0.8/recall_Hnear/mean | -0.024 (ovl) | 0.010 (ovl) | 0.034 |
 | tree_trunk/P2@0.8/precision_Hnear/pooled | -0.306 (ovl) | 0.062 (ovl) | 0.368 |
@@ -1094,15 +1099,18 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | tree_trunk/P2@0.8/precision_H/mean | -0.093 (sep) | 0.019 (ovl) | 0.112 |
 | tree_trunk/P2@0.8/iou_H/pooled | -0.010 (sep) | 0.040 (sep) | 0.051 |
 | tree_trunk/P2@0.8/iou_H/mean | -0.014 (ovl) | 0.045 (sep) | 0.059 |
-| tree_trunk/P2@0.8/recall/pooled | 0.053 (sep) | 0.116 (sep) | 0.063 |
-| tree_trunk/P2@0.8/precision/pooled | 0.010 (sep) | -0.023 (sep) | -0.033 |
-| tree_trunk/P2@0.8/iou/pooled | 0.048 (sep) | 0.100 (sep) | 0.052 |
-| tree_trunk/P1/recall/pooled | 0.016 (sep) | 0.034 (sep) | 0.018 |
-| tree_trunk/P1/precision/pooled | 0.002 (ovl) | 0.024 (sep) | 0.023 |
 | tree_trunk/P1/recall_Hnear/pooled | 0.001 (ovl) | 0.053 (ovl) | 0.052 |
 | tree_trunk/P1/recall_H/pooled | 0.008 (sep) | 0.005 (sep) | -0.003 |
 | tree_trunk/P1cuboid/detection_rate | 0.041 (sep) | 0.053 (sep) | 0.012 |
 | tree_trunk/P1cuboid/point_precision | 0.002 (ovl) | 0.009 (sep) | 0.006 |
+| rock/P2@0.5/recall/pooled | 0.099 (sep) | 0.079 (sep) | -0.020 |
+| rock/P2@0.5/precision/pooled | 0.010 (ovl) | 0.023 (ovl) | 0.013 |
+| rock/P2@0.5/iou/pooled | 0.034 (sep) | 0.048 (sep) | 0.014 |
+| rock/P2@0.8/recall/pooled | 0.087 (sep) | 0.102 (sep) | 0.015 |
+| rock/P2@0.8/precision/pooled | -0.011 (ovl) | 0.049 (sep) | 0.060 |
+| rock/P2@0.8/iou/pooled | 0.028 (sep) | 0.070 (sep) | 0.042 |
+| rock/P1/recall/pooled | 0.035 (ovl) | 0.008 (ovl) | -0.027 |
+| rock/P1/precision/pooled | 0.015 (ovl) | 0.009 (ovl) | -0.006 |
 | rock/P2@0.5/recall_Hnear/pooled | 0.250 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.5/recall_Hnear/mean | 0.250 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.5/precision_Hnear/pooled | 0.500 (ovl) | n/a (n/a) | n/a |
@@ -1115,9 +1123,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | rock/P2@0.5/precision_H/mean | 0.217 (ovl) | n/a (n/a) | n/a |
 | rock/P2@0.5/iou_H/pooled | 0.018 (ovl) | 0.010 (ovl) | -0.008 |
 | rock/P2@0.5/iou_H/mean | 0.031 (ovl) | 0.013 (ovl) | -0.019 |
-| rock/P2@0.5/recall/pooled | 0.099 (sep) | 0.079 (sep) | -0.020 |
-| rock/P2@0.5/precision/pooled | 0.010 (ovl) | 0.023 (ovl) | 0.013 |
-| rock/P2@0.5/iou/pooled | 0.034 (sep) | 0.048 (sep) | 0.014 |
 | rock/P2@0.8/recall_Hnear/pooled | 0.300 (sep) | n/a (n/a) | n/a |
 | rock/P2@0.8/recall_Hnear/mean | 0.300 (sep) | n/a (n/a) | n/a |
 | rock/P2@0.8/precision_Hnear/pooled | 0.900 (n/a) | n/a (n/a) | n/a |
@@ -1130,15 +1135,18 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | rock/P2@0.8/precision_H/mean | 0.717 (n/a) | n/a (n/a) | n/a |
 | rock/P2@0.8/iou_H/pooled | 0.022 (sep) | 0.004 (ovl) | -0.018 |
 | rock/P2@0.8/iou_H/mean | 0.041 (sep) | 0.008 (ovl) | -0.033 |
-| rock/P2@0.8/recall/pooled | 0.087 (sep) | 0.102 (sep) | 0.015 |
-| rock/P2@0.8/precision/pooled | -0.011 (ovl) | 0.049 (sep) | 0.060 |
-| rock/P2@0.8/iou/pooled | 0.028 (sep) | 0.070 (sep) | 0.042 |
-| rock/P1/recall/pooled | 0.035 (ovl) | 0.008 (ovl) | -0.027 |
-| rock/P1/precision/pooled | 0.015 (ovl) | 0.009 (ovl) | -0.006 |
 | rock/P1/recall_Hnear/pooled | 0.000 (ovl) | n/a (n/a) | n/a |
 | rock/P1/recall_H/pooled | 0.000 (ovl) | -0.004 (ovl) | -0.004 |
 | rock/P1cuboid/detection_rate | 0.010 (ovl) | -0.057 (sep) | -0.067 |
 | rock/P1cuboid/point_precision | -0.003 (ovl) | -0.001 (ovl) | 0.001 |
+| bush_or_small_tree/P2@0.5/recall/pooled | 0.106 (sep) | 0.181 (sep) | 0.075 |
+| bush_or_small_tree/P2@0.5/precision/pooled | 0.113 (sep) | -0.100 (sep) | -0.213 |
+| bush_or_small_tree/P2@0.5/iou/pooled | 0.095 (sep) | 0.150 (sep) | 0.054 |
+| bush_or_small_tree/P2@0.8/recall/pooled | 0.080 (sep) | 0.167 (sep) | 0.087 |
+| bush_or_small_tree/P2@0.8/precision/pooled | 0.181 (sep) | -0.102 (sep) | -0.282 |
+| bush_or_small_tree/P2@0.8/iou/pooled | 0.077 (sep) | 0.144 (sep) | 0.067 |
+| bush_or_small_tree/P1/recall/pooled | 0.021 (sep) | 0.010 (sep) | -0.011 |
+| bush_or_small_tree/P1/precision/pooled | 0.024 (ovl) | -0.018 (ovl) | -0.042 |
 | bush_or_small_tree/P2@0.5/recall_Hnear/pooled | 0.164 (sep) | 0.145 (sep) | -0.019 |
 | bush_or_small_tree/P2@0.5/recall_Hnear/mean | 0.350 (sep) | 0.456 (sep) | 0.106 |
 | bush_or_small_tree/P2@0.5/precision_Hnear/pooled | 0.063 (ovl) | -0.104 (ovl) | -0.167 |
@@ -1151,9 +1159,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | bush_or_small_tree/P2@0.5/precision_H/mean | 0.042 (ovl) | 0.032 (ovl) | -0.009 |
 | bush_or_small_tree/P2@0.5/iou_H/pooled | 0.031 (sep) | 0.090 (sep) | 0.059 |
 | bush_or_small_tree/P2@0.5/iou_H/mean | 0.026 (ovl) | 0.103 (sep) | 0.078 |
-| bush_or_small_tree/P2@0.5/recall/pooled | 0.106 (sep) | 0.181 (sep) | 0.075 |
-| bush_or_small_tree/P2@0.5/precision/pooled | 0.113 (sep) | -0.100 (sep) | -0.213 |
-| bush_or_small_tree/P2@0.5/iou/pooled | 0.095 (sep) | 0.150 (sep) | 0.054 |
 | bush_or_small_tree/P2@0.8/recall_Hnear/pooled | 0.027 (ovl) | 0.074 (sep) | 0.047 |
 | bush_or_small_tree/P2@0.8/recall_Hnear/mean | 0.222 (sep) | 0.407 (sep) | 0.185 |
 | bush_or_small_tree/P2@0.8/precision_Hnear/pooled | 0.056 (ovl) | -0.100 (ovl) | -0.155 |
@@ -1166,11 +1171,6 @@ Plain words first, the formula last. Every number is read from the run reports, 
 | bush_or_small_tree/P2@0.8/precision_H/mean | 0.086 (sep) | 0.102 (ovl) | 0.016 |
 | bush_or_small_tree/P2@0.8/iou_H/pooled | 0.009 (sep) | 0.080 (sep) | 0.071 |
 | bush_or_small_tree/P2@0.8/iou_H/mean | 0.009 (ovl) | 0.094 (sep) | 0.086 |
-| bush_or_small_tree/P2@0.8/recall/pooled | 0.080 (sep) | 0.167 (sep) | 0.087 |
-| bush_or_small_tree/P2@0.8/precision/pooled | 0.181 (sep) | -0.102 (sep) | -0.282 |
-| bush_or_small_tree/P2@0.8/iou/pooled | 0.077 (sep) | 0.144 (sep) | 0.067 |
-| bush_or_small_tree/P1/recall/pooled | 0.021 (sep) | 0.010 (sep) | -0.011 |
-| bush_or_small_tree/P1/precision/pooled | 0.024 (ovl) | -0.018 (ovl) | -0.042 |
 | bush_or_small_tree/P1/recall_Hnear/pooled | 0.015 (ovl) | 0.007 (ovl) | -0.008 |
 | bush_or_small_tree/P1/recall_H/pooled | 0.006 (sep) | 0.000 (ovl) | -0.006 |
 | bush_or_small_tree/P1cuboid/detection_rate | 0.029 (sep) | 0.029 (ovl) | 0.000 |

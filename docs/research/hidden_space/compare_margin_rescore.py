@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import yaml
 
+from viking_splatad.eval.evaluation_terminology import ARM_LABEL_BY_METHOD
 from viking_splatad.eval.session_hidden_space import NEIGHBOUR_REACH_VOXEL_FRACTION
 
 # Repo root: this file lives in docs/research/hidden_space/.
@@ -43,17 +44,13 @@ DEFAULT_OLD_COMMIT = "9b898f7"
 DEFAULT_OUTPUT_RELATIVE_PATH = "reports/gaussian_occupancy/margin_rescore_comparison.md"
 # Headline class group (configs/eval.yaml class_groups); the P2 thresholds are read from the new summary.
 HEADLINE_GROUP = "obstacles"
-# Headline metrics on the near band: recall, precision, IoU, each averaged over objects and pooled.
-HEADLINE_METRIC_SUFFIXES = ("recall_Hnear", "precision_Hnear", "iou_Hnear")
+# Whole-scene metrics, read first: P2 recall, precision, IoU over the whole neighbourhood (no hidden mask).
+WHOLE_SCENE_METRIC_SUFFIXES = ("recall", "precision", "iou")
+# Hidden-band metrics, read second: recall, precision, IoU on the near band, each averaged over objects and pooled.
+HIDDEN_METRIC_SUFFIXES = ("recall_Hnear", "precision_Hnear", "iou_Hnear")
 AVERAGING_NAMES = ("mean", "pooled")
 # Size of the scored set on the near band (identical in every run of a session).
 SIZE_METRIC_NAMES = ("hidden_near/gt_cells", "hidden_near/objects_with_hidden_gt")
-# Short arm labels keyed by the arm's SplatAD method (CLAUDE.md "Current scope").
-ARM_LABEL_BY_METHOD = {
-    "splatad": "stock",
-    "splatad-radar-init": "radar init",
-    "splatad-radar-init-lidar": "init + loss",
-}
 # Headline rows (bold in the gap tables): init + loss vs stock, per-object recall.
 HEADLINE_PAIR = ("init + loss", "stock")
 HEADLINE_METRIC_SUFFIX = "recall_Hnear/mean"
@@ -89,7 +86,7 @@ DEFINITIONS = """\
   - **blocked:** a return lands short of entry − m (something nearer stopped the beam);
   - **passed:** a return lands beyond exit + m (the beam went through).
 - **H** = cells never seen, never passed through, and blocked at least once. Beams with no return do not affect H.
-- **H_near** = H within {near_band_m:.0f} m horizontal distance of the driven path (`hidden_space.near_band_m`). The headline uses H_near, because most of H lies far from the path, which is distant occlusion rather than grass next to the robot.
+- **H_near** = H within {near_band_m:.0f} m horizontal distance of the driven path (`hidden_space.near_band_m`). It is read second, after the whole scene. It uses H_near because most of H lies far from the path, which is distant occlusion rather than grass next to the robot.
 - **Range margin m.** The tolerance in the labels above. It is measured from the data: the {margin_quantile_percent:.0f}th percentile of point-to-plane residuals between two lidar sweeps of the same static surfaces (T92). **This is what changed.** Before, the {neighbour_count} points of each plane fit could lie a metre or more apart, so the residual measured surface shape and m came out too large. A large m counts too many cells as seen and makes H too small. Now a residual is kept only when all {neighbour_count} neighbours lie within {reach_fraction:g} of a GT voxel edge ({neighbour_reach_m:.3f} m). m still depends on this chosen bound (it keeps falling as the bound tightens; `docs/research/evaluation_caveats.md` §6).
 
 ### The metrics
@@ -105,7 +102,8 @@ With O = occupied cells, G = GT cells, N = the neighbourhood and H = H_near:
 - **mean±std**: mean and sample standard deviation (n − 1) of the metric over an arm's {repeat_count} repeats.
 - **gap** = mean of the first arm − mean of the second, so + means the first arm scores higher.
 - **sep** (separated): the two arms' [min, max] ranges over their repeats do not overlap; every repeat of one arm beats every repeat of the other. **ovl**: the ranges overlap. This is a descriptive reading aid, not a significance test. SplatAD runs vary from repeat to repeat, so a gap is only read when it exceeds the spread within the arms.
-- **Reading rule** (PLAN §5): the headline is `obstacles`, June, recall_Hnear and precision_Hnear at P2@0.5, pooled and mean side by side. Radar must beat stock on recall **without losing precision**. May is the low-grass reference.
+- **Reading order** (PLAN §5): first the whole scene (`obstacles`, P2 recall and precision at P2@0.5, pooled and mean), then the hidden near band (recall_Hnear and precision_Hnear at P2@0.5, pooled and mean side by side). Radar must beat stock on recall **without losing precision**, in that order. May is the low-grass reference.
+- **Whole scene and the fix.** The margin only changes which cells are hidden, so the whole-scene values must be identical before and after the fix. The report checks this and shows them once.
 """
 
 
@@ -192,8 +190,21 @@ def definition_values() -> Dict[str, Any]:
             "model_count": sum(run_counts)}
 
 
-def headline_metric_keys(p2_thresholds: List[float]) -> List[str]:
-    """Flat metric keys of the headline table, e.g. ``obstacles/P2@0.5/recall_Hnear/mean``.
+def whole_scene_metric_keys(p2_thresholds: List[float]) -> List[str]:
+    """Flat metric keys of the whole-scene table, e.g. ``obstacles/P2@0.5/recall/pooled``.
+
+    Args:
+        p2_thresholds: P2 thresholds of the summary (e.g. [0.5, 0.8]).
+
+    Returns:
+        Keys for every threshold, whole-scene suffix and averaging, in table order.
+    """
+    return [f"{HEADLINE_GROUP}/P2@{threshold}/{suffix}/{averaging}"
+            for threshold in p2_thresholds for suffix in WHOLE_SCENE_METRIC_SUFFIXES for averaging in AVERAGING_NAMES]
+
+
+def hidden_metric_keys(p2_thresholds: List[float]) -> List[str]:
+    """Flat metric keys of the hidden near-band table, e.g. ``obstacles/P2@0.5/recall_Hnear/mean``.
 
     Args:
         p2_thresholds: P2 thresholds listed in the summary.
@@ -202,7 +213,7 @@ def headline_metric_keys(p2_thresholds: List[float]) -> List[str]:
         Keys ordered threshold, metric, averaging.
     """
     return [f"{HEADLINE_GROUP}/P2@{threshold}/{suffix}/{averaging}"
-            for threshold in p2_thresholds for suffix in HEADLINE_METRIC_SUFFIXES for averaging in AVERAGING_NAMES]
+            for threshold in p2_thresholds for suffix in HIDDEN_METRIC_SUFFIXES for averaging in AVERAGING_NAMES]
 
 
 def metric_label(key: str) -> str:
@@ -255,6 +266,57 @@ def format_arm_value(summary: Dict[str, Any], arm: str, key: str) -> str:
     return f"{statistics['mean']:.4f}±{statistics['std']:.4f}"
 
 
+def whole_scene_lines(summaries: Dict[str, Dict[str, Any]], label_by_arm: Dict[str, str], arms: List[str]) -> List[str]:
+    """Whole-scene arm values and gaps, shown once because the margin fix does not change them.
+
+    The range margin only decides which cells are hidden, so every whole-scene statistic must match
+    between the old and the new summary. The check below refuses the report when that is not true.
+
+    Args:
+        summaries: ``{"old": summary, "new": summary}`` of one session (scripts/20 outputs).
+        label_by_arm: Short display label per arm name.
+        arms: Arm names in report order.
+
+    Returns:
+        Markdown lines.
+
+    Raises:
+        ValueError: when a whole-scene value differs between the old and the new summary.
+    """
+    old_summary, new_summary = summaries["old"], summaries["new"]
+    keys = whole_scene_metric_keys(new_summary["p2_thresholds"])
+    # Step 1: every whole-scene statistic of every arm must be present in both summaries and identical
+    # before and after the fix. A missing key or arm is refused by name, never treated as equal.
+    for arm in arms:
+        if arm not in old_summary["arms"]:
+            raise ValueError(f"arm {arm} is in the working tree but not in the old-commit summary")
+        for key in keys:
+            old_metrics = old_summary["arms"][arm]["metrics"]
+            new_metrics = new_summary["arms"][arm]["metrics"]
+            if key not in old_metrics or key not in new_metrics:
+                raise ValueError(f"whole-scene metric {key} is missing for arm {arm} in one of the summaries")
+            if old_metrics[key] != new_metrics[key]:
+                raise ValueError(f"whole-scene metric {key} of arm {arm} changed with the margin fix")
+    # Step 2: arm mean ± std per whole-scene metric, one column per arm.
+    lines = ["### Whole scene (identical before and after the margin fix)", "",
+             "#### Arm values (mean±std over the repeats)", "",
+             "| metric | " + " | ".join(label_by_arm[arm] for arm in arms) + " |",
+             "|---|" + "---|" * len(arms)]
+    for key in keys:
+        cells = [format_arm_value(new_summary, arm, key) for arm in arms]
+        lines.append(f"| {metric_label(key)} | " + " | ".join(cells) + " |")
+    # Step 3: script 20's gaps between arm pairs, one column per pair.
+    pair_labels = [f"{label_by_arm[comparison['first']]} − {label_by_arm[comparison['second']]}"
+                   for comparison in new_summary["comparisons"]]
+    lines += ["", "#### Gaps between arms (first − second)", "",
+              "| metric | " + " | ".join(pair_labels) + " |",
+              "|---|" + "---|" * len(pair_labels)]
+    for key in keys:
+        cells = [format_comparison(comparison["metrics"].get(key)) for comparison in new_summary["comparisons"]]
+        lines.append(f"| {metric_label(key)} | " + " | ".join(cells) + " |")
+    return lines + [""]
+
+
 def session_lines(session: str, old_commit: str) -> List[str]:
     """Report lines of one session: margins, scored-set size, arm table and gap table.
 
@@ -278,29 +340,33 @@ def session_lines(session: str, old_commit: str) -> List[str]:
                      for arm in arms}
     lines = [f"## {session}", "",
              f"- Arms: " + "; ".join(f"{label_by_arm[arm]} = `{arm}`" for arm in arms) + ".",
-             f"- Training: " + "; ".join(f"{label_by_arm[arm]}: {camera_by_arm[arm]}" for arm in arms) + ".",
-             f"- Range margin m: old {margins['old_margin_m']:.4f} m, new {margins['new_margin_m']:.4f} m "
-             f"(neighbour reach {margins['neighbour_reach_m']:.4f} m, {margins['residual_count']} residuals)."]
-    # Step 2: scored-set size on H_near (a session property; the first arm carries it).
+             f"- Training: " + "; ".join(f"{label_by_arm[arm]}: {camera_by_arm[arm]}" for arm in arms) + "."]
+    # Step 2: whole scene, read first (identical before and after the fix; checked inside).
+    lines += whole_scene_lines(summaries, label_by_arm, arms)
+    # Step 3: hidden near band, read second: the margin, then the scored-set size on H_near
+    # (a session property; the first arm carries it).
+    lines += ["### Hidden near band (H_near)", "",
+              f"- Range margin m: old {margins['old_margin_m']:.4f} m, new {margins['new_margin_m']:.4f} m "
+              f"(neighbour reach {margins['neighbour_reach_m']:.4f} m, {margins['residual_count']} residuals)."]
     for version, summary in summaries.items():
         first_arm = next(iter(summary["arms"]))
         sizes = [summary["arms"][first_arm]["metrics"][f"{HEADLINE_GROUP}/{name}"]["mean"] for name in SIZE_METRIC_NAMES]
         lines.append(f"- H_near obstacle GT cells ({version}): {sizes[0]:.0f}, in {sizes[1]:.0f} objects.")
-    # Step 3: arm mean ± std per metric, old and new side by side.
-    keys = headline_metric_keys(summaries["new"]["p2_thresholds"])
-    lines += ["", "### Arm values (mean±std over the repeats)", "",
+    # Step 4: hidden arm mean ± std per metric, old and new side by side.
+    keys = hidden_metric_keys(summaries["new"]["p2_thresholds"])
+    lines += ["", "#### Arm values (mean±std over the repeats)", "",
               "| metric | " + " | ".join(f"{label_by_arm[arm]} old | {label_by_arm[arm]} new" for arm in arms) + " |",
               "|---|" + "---|" * (2 * len(arms))]
     for key in keys:
         cells = [format_arm_value(summaries[version], arm, key) for arm in arms for version in ("old", "new")]
         lines.append(f"| {metric_label(key)} | " + " | ".join(cells) + " |")
-    # Step 4: script 20's gaps and separation per arm pair, old -> new. Old pairs are matched by
+    # Step 5: script 20's gaps and separation per arm pair, old -> new. Old pairs are matched by
     # their (first, second) arm names, never by list position.
     old_by_pair = {(comparison["first"], comparison["second"]): comparison for comparison in summaries["old"]["comparisons"]}
     pairs = [(comparison, old_by_pair.get((comparison["first"], comparison["second"]), {"metrics": {}}))
              for comparison in summaries["new"]["comparisons"]]
     pair_labels = [(label_by_arm[new["first"]], label_by_arm[new["second"]]) for new, _ in pairs]
-    lines += ["", "### Gaps between arms (first − second), old → new", "",
+    lines += ["", "#### Gaps between arms (first − second), old → new", "",
               "| metric | " + " | ".join(f"{first} − {second}" for first, second in pair_labels) + " |",
               "|---|" + "---|" * len(pairs)]
     binding_threshold = summaries["new"]["settings"]["occupancy_threshold"]
@@ -326,9 +392,10 @@ def build_report(old_commit: str) -> str:
     Returns:
         Markdown text.
     """
-    lines = ["# Range-margin fix: hidden-voxel results before and after", "",
+    lines = ["# Range-margin fix: whole-scene and hidden-voxel results before and after", "",
              f"Generated by `docs/research/hidden_space/compare_margin_rescore.py`. Old = summaries at commit "
-             f"`{old_commit}` (unbounded margin); new = the summaries in this tree. Class `obstacles`, band H_near. "
+             f"`{old_commit}` (unbounded margin); new = the summaries in this tree. Class `obstacles`. "
+             "Read in order: the whole scene first, then the hidden near band (H_near). "
              "Every number is read from those files; nothing is recomputed.", "",
              DEFINITIONS.format(**definition_values())]
     for session in SESSIONS:

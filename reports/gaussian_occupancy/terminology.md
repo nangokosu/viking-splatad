@@ -71,7 +71,7 @@ The research question is: does adding 4D radar to lidar + camera SplatAD improve
 
 - **Cuboid (GT box).** A hand-labelled box in the map frame (centre, full sizes along its own axes, rotation, class). Boxes are used only for scoring and never reach training (no seed, filter or loss target).
   - Where: `src/viking_splatad/labels/cuboids.py` (`Cuboid`); `CLAUDE.md` (`Ground-truth cuboids stay separate`)
-- **Classes and the obstacles group.** The scored classes are tree_trunk, rock and bush_or_small_tree. The group `obstacles` is the union of the three and is the headline class.
+- **Classes and the obstacles group.** The scored classes are tree_trunk, rock and bush_or_small_tree. The group `obstacles` is the union of the three and is the class the whole-scene tables lead with.
   - Where: `configs/eval.yaml` (`obstacles = tree_trunk`); `configs/eval.yaml` (`class_groups`)
 - **Cell (voxel) and its edge.** A cube of the grid the scene is cut into. Its edge is `voxel_size_m` (see the value table); all scoring counts cells.
   - Where: `src/viking_splatad/labels/occupancy.py` (`T31`); `scripts/20_summarize_gaussian_occupancy.py` (`run_provenance`)
@@ -142,7 +142,7 @@ The research question is: does adding 4D radar to lidar + camera SplatAD improve
 - **Hidden space H.** A scored cell that, over all recorded sweeps of the session, was never seen, was blocked at least once and was never passed through. A beam without a return neither proves nor disproves it.
   - Formula: `H = NOT seen AND blocked AND NOT passed_through`
   - Where: `src/viking_splatad/eval/hidden_geometry.py` (`hidden_space_mask`); `src/viking_splatad/eval/session_hidden_space.py` (`Session-wide hidden space H`)
-- **Near band and H_near.** The near band is the horizontal distance from the driven path that bounds the headline hidden space. H_near is the hidden cells within it.
+- **Near band and H_near.** The near band is the horizontal distance from the driven path that bounds the hidden space read after the whole scene. H_near is the hidden cells within it.
   - Formula: `H_near = H AND d_nearest <= near band`
   - Where: `src/viking_splatad/eval/session_hidden_space.py` (`near_band_hidden_mask`); `configs/eval.yaml` (`near_band_m`)
 
@@ -263,10 +263,10 @@ Plain words first, the formula last. Every number is read from the run reports, 
      - **Reading the two together:** for recall, when objects share no cells, the pooled value is the average of the per-object recalls weighted by each object's cell count. So a mean above the pooled value means objects with few cells are recovered better, relative to their size, than objects with many cells; a mean below means the large objects carry the score.
    - **(g) Why precision stays below 1.** "Next to an obstacle" is not "empty space". The ring also holds things nobody labelled: grass (tall in June), ground and small plants, which really are solid. It also catches the edges of a trunk's own Gaussians, because a trunk is thinner than one cell. So precision stays below 1 even for a correct model. This is a likely cause, not a tested finding.
    - **(h) How the threshold changes both.** Raising t moves cells from filled to empty, so recall can only fall; precision usually rises.
-6. **Hidden cells (reference for the later round).** We replay every recorded lidar beam.
+6. **Hidden cells (the second part of the evaluation, read after the whole scene).** We replay every recorded lidar beam.
    - A cell is *hidden* if no beam reached it, none passed through it, and at least one was stopped before it (by grass, for example).
    - *H_near* keeps the hidden cells within 20 m of the driven path.
-   - Hidden-cell metrics are the formulas of point 5, restricted to H_near. The figures will take the same form as the whole-scene ones.
+   - Hidden-cell metrics are the formulas of point 5, restricted to H_near. Their figures take the same form as the whole-scene ones, and are read after them.
    - Stock SplatAD is expected to leave hidden cells mostly empty, since no lidar or camera signal reached them. That gap is what radar is meant to close.
 7. **Statistics.** Each arm is trained 5 times. A table cell shows mean ± std over the repeats. Gap = difference of means. "sep" means the two arms' [min, max] ranges do not overlap. A gap is read only when it is larger than the spread within the arms.
 

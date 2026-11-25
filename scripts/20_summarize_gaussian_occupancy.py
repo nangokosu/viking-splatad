@@ -82,18 +82,18 @@ PER_MODEL_CELL_ARRAYS = ("occupancy", "p1_hit")
 # Arm order in tables: stock first, then the radar variants as they build on each other (CLAUDE.md
 # scope); unknown methods follow. Gaps read "later arm - earlier arm" so a radar gain is positive.
 METHOD_ORDER = ("splatad", "splatad-radar-init", "splatad-radar-init-lidar")
-# Headline metrics of the markdown tables, in reading order (the JSON holds all of them). ``{threshold}``
-# is a P2 threshold key. 1) H_near (hidden within the near band of the path, ``_Hnear``): P2 recall,
-# precision, IoU, P1 recall_Hnear, then the context counts (hidden GT cells, objects having one);
-# 2) full H (``_H``): P2 recall, precision, IoU and its context counts; 3) baseline: P2 recall,
-# precision, IoU over the whole neighbourhood; 4) lidar view: P1 recall, precision, recall_H.
-# P1/P2 recall_blocked is retired from the headline (still in the JSON).
-HEADLINE_METRIC_SUFFIXES = ("P2@{threshold}/recall_Hnear", "P2@{threshold}/precision_Hnear", "P2@{threshold}/iou_Hnear",
+# Metrics of the markdown tables, in reading order (the JSON holds all of them). ``{threshold}`` is a P2
+# threshold key. 1) whole scene, read first: P2 recall, precision, IoU over the whole neighbourhood, then the
+# lidar view P1 recall, precision; 2) hidden cells, read after the whole scene: H_near (hidden within the near
+# band of the path, ``_Hnear``) P2 recall, precision, IoU, P1 recall_Hnear, then the context counts (hidden GT
+# cells, objects having one); 3) full H (``_H``): P2 recall, precision, IoU, its context counts, and P1 recall_H.
+# P1/P2 recall_blocked is retired from the tables (still in the JSON).
+HEADLINE_METRIC_SUFFIXES = ("P2@{threshold}/recall", "P2@{threshold}/precision", "P2@{threshold}/iou",
+                            "P1/recall", "P1/precision",
+                            "P2@{threshold}/recall_Hnear", "P2@{threshold}/precision_Hnear", "P2@{threshold}/iou_Hnear",
                             "P1/recall_Hnear", "hidden_near/gt_cells", "hidden_near/objects_with_hidden_gt",
                             "P2@{threshold}/recall_H", "P2@{threshold}/precision_H", "P2@{threshold}/iou_H",
-                            "hidden/gt_cells", "hidden/objects_with_hidden_gt",
-                            "P2@{threshold}/recall", "P2@{threshold}/precision", "P2@{threshold}/iou",
-                            "P1/recall", "P1/precision", "P1/recall_H")
+                            "hidden/gt_cells", "hidden/objects_with_hidden_gt", "P1/recall_H")
 # Context suffixes start with this segment and have no pooled / mean variants.
 CONTEXT_SEGMENT_PREFIXES = ("hidden/", "hidden_near/")
 # Variants of every other headline metric: pooled over cells, then averaged over objects.
@@ -221,7 +221,7 @@ def verify_cells_reproduce_report(report: Dict[str, Any], cells: Dict[str, np.nd
             if recomputed != class_report[test_name]:
                 raise ValueError(f"{run_dir}: {class_name} {test_name} metrics do not recompute from the cells archive")
         # The hidden block uses the full-length masks (hidden flags and object lists index all scored cells).
-        # Both bands: H_near (headline) and full H, each from its own archive mask.
+        # Both bands: H_near (read second, after the whole scene) and full H, each from its own archive mask.
         for hidden_key in (HIDDEN_NEAR_KEY, HIDDEN_KEY):
             if hidden_key not in cells or hidden_key not in class_report:
                 raise ValueError(f"{run_dir}: no '{hidden_key}' in the cells archive or report (scored before the near band; rerun scripts/19)")

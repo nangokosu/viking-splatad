@@ -392,10 +392,10 @@ Plain words first, the formula last. Every number is read from the run reports, 
      - **Reading the two together:** for recall, when objects share no cells, the pooled value is the average of the per-object recalls weighted by each object's cell count. So a mean above the pooled value means objects with few cells are recovered better, relative to their size, than objects with many cells; a mean below means the large objects carry the score.
    - **(g) Why precision stays below 1.** "Next to an obstacle" is not "empty space". The ring also holds things nobody labelled: grass (tall in June), ground and small plants, which really are solid. It also catches the edges of a trunk's own Gaussians, because a trunk is thinner than one cell. So precision stays below 1 even for a correct model. This is a likely cause, not a tested finding.
    - **(h) How the threshold changes both.** Raising t moves cells from filled to empty, so recall can only fall; precision usually rises.
-6. **Hidden cells (reference for the later round).** We replay every recorded lidar beam.
+6. **Hidden cells (the second part of the evaluation, read after the whole scene).** We replay every recorded lidar beam.
    - A cell is *hidden* if no beam reached it, none passed through it, and at least one was stopped before it (by grass, for example).
    - *H_near* keeps the hidden cells within {near_band_m:g} m of the driven path.
-   - Hidden-cell metrics are the formulas of point 5, restricted to H_near. The figures will take the same form as the whole-scene ones.
+   - Hidden-cell metrics are the formulas of point 5, restricted to H_near. Their figures take the same form as the whole-scene ones, and are read after them.
    - Stock SplatAD is expected to leave hidden cells mostly empty, since no lidar or camera signal reached them. That gap is what radar is meant to close.
 7. **Statistics.** Each arm is trained {repeat_count} times. A table cell shows mean ± std over the repeats. Gap = difference of means. "sep" means the two arms' [min, max] ranges do not overlap. A gap is read only when it is larger than the spread within the arms.
 """
