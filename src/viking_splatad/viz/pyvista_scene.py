@@ -9,10 +9,11 @@ so the picture cannot disagree with the numbers.
 import itertools
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from viking_splatad.eval.detection import cuboid_centers
 from viking_splatad.labels.cuboids import Cuboid, compute_cuboid_geometry
 
 # Corners of one box, in the order ``compute_cuboid_geometry`` writes them: the sign triple
@@ -49,6 +50,13 @@ RENDER_OVERLAY_OPACITY = 0.03
 # the only one drawn; overlay and recall stay available as layouts.
 MAP_NAMES = ("overlay", "recall", "precision")
 DRAWN_MAP_NAMES = ("precision",)
+# Largest value of one 8-bit colour channel: 0-255 RGB triples divide by it to give the 0-1 RGB that PyVista and
+# matplotlib take (the single definition for the whole figure suite).
+MAX_CHANNEL_VALUE = 255
+# Display settings (presentation choices, no data-derived value): wireframe line width in pixels, and the share
+# of ambient (direction-free) light on voxel faces.
+WIREFRAME_LINE_WIDTH = 1.0
+VOXEL_AMBIENT_LIGHT = 0.7
 # Script that renders the pictures, and the isolated project (viz/) that has PyVista installed.
 VIEWER_SCRIPT_RELATIVE_PATH = Path("scripts") / "15_view_pose_pyvista.py"
 VIEWER_PROJECT_RELATIVE_DIR = Path("viz")
@@ -229,7 +237,7 @@ def run_viewer_command(command: List[str], viz_output_dir: Path, project_root: P
 
     The evaluations call this only after their metrics are written, so a drawing problem must not
     touch them. The command runs from the repo root because the viewer commands (``viz_command``,
-scripts/19's ``p2_viz_command``) use repo-relative script and project paths.
+    scripts/19's ``p2_viz_command``) use repo-relative script and project paths.
 
     Args:
         command: The viewer command, program first.
@@ -255,3 +263,82 @@ scripts/19's ``p2_viz_command``) use repo-relative script and project paths.
         last_line = repo_relative(stderr_lines[-1], project_root) if stderr_lines else "no error output"
         return f"failed: exit code {completed.returncode}: {last_line}"
     return f"written: {repo_relative(str(viz_output_dir), project_root)}"
+
+
+def within_radius(points_xyz: np.ndarray, centre_xy: np.ndarray, radius_meters: float) -> np.ndarray:
+    """Which points lie within a horizontal radius of a centre (height ignored).
+
+    Args:
+        points_xyz: (N, 3) map-frame points.
+        centre_xy: (2,) map-frame centre, e.g. a sweep's lidar position.
+        radius_meters: Radius (m), inclusive.
+
+    Returns:
+        (N,) bool.
+    """
+    # Horizontal distance: sqrt(dx^2 + dy^2) <= radius.
+    return np.linalg.norm(np.asarray(points_xyz)[:, :2] - np.asarray(centre_xy), axis=1) <= radius_meters
+
+
+def within_radius_of_any(points_xyz: np.ndarray, centres_xy: np.ndarray, radius_meters: float) -> np.ndarray:
+    """Which points lie within a horizontal radius of at least one centre (height ignored).
+
+    Args:
+        points_xyz: (N, 3) map-frame points.
+        centres_xy: (K, 2) map-frame centres, e.g. the lidar positions of the pooled sweeps.
+        radius_meters: Radius (m), inclusive.
+
+    Returns:
+        (N,) bool: the union of the K discs.
+    """
+    near_any = np.zeros(np.asarray(points_xyz).shape[0], dtype=bool)
+    for centre_xy in np.atleast_2d(centres_xy):
+        near_any |= within_radius(points_xyz, centre_xy, radius_meters)
+    return near_any
+
+
+def draw_voxels(plotter, pyvista_module, centres: np.ndarray, voxel_size: float,
+                colour_rgb: Tuple[int, int, int], opacity: float) -> None:
+    """Draw voxels of one colour as cubes.
+
+    Args:
+        plotter: ``pyvista.Plotter`` with the panel's subplot active.
+        pyvista_module: The imported ``pyvista``.
+        centres: (V, 3) voxel centres; nothing is drawn when empty.
+        voxel_size: Voxel edge (m).
+        colour_rgb: 0-255 RGB.
+        opacity: 0-1.
+    """
+    if centres.shape[0] == 0:
+        return
+    # One cube per voxel centre: glyph copies the cube to every point (no rotation, no scaling).
+    cube = pyvista_module.Cube(x_length=voxel_size, y_length=voxel_size, z_length=voxel_size)
+    cubes = pyvista_module.PolyData(centres).glyph(geom=cube, orient=False, scale=False)
+    # High ambient light keeps the side faces near the true colour (with default lighting they darken, which
+    # washed green against grey); the remaining diffuse share still separates the faces of neighbouring cubes.
+    plotter.add_mesh(cubes, color=np.array(colour_rgb) / MAX_CHANNEL_VALUE, opacity=opacity,
+                     ambient=VOXEL_AMBIENT_LIGHT, diffuse=1.0 - VOXEL_AMBIENT_LIGHT)
+
+
+def draw_scored_cuboid_wireframes(plotter, pyvista_module, scene: Any, selected_class_ids: Sequence[int],
+                                  lidar_positions_xy: np.ndarray, radius_meters: float) -> None:
+    """Draw the selected classes' scored cuboids whose centre lies within the radius, as thin dark wireframes.
+
+    Args:
+        plotter: ``pyvista.Plotter`` with the panel's subplot active.
+        pyvista_module: The imported ``pyvista``.
+        scene: Duck-typed run scene (scripts/15's ``RunScene``); only its ``scored_cuboids`` attribute is read, a
+            sequence of cuboids with ``class_id`` (the boxes the metric counts).
+        selected_class_ids: Classes whose boxes are drawn.
+        lidar_positions_xy: (K, 2) map-frame lidar positions of the drawn sweeps.
+        radius_meters: Horizontal radius around any of them.
+    """
+    # Step 1: the counted boxes of the selected classes, kept when their centre is near any lidar position.
+    selected_cuboids = [cuboid for cuboid in scene.scored_cuboids if cuboid.class_id in selected_class_ids]
+    nearby_cuboids = [cuboid for cuboid, nearby in zip(selected_cuboids, within_radius_of_any(cuboid_centers(selected_cuboids), lidar_positions_xy, radius_meters))
+                      if nearby] if selected_cuboids else []
+    # Step 2: 12 edges per box as one line mesh.
+    corner_points, line_cells = cuboid_wireframe_arrays(nearby_cuboids)
+    if corner_points.shape[0]:
+        plotter.add_mesh(pyvista_module.PolyData(corner_points, lines=line_cells),
+                         color=np.array(CUBOID_WIREFRAME_RGB) / MAX_CHANNEL_VALUE, line_width=WIREFRAME_LINE_WIDTH)

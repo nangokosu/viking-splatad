@@ -9,6 +9,7 @@ from viking_splatad.eval.range_margin import (
     range_margin,
     sweep_pair_indices,
 )
+from viking_splatad.eval.session_hidden_space import neighbour_reach_from_voxel
 
 GRID_SIDE = 21
 GRID_SPACING = 0.1
@@ -97,3 +98,79 @@ def test_value_errors():
         sweep_pair_indices(10, 2, 0)
     with pytest.raises(ValueError):
         points_within_range(np.zeros((3, 2)), 1.0)
+
+
+# --- Bounded neighbour reach (T92) -------------------------------------------------------------
+REACH_GRID_SIDE = 11
+REACH_GRID_SPACING = 0.05
+REACH_BOUND_M = 0.3
+REACH_PLANARITY_MIN = 0.0
+REACH_NEIGHBOUR_COUNT = 10
+REACH_HEIGHT_M = 0.02
+# Query xy positions: two over the dense patch (patch spans 0 .. 0.5 m), two far outside it.
+REACH_QUERY_XY = np.array([[0.25, 0.25], [0.30, 0.20], [3.0, 3.0], [-2.0, 1.0]])
+INVALID_REACHES = [0.0, -0.1]
+VOXEL_SIZES = [0.52, 0.1, 2.0]
+INVALID_VOXEL_SIZES = [0.0, -0.5]
+FRACTION_OF_VOXEL = 0.5
+
+
+def _reach_patch() -> np.ndarray:
+    """Dense z = 0 patch, shape (REACH_GRID_SIDE^2, 3), spacing far below the reach."""
+    axis_values = np.arange(REACH_GRID_SIDE) * REACH_GRID_SPACING
+    grid_x, grid_y = np.meshgrid(axis_values, axis_values)
+    return np.stack([grid_x.ravel(), grid_y.ravel(), np.zeros(grid_x.size)], axis=1)
+
+
+@pytest.mark.covers("T92")
+def test_reach_bound_drops_points_with_far_neighbours():
+    """Only points whose k-th neighbour distance is within the reach are returned, with exact residuals."""
+    patch_points = _reach_patch()
+    query_points = np.column_stack([REACH_QUERY_XY, np.full(len(REACH_QUERY_XY), REACH_HEIGHT_M)])
+    # Independent brute-force k-th neighbour distance (no cKDTree).
+    pairwise = np.linalg.norm(query_points[:, None, :] - patch_points[None, :, :], axis=2)
+    kth_distance = np.sort(pairwise, axis=1)[:, REACH_NEIGHBOUR_COUNT - 1]
+    expected_kept = kth_distance <= REACH_BOUND_M
+    assert expected_kept.any() and not expected_kept.all()
+    residuals = cross_sweep_plane_residuals(
+        query_points, patch_points, REACH_NEIGHBOUR_COUNT, REACH_PLANARITY_MIN,
+        max_neighbour_reach_m=REACH_BOUND_M)
+    assert residuals.shape == (int(expected_kept.sum()),)
+    np.testing.assert_allclose(residuals, np.abs(query_points[expected_kept, 2]), atol=1e-12)
+
+
+@pytest.mark.covers("T92")
+def test_reach_none_equals_unbounded_call():
+    """max_neighbour_reach_m=None is bit-identical to omitting it."""
+    patch_points = _reach_patch()
+    query_points = np.column_stack([REACH_QUERY_XY, np.full(len(REACH_QUERY_XY), REACH_HEIGHT_M)])
+    default_call = cross_sweep_plane_residuals(
+        query_points, patch_points, REACH_NEIGHBOUR_COUNT, REACH_PLANARITY_MIN)
+    none_call = cross_sweep_plane_residuals(
+        query_points, patch_points, REACH_NEIGHBOUR_COUNT, REACH_PLANARITY_MIN, max_neighbour_reach_m=None)
+    assert default_call.shape == (len(REACH_QUERY_XY),)
+    np.testing.assert_array_equal(default_call, none_call)
+
+
+@pytest.mark.covers("T92")
+@pytest.mark.parametrize("invalid_reach", INVALID_REACHES)
+def test_reach_must_be_positive(invalid_reach):
+    """A zero or negative reach is refused."""
+    patch_points = _reach_patch()
+    with pytest.raises(ValueError):
+        cross_sweep_plane_residuals(
+            patch_points[:1], patch_points, REACH_NEIGHBOUR_COUNT, REACH_PLANARITY_MIN,
+            max_neighbour_reach_m=invalid_reach)
+
+
+@pytest.mark.parametrize("voxel_size", VOXEL_SIZES)
+def test_neighbour_reach_from_voxel_is_half_the_edge(voxel_size):
+    """The reach is half a GT voxel edge."""
+    assert neighbour_reach_from_voxel(voxel_size) == pytest.approx(voxel_size * FRACTION_OF_VOXEL)
+
+
+@pytest.mark.parametrize("voxel_size", INVALID_VOXEL_SIZES)
+def test_neighbour_reach_from_voxel_rejects_non_positive(voxel_size):
+    """A non-positive voxel edge is refused."""
+    with pytest.raises(ValueError):
+        neighbour_reach_from_voxel(voxel_size)

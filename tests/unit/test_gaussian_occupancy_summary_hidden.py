@@ -175,8 +175,9 @@ def test_headline_keys_exist_in_flattened_metrics_in_order():
     flat = flatten_hidden_metrics(report)
     keys = script.headline_keys(GROUP_NAME, "0.5")
     assert all(key in flat for key in keys)
-    # H_near (headline) leads; the full-H rows follow the H_near ones.
-    assert keys[0].endswith("P2@0.5/recall_Hnear/pooled") and keys[1].endswith("P2@0.5/recall_Hnear/mean")
+    # Whole scene leads (reframed order: whole scene first, then the hidden near band, then full H). The
+    # expectation changed from H_near-first because the presentation order changed, not a correctness check.
+    assert keys[0].endswith("P2@0.5/recall/pooled") and keys[1].endswith("P2@0.5/recall/mean")
     assert keys.index(f"{GROUP_NAME}/hidden_near/gt_cells") < keys.index(f"{GROUP_NAME}/P2@0.5/recall_H/pooled")
     assert f"{GROUP_NAME}/P1/recall_Hnear/pooled" in keys and f"{GROUP_NAME}/hidden/gt_cells" in keys
     assert not any("recall_blocked" in key for key in keys)
@@ -223,7 +224,10 @@ def test_script_21_headline_metrics_and_schema():
     assert script.SUMMARY_SCHEMA.endswith("gaussian-occupancy-summary/2")
     assert script.HEADLINE_CLASSES == ("obstacles", "tree_trunk", "rock", "bush_or_small_tree")
     suffixes = script.headline_metric_suffixes(["0.5", "0.8"])
-    assert suffixes[0] == "P2@0.5/recall_Hnear/pooled" and "P2@0.8/iou_H/mean" in suffixes and "P2@0.8/iou_Hnear/mean" in suffixes
+    # Whole scene is read first (the reframed report), then the hidden near band.
+    assert suffixes[0] == "P2@0.5/recall/pooled" and "P2@0.8/iou_H/mean" in suffixes and "P2@0.8/iou_Hnear/mean" in suffixes
+    assert suffixes.index("P1/recall/pooled") < suffixes.index("P2@0.5/recall_Hnear/pooled")
+    assert suffixes.index("P2@0.8/iou/pooled") < suffixes.index("P2@0.5/recall_Hnear/pooled")
     assert suffixes.index("P2@0.5/iou_Hnear/mean") < suffixes.index("P2@0.5/recall_H/pooled")
     assert "P1/recall_Hnear/pooled" in suffixes
     assert "P1/recall_H/pooled" in suffixes and suffixes[-2:] == list(script.OPTIONAL_METRIC_SUFFIXES)

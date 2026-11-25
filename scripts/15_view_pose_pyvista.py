@@ -86,7 +86,6 @@ from viking_splatad.eval.run_context import (
 )
 from viking_splatad.labels.cuboids import Cuboid
 from viking_splatad.viz.pyvista_scene import (
-    CUBOID_WIREFRAME_RGB,
     GROUND_TRUTH_OVERLAY_OPACITY,
     GROUND_TRUTH_VOXEL_RGB,
     HIT_VOXEL_RGB,
@@ -100,6 +99,10 @@ from viking_splatad.viz.pyvista_scene import (
     RENDER_VOXEL_RGB,
     SOLID_VOXEL_OPACITY,
     cuboid_wireframe_arrays,
+    draw_scored_cuboid_wireframes,
+    draw_voxels,
+    within_radius,
+    within_radius_of_any,
     beam_elevation_degrees,
     inside_outside_colors,
 )
@@ -115,12 +118,10 @@ VIEW_CHOICES = ("oblique", "top")
 # Display sizes in pixels, a presentation choice with no data-derived value: the rendered points
 # are drawn larger than the real ones so both stay visible when they overlap; one panel is
 # 800 x 800 px so several side-by-side panels still fit a laptop screen.
-REAL_POINT_SIZE, RENDERED_POINT_SIZE, WIREFRAME_LINE_WIDTH = 2.0, 4.0, 1.0
+REAL_POINT_SIZE, RENDERED_POINT_SIZE = 2.0, 4.0
 PANEL_PIXELS = 800
 # Opacity of the real returns, so rendered points over them stay readable (presentation choice).
 REAL_POINT_OPACITY = 0.5
-# Share of ambient (direction-free) light on voxel faces, a presentation choice.
-VOXEL_AMBIENT_LIGHT = 0.7
 # Ripple view (presentation choices): small points so neighbouring returns stay separate, and a colormap for the beam
 # elevation.
 RIPPLE_POINT_SIZE = 2.0
@@ -376,38 +377,6 @@ def rendered_point_set(sweep: RenderedSweep, use_gated: bool) -> Tuple[np.ndarra
     return sweep.ungated_points, "ungated"
 
 
-def within_radius(points_xyz: np.ndarray, centre_xy: np.ndarray, radius_meters: float) -> np.ndarray:
-    """Which points lie within a horizontal radius of a centre (height ignored).
-
-    Args:
-        points_xyz: (N, 3) map-frame points.
-        centre_xy: (2,) map-frame centre, e.g. a sweep's lidar position.
-        radius_meters: Radius (m), inclusive.
-
-    Returns:
-        (N,) bool.
-    """
-    # Horizontal distance: sqrt(dx^2 + dy^2) <= radius.
-    return np.linalg.norm(np.asarray(points_xyz)[:, :2] - np.asarray(centre_xy), axis=1) <= radius_meters
-
-
-def within_radius_of_any(points_xyz: np.ndarray, centres_xy: np.ndarray, radius_meters: float) -> np.ndarray:
-    """Which points lie within a horizontal radius of at least one centre (height ignored).
-
-    Args:
-        points_xyz: (N, 3) map-frame points.
-        centres_xy: (K, 2) map-frame centres, e.g. the lidar positions of the pooled sweeps.
-        radius_meters: Radius (m), inclusive.
-
-    Returns:
-        (N,) bool: the union of the K discs.
-    """
-    near_any = np.zeros(np.asarray(points_xyz).shape[0], dtype=bool)
-    for centre_xy in np.atleast_2d(centres_xy):
-        near_any |= within_radius(points_xyz, centre_xy, radius_meters)
-    return near_any
-
-
 def resolve_selected_class_ids(eval_settings: Dict[str, Any], requested_names: Optional[Sequence[str]]) -> Dict[int, str]:
     """The scored classes to draw, by id.
 
@@ -633,52 +602,6 @@ def ratio_text(numerator: int, denominator: int) -> str:
         ``numerator / denominator`` formatted, or "n/a".
     """
     return "n/a" if denominator == 0 else f"{numerator / denominator:.2f}"
-
-
-def draw_voxels(plotter, pyvista_module, centres: np.ndarray, voxel_size: float,
-                colour_rgb: Tuple[int, int, int], opacity: float) -> None:
-    """Draw voxels of one colour as cubes.
-
-    Args:
-        plotter: ``pyvista.Plotter`` with the panel's subplot active.
-        pyvista_module: The imported ``pyvista``.
-        centres: (V, 3) voxel centres; nothing is drawn when empty.
-        voxel_size: Voxel edge (m).
-        colour_rgb: 0-255 RGB.
-        opacity: 0-1.
-    """
-    if centres.shape[0] == 0:
-        return
-    # One cube per voxel centre: glyph copies the cube to every point (no rotation, no scaling).
-    cube = pyvista_module.Cube(x_length=voxel_size, y_length=voxel_size, z_length=voxel_size)
-    cubes = pyvista_module.PolyData(centres).glyph(geom=cube, orient=False, scale=False)
-    # High ambient light keeps the side faces near the true colour (with default lighting they darken, which
-    # washed green against grey); the remaining diffuse share still separates the faces of neighbouring cubes.
-    plotter.add_mesh(cubes, color=np.array(colour_rgb) / 255.0, opacity=opacity,
-                     ambient=VOXEL_AMBIENT_LIGHT, diffuse=1.0 - VOXEL_AMBIENT_LIGHT)
-
-
-def draw_scored_cuboid_wireframes(plotter, pyvista_module, scene: RunScene, selected_class_ids: Sequence[int],
-                                  lidar_positions_xy: np.ndarray, radius_meters: float) -> None:
-    """Draw the selected classes' scored cuboids whose centre lies within the radius, as thin dark wireframes.
-
-    Args:
-        plotter: ``pyvista.Plotter`` with the panel's subplot active.
-        pyvista_module: The imported ``pyvista``.
-        scene: The run's scene (its ``scored_cuboids`` are the boxes the metric counts).
-        selected_class_ids: Classes whose boxes are drawn.
-        lidar_positions_xy: (K, 2) map-frame lidar positions of the drawn sweeps.
-        radius_meters: Horizontal radius around any of them.
-    """
-    # Step 1: the counted boxes of the selected classes, kept when their centre is near any lidar position.
-    selected_cuboids = [cuboid for cuboid in scene.scored_cuboids if cuboid.class_id in selected_class_ids]
-    nearby_cuboids = [cuboid for cuboid, nearby in zip(selected_cuboids, within_radius_of_any(cuboid_centers(selected_cuboids), lidar_positions_xy, radius_meters))
-                      if nearby] if selected_cuboids else []
-    # Step 2: 12 edges per box as one line mesh.
-    corner_points, line_cells = cuboid_wireframe_arrays(nearby_cuboids)
-    if corner_points.shape[0]:
-        plotter.add_mesh(pyvista_module.PolyData(corner_points, lines=line_cells),
-                         color=np.array(CUBOID_WIREFRAME_RGB) / 255.0, line_width=WIREFRAME_LINE_WIDTH)
 
 
 def draw_panel(plotter, pyvista_module, column: int, map_name: str, scene: RunScene, selected_class_ids: Sequence[int],
@@ -1186,7 +1109,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             stems = [P2_PICTURE_STEM]
         # --p2-hidden: one picture of the run's hidden-voxel cells at the chosen (or archived binding) threshold.
         elif arguments.p2_hidden:
-            _, p2_cells = load_p2_inputs(arguments.run_dirs[0])
+            # The report is kept: the drawing step takes the hidden class's box ids from it.
+            p2_report, p2_cells = load_p2_inputs(arguments.run_dirs[0])
             hidden_threshold = float(p2_cells["threshold"]) if arguments.hidden_threshold is None else arguments.hidden_threshold
             # Fail before drawing on a missing key or an unevaluated threshold (KeyError / ValueError -> refusal).
             hidden_cell_outcomes(p2_cells, arguments.hidden_class, hidden_threshold, arguments.hidden_band)

@@ -153,9 +153,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cuboids, grid = load_ground_truth(gt_dir)
     vertical_half_fov = vertical_half_fov_from_elevations(manifest["lidar"]["elevation_mapping"])
     # Step 3: range margin from the data.
-    margin = estimate_range_margin(dataset_dir, split_settings, settings)
+    margin = estimate_range_margin(dataset_dir, split_settings, settings, float(grid["voxel_size"]))
     print(f"range margin {margin['margin_m']:.4f} m (quantile {margin['quantile']}, "
-          f"{margin['residual_count']} residuals, {margin['pair_count']} pairs)", flush=True)
+          f"{margin['residual_count']} residuals, {margin['pair_count']} pairs, "
+          f"neighbour reach {margin['neighbour_reach_m']:.4f} m)", flush=True)
     # Step 4: sweeps (all, or the first N for debugging) and the build.
     total_sweeps = count_session_sweeps(dataset_dir)
     if arguments.max_sweeps is not None:

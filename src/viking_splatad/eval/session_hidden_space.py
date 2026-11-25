@@ -54,8 +54,13 @@ SWEEPS_PER_TASK = 4
 IN_FLIGHT_TASKS_PER_WORKER = 2
 # Half of a length: the half diagonal of a cube of edge a is a * sqrt(SPACE_DIMENSION) * HALF.
 HALF = 0.5
+# Fraction of the GT cell edge allowed as neighbour reach in the margin's plane fits. Half a cell
+# is the spatial scale at which the margin must resolve cell membership; neighbours farther than
+# that sample a different cell, so their plane fit measures surface shape rather than range noise
+# plus pose error (June: m = 0.398 m unbounded vs 0.103 m with neighbours within 0.25 m).
+NEIGHBOUR_REACH_VOXEL_FRACTION = 0.5
 # Bin width (m) of the streamed return-range histogram behind the scored range limit. 1 cm is far
-# below the measured range margin (~0.4 m on June), so binning cannot move the limit by a meaningful
+# below the measured range margin (0.1 to 0.4 m on June, with or without the neighbour reach bound), so binning cannot move the limit by a meaningful
 # amount, and ~2e4 bins cover the farthest Ouster return (~200 m) in a few hundred kB.
 RANGE_HISTOGRAM_BIN_M = 0.01
 
@@ -458,8 +463,25 @@ def accumulate_session_evidence(
     return total_evidence
 
 
+def neighbour_reach_from_voxel(voxel_size: float) -> float:
+    """Largest neighbour distance allowed in the margin's plane fits, from the GT cell edge.
+
+    Args:
+        voxel_size: GT cell edge (m), > 0.
+
+    Returns:
+        ``NEIGHBOUR_REACH_VOXEL_FRACTION * voxel_size`` (m).
+
+    Raises:
+        ValueError: If ``voxel_size`` <= 0.
+    """
+    if voxel_size <= 0:
+        raise ValueError(f"voxel_size must be > 0, got {voxel_size}")
+    return NEIGHBOUR_REACH_VOXEL_FRACTION * voxel_size
+
+
 def estimate_range_margin(
-    dataset_dir: Path, split_settings: Dict[str, Any], settings: HiddenEvalSettings,
+    dataset_dir: Path, split_settings: Dict[str, Any], settings: HiddenEvalSettings, voxel_size: float,
     lidar_sensor_name: str = DEFAULT_LIDAR_SENSOR_NAME,
 ) -> Dict[str, Any]:
     """Range margin m from cross-sweep point-to-plane residuals (T92) over deterministic sweep pairs.
@@ -474,15 +496,19 @@ def estimate_range_margin(
         split_settings: Accepted for interface symmetry with ``iter_session_sweeps``; the margin does
             not depend on the split (all sweeps are candidates).
         settings: Validated hidden-space settings.
+        voxel_size: GT cell edge (m); bounds the plane-fit neighbour reach via
+            ``neighbour_reach_from_voxel``.
         lidar_sensor_name: Lidar stream name.
 
     Returns:
-        {"margin_m", "residual_count", "pair_count", "quantile"}.
+        {"margin_m", "residual_count", "pair_count", "quantile", "neighbour_reach_m"}.
 
     Raises:
-        ValueError: If no pair gives a residual (``range_margin`` refuses an empty set).
+        ValueError: If ``voxel_size`` <= 0, or no pair gives a residual (``range_margin`` refuses an empty set).
     """
     del split_settings  # The margin uses every sweep regardless of split.
+    # Step 0: neighbour reach shared by every plane fit.
+    reach = neighbour_reach_from_voxel(voxel_size)
     # Step 1: pairs of time-ordered sweep indices.
     view = open_dataset_view(Path(dataset_dir))
     ego_radius, ego_box = parse_ego_filter(view.manifest["lidar"]["min_lidar_dist"])
@@ -513,11 +539,12 @@ def estimate_range_margin(
         _, second_map = returns_in_map(second_index)
         near_mask = points_within_range(first_lidar, settings.margin_max_range_m)
         residual_arrays.append(cross_sweep_plane_residuals(
-            first_map[near_mask], second_map, settings.margin_neighbour_count, settings.margin_planarity_min))
+            first_map[near_mask], second_map, settings.margin_neighbour_count, settings.margin_planarity_min,
+            max_neighbour_reach_m=reach))
     residuals = np.concatenate(residual_arrays) if residual_arrays else np.empty(0, dtype=np.float64)
     # Step 3: the quantile is the margin.
     return {"margin_m": range_margin(residuals, settings.margin_quantile), "residual_count": int(residuals.size),
-            "pair_count": len(pairs), "quantile": settings.margin_quantile}
+            "pair_count": len(pairs), "quantile": settings.margin_quantile, "neighbour_reach_m": reach}
 
 
 def build_hidden_space(

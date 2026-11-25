@@ -44,7 +44,7 @@ input hashes. The headline band H_near is H within `hidden_space.near_band_m`
 (20 m) horizontal distance of the nearest sweep origin; full H is reported beside
 it. `scripts/25_hidden_label_transitions.py` shows how GT cells move from the
 earlier test-sweep labels (seen, blocked, no-return, passed-through, unobserved)
-to H (`reports/hidden_space/<session>/label_transitions.md`). A nearer return is
+to H (an optional diagnostic; its reports are not kept). A nearer return is
 **not independently identified as grass**, and camera occlusion is not classified.
 These limits must accompany any result; the full list is in
 `docs/research/evaluation_caveats.md` §6-§7.

@@ -17,6 +17,9 @@ per arm, n / mean / sample std / min / max of every P1, P2 and hidden-voxel metr
 both arms' spreads, plus the GT cells recovered in every repeat of one arm and in no repeat of the
 other, per evidence stratum. Reading rule: a variant gap counts only when it exceeds the spread
 between repeats without losing precision_H. Descriptive only (eval/p2_repeats.py).
+The markdown opens with the plain-language definitions and the whole-scene section
+(``eval/report_opening.py``), which need scripts/26's ``figures_manifest.json`` of the session; without it
+the script refuses.
 
 Usage:
     uv run python scripts/20_summarize_gaussian_occupancy.py --session june_tall_grass runs/<run_id> ...
@@ -24,6 +27,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -33,6 +37,7 @@ import numpy as np
 from viking_splatad.config import find_project_root
 from viking_splatad.dataset.reference_split import compare_with_reference
 from viking_splatad.dataset.run_split import SplitFrame
+from viking_splatad.eval.evaluation_terminology import MARGIN_CLASS_NAMES
 from viking_splatad.eval.hidden_geometry import occupied_cell_metrics
 from viking_splatad.eval.hidden_metrics import OBJECT_ARRAY_KEYS, hidden_class_report, threshold_key
 from viking_splatad.eval.p2_cells import HIDDEN_KEY, HIDDEN_NEAR_KEY
@@ -53,6 +58,7 @@ from viking_splatad.eval.run_quality import (
     STEP_KEY,
     run_quality,
 )
+from viking_splatad.eval.report_opening import FIGURES_RELATIVE_DIR, load_figure_manifest, whole_scene_opening_markdown
 from viking_splatad.eval.run_context import file_sha256
 
 REPORT_SCHEMA = "viking-splatad/gaussian-occupancy-summary/2"
@@ -76,18 +82,18 @@ PER_MODEL_CELL_ARRAYS = ("occupancy", "p1_hit")
 # Arm order in tables: stock first, then the radar variants as they build on each other (CLAUDE.md
 # scope); unknown methods follow. Gaps read "later arm - earlier arm" so a radar gain is positive.
 METHOD_ORDER = ("splatad", "splatad-radar-init", "splatad-radar-init-lidar")
-# Headline metrics of the markdown tables, in reading order (the JSON holds all of them). ``{threshold}``
-# is a P2 threshold key. 1) H_near (hidden within the near band of the path, ``_Hnear``): P2 recall,
-# precision, IoU, P1 recall_Hnear, then the context counts (hidden GT cells, objects having one);
-# 2) full H (``_H``): P2 recall, precision, IoU and its context counts; 3) baseline: P2 recall,
-# precision, IoU over the whole neighbourhood; 4) lidar view: P1 recall, precision, recall_H.
-# P1/P2 recall_blocked is retired from the headline (still in the JSON).
-HEADLINE_METRIC_SUFFIXES = ("P2@{threshold}/recall_Hnear", "P2@{threshold}/precision_Hnear", "P2@{threshold}/iou_Hnear",
+# Metrics of the markdown tables, in reading order (the JSON holds all of them). ``{threshold}`` is a P2
+# threshold key. 1) whole scene, read first: P2 recall, precision, IoU over the whole neighbourhood, then the
+# lidar view P1 recall, precision; 2) hidden cells, read after the whole scene: H_near (hidden within the near
+# band of the path, ``_Hnear``) P2 recall, precision, IoU, P1 recall_Hnear, then the context counts (hidden GT
+# cells, objects having one); 3) full H (``_H``): P2 recall, precision, IoU, its context counts, and P1 recall_H.
+# P1/P2 recall_blocked is retired from the tables (still in the JSON).
+HEADLINE_METRIC_SUFFIXES = ("P2@{threshold}/recall", "P2@{threshold}/precision", "P2@{threshold}/iou",
+                            "P1/recall", "P1/precision",
+                            "P2@{threshold}/recall_Hnear", "P2@{threshold}/precision_Hnear", "P2@{threshold}/iou_Hnear",
                             "P1/recall_Hnear", "hidden_near/gt_cells", "hidden_near/objects_with_hidden_gt",
                             "P2@{threshold}/recall_H", "P2@{threshold}/precision_H", "P2@{threshold}/iou_H",
-                            "hidden/gt_cells", "hidden/objects_with_hidden_gt",
-                            "P2@{threshold}/recall", "P2@{threshold}/precision", "P2@{threshold}/iou",
-                            "P1/recall", "P1/precision", "P1/recall_H")
+                            "hidden/gt_cells", "hidden/objects_with_hidden_gt", "P1/recall_H")
 # Context suffixes start with this segment and have no pooled / mean variants.
 CONTEXT_SEGMENT_PREFIXES = ("hidden/", "hidden_near/")
 # Variants of every other headline metric: pooled over cells, then averaged over objects.
@@ -215,7 +221,7 @@ def verify_cells_reproduce_report(report: Dict[str, Any], cells: Dict[str, np.nd
             if recomputed != class_report[test_name]:
                 raise ValueError(f"{run_dir}: {class_name} {test_name} metrics do not recompute from the cells archive")
         # The hidden block uses the full-length masks (hidden flags and object lists index all scored cells).
-        # Both bands: H_near (headline) and full H, each from its own archive mask.
+        # Both bands: H_near (read second, after the whole scene) and full H, each from its own archive mask.
         for hidden_key in (HIDDEN_NEAR_KEY, HIDDEN_KEY):
             if hidden_key not in cells or hidden_key not in class_report:
                 raise ValueError(f"{run_dir}: no '{hidden_key}' in the cells archive or report (scored before the near band; rerun scripts/19)")
@@ -242,6 +248,9 @@ def load_scored_run(run_dir: Path, session: str, record: Optional[Dict[str, Any]
     Raises:
         ValueError: Wrong session or schema, split differs without permission, archive mismatch.
     """
+    # A split-change reason must say something: an empty or blank reason would let a run be pooled unexplained.
+    if allow_split_change is not None and not allow_split_change.strip():
+        raise ValueError(f"{run_dir}: --allow-split-change needs a non-empty reason")
     report = json.loads((run_dir / RUN_REPORT_RELATIVE_PATH).read_text())
     if report.get("schema") != RUN_REPORT_SCHEMA:
         raise ValueError(f"{run_dir}: report schema {report.get('schema')!r}, need {RUN_REPORT_SCHEMA!r} (rerun scripts/19)")
@@ -254,7 +263,10 @@ def load_scored_run(run_dir: Path, session: str, record: Optional[Dict[str, Any]
         raise ValueError(f"{run_dir}: split not shown equal to {REFERENCE_SPLIT_RELATIVE_DIR}/{session}.json: "
                          f"{differences[:QUOTED_DIFFERENCE_COUNT]}")
     split_note = "identical to the reference record"
-    if differences:
+    if record is None:
+        # No record at all is its own case: the split is unproven, not merely different.
+        split_note = f"NO REFERENCE RECORD, allowed: {allow_split_change}"
+    elif differences:
         split_note = f"NOT VERIFIED ({len(differences)} differences), allowed: {allow_split_change}"
     # Step 2: the archive is the one the report was written with, and reproduces its metrics.
     cells_path = run_dir / RUN_CELLS_RELATIVE_PATH
@@ -282,6 +294,26 @@ def arm_sort_key(profile: str, runs: List[Dict[str, Any]]) -> tuple:
     method = runs[0]["report"]["train_method"]
     method_rank = METHOD_ORDER.index(method) if method in METHOD_ORDER else len(METHOD_ORDER)
     return (method_rank, profile)
+
+
+def run_provenance(report: Dict[str, Any]) -> Dict[str, Any]:
+    """The evaluation settings a run report records, which the definitions text quotes.
+
+    Args:
+        report: scripts/19 run report.
+
+    Returns:
+        {"voxel_size_m", "near_band_m", "max_range_m", "vertical_half_fov_rad", "margin_m_by_class"}.
+
+    Raises:
+        KeyError: The report lacks a field (rerun scripts/19).
+    """
+    return {"voxel_size_m": report["ground_truth"]["voxel_size_m"],
+            "near_band_m": report["hidden_space"]["near_band_m"],
+            "max_range_m": report["settings"]["max_range_m"],
+            "vertical_half_fov_rad": report["settings"]["vertical_half_fov_rad"],
+            "margin_m_by_class": {class_name: report["classes"][class_name]["margin_m"]
+                                  for class_name in MARGIN_CLASS_NAMES}}
 
 
 def summarize(scored_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -320,6 +352,13 @@ def summarize(scored_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
             if array_name not in scored_run["cells"] or array_name not in reference_cells or not np.array_equal(
                     scored_run["cells"][array_name], reference_cells[array_name]):
                 raise ValueError(f"{scored_run['run_dir']}: cells archive {array_name!r} differs from {reference_run['run_dir']}")
+    # The range margin is not inside SHARED_REPORT_FIELDS (it sits in each class entry), so check it here:
+    # the definitions text quotes one margin per class for the whole summary.
+    provenance = run_provenance(reference_run["report"])
+    for scored_run in scored_runs[1:]:
+        if run_provenance(scored_run["report"]) != provenance:
+            raise ValueError(f"{scored_run['run_dir']}: provenance (cell edge, band, range, field of view or class "
+                             f"margins) differs from {reference_run['run_dir']} (rerun scripts/19)")
     descriptions = {name: describe_arm([run["metrics"] for run in arms[name]]) for name in arm_names}
     class_names = report_class_order(scored_runs[0]["report"]["classes"])
     threshold_texts = [threshold_key(threshold) for threshold in scored_runs[0]["report"]["settings"]["p2_thresholds"]]
@@ -351,6 +390,8 @@ def summarize(scored_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
                         "metrics": descriptions[name]} for name in arm_names},
         "comparisons": comparisons,
         "settings": scored_runs[0]["report"]["settings"],
+        # Additive (schema stays /2): the values the report's definitions quote.
+        "provenance": provenance,
     }
 
 
@@ -483,11 +524,23 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     except (ValueError, KeyError, OSError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 1
-    # Step 3: write the JSON and markdown summaries.
+    # Step 3: write the JSON first, so a refusal in the opening never loses the pooled numbers.
     output_dir = arguments.output_dir or project_root / DEFAULT_OUTPUT_RELATIVE_DIR / arguments.session
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / SUMMARY_JSON_NAME).write_text(json.dumps(summary, indent=1, sort_keys=True))
-    markdown = summary_markdown(summary)
+    # Step 4: the opening (definitions, whole scene, figures) needs scripts/26's manifest of the session.
+    figures_dir = project_root / FIGURES_RELATIVE_DIR / arguments.session
+    # Figure links are relative to the folder holding the report.
+    figures_relative_dir = Path(os.path.relpath(figures_dir, output_dir)).as_posix()
+    try:
+        manifest = load_figure_manifest(project_root, arguments.session)
+        opening = whole_scene_opening_markdown(summary, manifest, figures_relative_dir)
+    except (ValueError, KeyError) as error:
+        print(f"refused: {error} (the summary JSON was written to {output_dir / SUMMARY_JSON_NAME})", file=sys.stderr)
+        return 1
+    # Step 5: the markdown; the opening follows the title line.
+    title_line, _, remaining_markdown = summary_markdown(summary).partition("\n")
+    markdown = f"{title_line}\n\n{opening}\n{remaining_markdown}"
     (output_dir / SUMMARY_MARKDOWN_NAME).write_text(markdown)
     print(markdown)
     print(f"wrote {output_dir / SUMMARY_JSON_NAME}")

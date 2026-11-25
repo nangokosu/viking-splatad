@@ -134,7 +134,10 @@ def peak_alpha_voxel_occupancy(cell_indices, grid_origin, voxel_size, means, opa
       place of its T57 value at that voxel's centre;
     - alpha_kv = o_k exp(-d^2/2) at the centre of every other scored voxel within 3 sigma (T57),
       d the Mahalanobis distance.
-    Combining by the product rule keeps it a blocking probability. Cost: T57's plus
+    Combining by the product rule keeps it a blocking probability. Source: SplatAD's own alpha-blending
+    (arXiv:2411.16816, Eq. 4; its median range is where prod_j(1 - alpha_j) drops below 0.5, section 3.3),
+    whose weights alpha_i prod_{j<i}(1 - alpha_j) sum to 1 - prod_i(1 - alpha_i) by telescoping and do not
+    depend on Gaussian order; see reports/gaussian_occupancy/terminology.md. Cost: T57's plus
     O((V + G) log V) for the home-cell lookup.
 
     Args:

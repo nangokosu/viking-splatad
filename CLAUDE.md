@@ -2,12 +2,14 @@
 
 Goal: answer the team's research question (`docs/proposal/`): *does adding 4D radar to LiDAR+camera SplatAD improve tree-trunk reconstruction when tall grass occludes the trunks?*
 
-Current scope: **Scene A**, a region with tree trunks, low grass in May and high grass in June. It covers 3 consecutive bag chunks per run (May 7–9, June 20–22), chosen by guess and check. Three variants on each of the two sessions (`may_short_grass`, `june_tall_grass`) make six runs, each a separate Slurm run (approved 2026-11-14):
+Current scope: **Scene A**, a region with tree trunks, low grass in May and high grass in June. It covers 3 consecutive bag chunks per run (May 7–9, June 20–22), chosen by guess and check. Three variants (approved 2026-11-14) on each of the two sessions (`may_short_grass`, `june_tall_grass`), each trained 5 times (user's request 2026-11-16), make the 30-run repeat campaign, each run a separate Slurm job:
 - **stock:** `splatad`, no radar.
 - **radar init:** `splatad-radar-init`. Radar anchors are appended as seed Gaussians with camera-painted colours; no radar loss.
 - **radar init + loss:** `splatad-radar-init-lidar`. The same seeds, plus a label-free radar opacity loss near the anchors.
 
-May trains with the camera (photometric) loss; June is lidar-only (`train_lidar_only`), and its camera only colours the initial Gaussians. Radar is **never rendered**. The loss-only method `splatad-radar-lidar` still exists for earlier runs. Extensions, each run only with the user's approval: the radar depth loss, and the photometric loss on June.
+Both sessions train with the camera (photometric) loss. May's campaign profiles are `may_scene_a{,_radar_init,_radar_init_loss}`. June's are the `june_scene_a{,_radar_init,_radar_init_loss}_cam` profiles (`train_lidar_only: false`, user's approval 2026-11-16), because the lidar-only June radar init run rendered nothing like the ground truth. The lidar-only June profiles (`june_scene_a*` without `_cam`) still exist but are not part of the campaign. Radar is **never rendered**. The loss-only method `splatad-radar-lidar` (`june_loss_only*` profiles) still exists, outside the campaign. Extension, run only with the user's approval: the radar depth loss.
+
+Evaluation order: first the whole scene (P2 recall and precision of class `obstacles` over every scored cell, with the lidar view P1 beside them), then the hidden cells: P2 hidden-voxel recall and precision of `obstacles` on H_near, the space no recorded lidar sweep could see within 20 m of the driven path (scripts 24 → 19 → 20 → 21; `docs/PLAN.md` §5, `docs/research/evaluation_caveats.md` §6–§7). Compare arms only by the gap against the spread over the repeats.
 
 **No May ↔ June mapping:** no ICP and no cross-run alignment.
 
@@ -27,9 +29,9 @@ Plan: `docs/PLAN.md`. SplatAD internals: `docs/research/splatad_extension_points
 1. Every conversion/calibration function is decorated `@transform("T<n>", "<description>")` (see `src/viking_splatad/registry.py`).
 2. Every registered transform has at least one unit test marked `@pytest.mark.covers("T<n>")`. `tests/test_traceability.py` enforces this statically.
 3. Unit tests use synthetic known-answer input; expected values are computed in the test from first principles.
-4. Converter output must satisfy the SplatAD input contract (`contract/splatad_contract.py`); never hand data to the GPU box without a passing contract report.
+4. Converter output must satisfy the SplatAD input contract (`src/viking_splatad/contract/splatad_contract.py`); never hand data to the GPU box without a passing contract report.
 5. Radar is never a SplatAD *sensor* and never rendered: `radars=()` stays empty because SplatAD asserts there are no radars. It enters SplatAD **only** as the `radar_seeds` metadata:
-   - built offline in the map frame (`radar_init/`, `scripts/07_build_radar_seeds.py`);
+   - built offline in the map frame (`src/viking_splatad/radar_init/`, `scripts/07_build_radar_seeds.py`);
    - transformed into the dataparser frame only by `VikingHillDataParser`, for the train split only;
    - gated by the contract.
 
@@ -47,7 +49,7 @@ Plan: `docs/PLAN.md`. SplatAD internals: `docs/research/splatad_extension_points
 Only for SplatAD (CUDA-only). Other GPU work uses the Mac's GPU.
 Source: https://support.cs.toronto.edu/systems/slurmresource.html
 1. **Mac first:** `scripts/test_in_image.sh` and `scripts/06_validate_contract.py` both pass (`submit_run.py gates`), and the CPU preflight in the image shows sane lidar-on-image overlays.
-2. **Log in:** `ssh comps0.cs.toronto.edu` (comps0–3). Submit jobs from there. Never compute there. Each user logs in with their own CS account. The username lives only in that user's `~/.ssh/config` (`User`) or in the `VIKING_SLURM_USER` environment variable, and never in repo files. Passwords are never stored anywhere (no repo files, env files, scripts or `sshpass`): use an ssh key or a ControlMaster connection. The one-time setup is in the `running-splatad-render-jobs` skill.
+2. **Log in:** the login node is `ssh_host` in `configs/slurm.yaml` (currently `comps1.cs.toronto.edu`; comps0–3 are all login nodes). Submit jobs from there. Never compute there. Each user logs in with their own CS account. The username lives only in that user's `~/.ssh/config` (`User`) or in the `VIKING_SLURM_USER` environment variable, and never in repo files. Passwords are never stored anywhere (no repo files, env files, scripts or `sshpass`): use an ssh key or a ControlMaster connection. The one-time setup is in the `running-splatad-render-jobs` skill.
 3. **Check nodes:** `slurm_report -g`, `sinfo -p gpunodes -O NodeHost,Memory,CPUs`. One GPU per node, so request all of its CPUs and most of its RAM. Read the sizes from `sinfo`. Never guess them.
 4. **Stage data:** `submit_run.py stage --session <s>` copies data and code into the stage root on the MSCAC workdisk: `<workdisk_root>/<user>/<stage_root>` (`configs/slurm.yaml`), currently `/w/20262/<user>/viking-splatad`. Code, data, the environment (`envs/`) and run outputs (`runs/<run_id>/`) all live there. The workdisk is persistent (no expiry) and as fast as scratch (same file servers). **Never put project files in home or scratch.** Home has a 10 GB quota (MSCAC), and a full home made job writes fail with no error (jobs 222534 and 222633, explained by CS Lab support on 2026-10-26). Scratch expires every 15 days.
 5. **Submit with `sbatch`** (via `submit_run.py submit`): always `--partition=gpunodes --gres=gpu:rtx_a6000:1 -c <C> --mem=<M>G -t <≤5-0>`; the environment is compiled for sm_86 (A6000). Exceptions (user's choice 2026-10-27): render-only jobs (`render_only.gres`) and the `smoke_a4500` profile request `gpu:rtx_a4500:1`, also sm_86. A different GPU type comes only from a `gres` key in `configs/slurm.yaml`, only for an sm_86 GPU, and is sized from that type's own `sinfo` rows. The defaults (1 core, 1 GB, 12 h) are too small. A limit over 5 days never schedules. Never use `--get-user-env`, and never `--export=...,K=V`: on this cluster both make Slurm fetch the login environment, which fails, and the job is held (`user_env_retrieval_failed_requeued_held`). Pass job variables by exporting them inside the batch script, as CS Lab support recommends (2026-10-26): `submit_run.py` writes a per-job `job.sbatch` with `export K=V` lines that then runs the committed script. Checkpoint often: jobs are killed at the time or memory limit.

@@ -6,16 +6,20 @@ profile names differ between sessions. Per session and method pair it reports:
 - the P1/P2 voxel gaps from scripts/20 (gap = later arm - earlier arm, so a radar gain is positive
   for higher-is-better metrics; the JSON also holds counts such as present_but_hidden, where it is negative),
   beside both arms' ranges and the "separated" flag (the arms' [min, max] do not overlap);
-- the hidden-voxel metrics (T94/T95) of scripts/20 for the group ``obstacles`` and each class: P2
-  recall, precision and IoU on H_near (headline, ``_Hnear``) and on the full H (``_H``), pooled and
-  mean over objects, at each P2 threshold; the whole-neighbourhood P2 baseline; and the lidar view
-  (P1 recall, precision, recall_Hnear, recall_H);
+- the whole-scene P2 metrics (recall, precision, IoU over the whole neighbourhood) and the whole-scene
+  lidar view (P1 recall, precision), which lead every table;
+- the hidden-voxel metrics (T94/T95) of scripts/20 for the group ``obstacles`` and each class, read after
+  the whole scene: P2 recall, precision and IoU on H_near (``_Hnear``) and on the full H (``_H``), pooled
+  and mean over objects, at each P2 threshold; and the hidden lidar view (P1 recall_Hnear, recall_H);
 - optionally, when every run of an arm has a scripts/13 report: the P1 cuboid metrics (ungated
   detection rate T45 and point precision T46), pooled over the same runs with the same statistics
   (eval/p2_repeats.py);
 - the difference of the gaps between sessions (last session given - first session given; sessions in
   between are reported per session but do not enter the difference).
   The claim expects a radar gain in June (tall grass occludes trunks), and none in May.
+The markdown opens with the definitions (first session's values) and one whole-scene section per session,
+which need each session's scripts/26 ``figures_manifest.json``; ``terminology.md`` (glossary, definitions,
+figure guides, per-session value table) is written beside the report.
 
 Descriptive only: repeats share one seed, so they are not paired. A gap means something only beside
 the spread within both arms.
@@ -28,6 +32,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -35,6 +40,19 @@ from typing import Any, Dict, List, Optional, Sequence
 from viking_splatad.config import find_project_root
 from viking_splatad.viz.pyvista_scene import repo_relative
 from viking_splatad.eval.p2_repeats import arm_pairs, compare_arms, describe_arm
+from viking_splatad.eval.report_opening import (
+    ARM_LABEL_BY_METHOD,
+    format_description,
+    FIGURES_RELATIVE_DIR,
+    definitions_note,
+    format_value,
+    load_figure_manifest,
+    manifest_definition_values,
+    separation_label,
+    whole_scene_section_markdown,
+    write_terminology,
+)
+from viking_splatad.eval.evaluation_terminology import definitions_markdown
 
 SUMMARY_SCHEMA = "viking-splatad/gaussian-occupancy-summary/2"
 SEMANTIC_REPORT_SCHEMA = "viking-splatad/semantic-occupancy/1"
@@ -46,37 +64,41 @@ REPORT_SCHEMA = "viking-splatad/session-comparison/1"
 DEFAULT_OUTPUT_RELATIVE_DIR = Path("reports") / "gaussian_occupancy"
 OUTPUT_JSON_NAME = "session_comparison.json"
 OUTPUT_MARKDOWN_NAME = "session_comparison.md"
+TERMINOLOGY_NAME = "terminology.md"
 # Method order: stock, then the radar variants as they build on each other (same as scripts/20), so
 # every gap reads "radar variant - its baseline".
 METHOD_ORDER = ("splatad", "splatad-radar-init", "splatad-radar-init-lidar")
-METHOD_LABELS = {"splatad": "stock", "splatad-radar-init": "radar init",
-                 "splatad-radar-init-lidar": "radar init + loss"}
+# Plain arm labels: one definition, shared with the reports' whole-scene section.
+METHOD_LABELS = ARM_LABEL_BY_METHOD
 # P1 is read ungated: the binding P1 form (PLAN §5); the gated set is SplatAD's sensor-faithful view.
 P1_POINT_SET = "ungated"
 # Metrics shown in the markdown (the JSON holds every scripts/20 metric). Classes: the group of all
 # obstacles first, then trunks (the claim), then rocks and bushes, read as controls.
 HEADLINE_CLASSES = ("obstacles", "tree_trunk", "rock", "bush_or_small_tree")
 # Keys after ``<class>/`` (flatten_hidden_metrics); ``{threshold}`` is a P2 threshold key of the summary.
-# Headline H_near (``_Hnear``: hidden within the near band of the path) P2 recall / precision / IoU (pooled and
-# mean over objects), then the same for the full H (``_H``). Primary recall / precision, summary IoU; then the P2 baseline
-# over the whole neighbourhood, then the lidar view P1 (pooled).
-THRESHOLD_METRIC_SUFFIXES = ("P2@{threshold}/recall_Hnear/pooled", "P2@{threshold}/recall_Hnear/mean",
-                             "P2@{threshold}/precision_Hnear/pooled", "P2@{threshold}/precision_Hnear/mean",
-                             "P2@{threshold}/iou_Hnear/pooled", "P2@{threshold}/iou_Hnear/mean",
-                             "P2@{threshold}/recall_H/pooled", "P2@{threshold}/recall_H/mean",
-                             "P2@{threshold}/precision_H/pooled", "P2@{threshold}/precision_H/mean",
-                             "P2@{threshold}/iou_H/pooled", "P2@{threshold}/iou_H/mean",
-                             "P2@{threshold}/recall/pooled", "P2@{threshold}/precision/pooled",
-                             "P2@{threshold}/iou/pooled")
-LIDAR_VIEW_METRIC_SUFFIXES = ("P1/recall/pooled", "P1/precision/pooled", "P1/recall_Hnear/pooled", "P1/recall_H/pooled")
+# Order of the tables: 1) whole scene: P2 recall / precision / IoU over the whole neighbourhood (pooled),
+# then the lidar view P1 (pooled); 2) hidden cells, read after the whole scene: H_near (``_Hnear``: hidden
+# within the near band of the path) P2 recall / precision / IoU (pooled and mean over objects), then the same
+# for the full H (``_H``).
+WHOLE_SCENE_METRIC_SUFFIXES = ("P2@{threshold}/recall/pooled", "P2@{threshold}/precision/pooled",
+                               "P2@{threshold}/iou/pooled")
+HIDDEN_METRIC_SUFFIXES = ("P2@{threshold}/recall_Hnear/pooled", "P2@{threshold}/recall_Hnear/mean",
+                          "P2@{threshold}/precision_Hnear/pooled", "P2@{threshold}/precision_Hnear/mean",
+                          "P2@{threshold}/iou_Hnear/pooled", "P2@{threshold}/iou_Hnear/mean",
+                          "P2@{threshold}/recall_H/pooled", "P2@{threshold}/recall_H/mean",
+                          "P2@{threshold}/precision_H/pooled", "P2@{threshold}/precision_H/mean",
+                          "P2@{threshold}/iou_H/pooled", "P2@{threshold}/iou_H/mean")
+LIDAR_WHOLE_SCENE_METRIC_SUFFIXES = ("P1/recall/pooled", "P1/precision/pooled")
+LIDAR_HIDDEN_METRIC_SUFFIXES = ("P1/recall_Hnear/pooled", "P1/recall_H/pooled")
 # Optional rows: they exist only when the arms' runs have scripts/13 reports.
 OPTIONAL_METRIC_SUFFIXES = ("P1cuboid/detection_rate", "P1cuboid/point_precision")
-# Decimal places in the markdown tables (metrics are fractions in [0, 1]; 3 places resolve 0.1 %).
-TABLE_DECIMALS = 3
 
 
 def headline_metric_suffixes(threshold_texts: Sequence[str]) -> List[str]:
-    """Headline metric keys after the class prefix: each threshold's P2 rows, the P1 rows, then the optional rows.
+    """Metric keys after the class prefix in table order: whole scene first, then the hidden cells.
+
+    The order is: whole-scene P2 rows for each threshold, whole-scene P1 rows, hidden P2 rows for each
+    threshold, hidden P1 rows, then the optional rows.
 
     Args:
         threshold_texts: P2 threshold keys of the summaries (e.g. "0.5", "0.8").
@@ -84,10 +106,17 @@ def headline_metric_suffixes(threshold_texts: Sequence[str]) -> List[str]:
     Returns:
         Suffixes in table order.
     """
+    # Step 1: whole-scene P2 rows, one block per threshold.
     suffixes: List[str] = []
     for threshold_text in threshold_texts:
-        suffixes += [template.format(threshold=threshold_text) for template in THRESHOLD_METRIC_SUFFIXES]
-    return suffixes + list(LIDAR_VIEW_METRIC_SUFFIXES) + list(OPTIONAL_METRIC_SUFFIXES)
+        suffixes += [template.format(threshold=threshold_text) for template in WHOLE_SCENE_METRIC_SUFFIXES]
+    # Step 2: whole-scene lidar view.
+    suffixes += list(LIDAR_WHOLE_SCENE_METRIC_SUFFIXES)
+    # Step 3: hidden P2 rows, one block per threshold, after the whole scene.
+    for threshold_text in threshold_texts:
+        suffixes += [template.format(threshold=threshold_text) for template in HIDDEN_METRIC_SUFFIXES]
+    # Step 4: hidden lidar view, then the optional rows.
+    return suffixes + list(LIDAR_HIDDEN_METRIC_SUFFIXES) + list(OPTIONAL_METRIC_SUFFIXES)
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -223,51 +252,81 @@ def compare_sessions(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return comparisons
 
 
-def format_value(value: Optional[float]) -> str:
-    """A metric value for the markdown tables.
+def session_definition_values(sessions: List[Dict[str, Any]], manifests: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Definition values of every session, computed once.
 
     Args:
-        value: Number or None (undefined).
+        sessions: Session entries with a ``summary``.
+        manifests: scripts/26 manifest by session.
 
     Returns:
-        Fixed-point text, or "n/a".
+        Session name -> ``manifest_definition_values`` output.
     """
-    return "n/a" if value is None else f"{value:.{TABLE_DECIMALS}f}"
+    return {entry["session"]: manifest_definition_values(entry["summary"], manifests[entry["session"]])
+            for entry in sessions}
 
 
-def format_description(description: Dict[str, Optional[float]]) -> str:
-    """An arm's metric as "mean ± std [min, max] (n)".
+def session_openings_markdown(sessions: List[Dict[str, Any]], manifests: Dict[str, Dict[str, Any]],
+                              figures_relative_dirs: Dict[str, str],
+                              values_by_session: Optional[Dict[str, Dict[str, Any]]] = None) -> str:
+    """The definitions once (first session's values), then one whole-scene section per session.
 
     Args:
-        description: describe_values output.
+        sessions: Session entries; each needs a ``summary`` (scripts/20 summary with provenance).
+        manifests: scripts/26 manifest by session.
+        figures_relative_dirs: Figures folder relative to the report, by session.
+        values_by_session: Optional precomputed ``session_definition_values`` output (computed here if absent).
 
     Returns:
-        Table cell text.
+        Markdown.
     """
-    return (f"{format_value(description['mean'])} ± {format_value(description['std'])} "
-            f"[{format_value(description['min'])}, {format_value(description['max'])}] (n={description['n']})")
+    if values_by_session is None:
+        values_by_session = session_definition_values(sessions, manifests)
+    first_values = values_by_session[sessions[0]["session"]]
+    # The definitions are rendered once; the note says whose values they carry.
+    parts = [definitions_note(sessions[0]["session"]), "", definitions_markdown(first_values)]
+    for entry in sessions:
+        session = entry["session"]
+        parts.append(whole_scene_section_markdown(entry["summary"], manifests[session], figures_relative_dirs[session],
+                                                  values_by_session[session], heading=f"## Whole scene: {session}"))
+    return "\n".join(parts)
 
 
-def separation_label(separated: Optional[bool]) -> str:
-    """Table text for compare_arms' "separated" flag.
+def arm_cell(entry: Dict[str, Any], method: str, metric_key: str, metric_suffix: str) -> str:
+    """One arm's table cell for one metric in one session.
 
     Args:
-        separated: True (ranges disjoint), False (overlap) or None (an arm has < 2 defined repeats).
+        entry: One session as built in main (``session``, ``arms``).
+        method: SplatAD method name of the arm.
+        metric_key: Flat metric key, e.g. ``obstacles/P2@0.5/recall/pooled``.
+        metric_suffix: The metric's suffix, used to tell optional rows from required ones.
 
     Returns:
-        "sep", "-" or "n/a".
+        The formatted mean ± std, or ``n/a`` when the arm is absent or the row is optional and missing.
+
+    Raises:
+        ValueError: when a required metric is missing from an arm that is present.
     """
-    if separated is None:
+    # Step 1: an arm the session does not have shows n/a.
+    if method not in entry["arms"]:
         return "n/a"
-    return "sep" if separated else "-"
+    metrics = entry["arms"][method]["metrics"]
+    # Step 2: a present arm must carry every required metric; only the optional rows may be absent.
+    if metric_key not in metrics:
+        if metric_suffix in OPTIONAL_METRIC_SUFFIXES:
+            return "n/a"
+        raise ValueError(f"{entry['session']} {method}: required metric {metric_key} is missing from the summary")
+    return format_description(metrics[metric_key])
 
 
-def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, Any]]) -> str:
+def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, Any]],
+                    opening_markdown: Optional[str] = None) -> str:
     """The comparison as markdown: per-session arm tables, then per method pair the gaps side by side.
 
     Args:
         sessions: As passed to compare_sessions.
         comparisons: compare_sessions output.
+        opening_markdown: Optional definitions and whole-scene sections, placed after the intro.
 
     Returns:
         Markdown text.
@@ -278,8 +337,11 @@ def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, 
              "(gain positive for higher-is-better metrics). `sep` = the two arms' [min, max] do not overlap; `n/a` = an arm has fewer than 2 repeats (no spread). "
              f"Δ = gap in {session_names[-1]} - gap in {session_names[0]}. "
              f"P1cuboid = scripts/13 {P1_POINT_SET} cuboid detection rate (T45) and point precision (T46); "
-             "P1/P2 = scripts/19 voxel metrics on the rendered lidar (P1) and the Gaussians (P2); `_Hnear` = restricted to the hidden cells within the near band of the path (headline), `_H` = to all "
+             "P1/P2 = scripts/19 voxel metrics on the rendered lidar (P1) and the Gaussians (P2). Whole-scene rows (no suffix) come first; "
+             "`_Hnear` = restricted to the hidden cells within the near band of the path (read second), `_H` = to all "
              "hidden cells, pooled over cells or mean over objects; P2@t = Gaussians occupied at probability >= t.", ""]
+    if opening_markdown:
+        lines += [opening_markdown, ""]
     # Arm membership, so every number traces to its runs.
     for entry in sessions:
         lines.append(f"## {entry['session']}: arms")
@@ -299,9 +361,7 @@ def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, 
         for metric_suffix in metric_suffixes:
             metric_key = f"{class_name}/{metric_suffix}"
             for entry in sessions:
-                cells = [format_description(entry["arms"][method]["metrics"][metric_key])
-                         if method in entry["arms"] and metric_key in entry["arms"][method]["metrics"] else "n/a"
-                         for method in METHOD_ORDER]
+                cells = [arm_cell(entry, method, metric_key, metric_suffix) for method in METHOD_ORDER]
                 lines.append(f"| {metric_suffix} | {entry['session']} | " + " | ".join(cells) + " |")
         lines.append("")
     # Per method pair: the gaps of both sessions side by side, and their difference.
@@ -316,7 +376,10 @@ def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, 
             for metric_suffix in metric_suffixes:
                 metric_key = f"{class_name}/{metric_suffix}"
                 if metric_key not in comparison["metrics"]:
-                    continue
+                    # Only the optional rows may be absent; a missing required row is a broken summary, so refuse.
+                    if metric_suffix in OPTIONAL_METRIC_SUFFIXES:
+                        continue
+                    raise ValueError(f"gap {later_label} - {earlier_label}: required metric {metric_key} is missing")
                 metric_entry = comparison["metrics"][metric_key]
                 session_cells = [f"{format_value(metric_entry['per_session'][session]['gap'])} "
                                  f"({separation_label(metric_entry['per_session'][session]['separated'])})"
@@ -342,7 +405,7 @@ def main() -> int:
             summary = json.loads(summary_path.read_text())
             if summary.get("schema") != SUMMARY_SCHEMA:
                 raise ValueError(f"{summary_path}: schema {summary.get('schema')!r}, need {SUMMARY_SCHEMA!r}")
-            sessions.append({"session": summary["session"], "summary_path": repo_relative(str(summary_path.resolve()), project_root),
+            sessions.append({"session": summary["session"], "summary": summary, "summary_path": repo_relative(str(summary_path.resolve()), project_root),
                              "p2_thresholds": summary["p2_thresholds"],
                              "arms": session_arms(summary, project_root)})
         session_names = [entry["session"] for entry in sessions]
@@ -353,18 +416,29 @@ def main() -> int:
         # Step 2: gaps per session and their differences (compare_arms raises KeyError, hence a refusal,
         # when the earlier arm of a pair lacks a metric the later arm has; the reverse is dropped silently).
         comparisons = compare_sessions(sessions)
+        # Step 2b: the opening needs each session's figure manifest and summary provenance.
+        output_dir = arguments.output_dir or project_root / DEFAULT_OUTPUT_RELATIVE_DIR
+        manifests, figures_relative_dirs = {}, {}
+        for session in session_names:
+            figures_dir = project_root / FIGURES_RELATIVE_DIR / session
+            manifests[session] = load_figure_manifest(project_root, session)
+            figures_relative_dirs[session] = Path(os.path.relpath(figures_dir, output_dir)).as_posix()
+        # Computed once per session and reused for the opening and the terminology document.
+        session_values = session_definition_values(sessions, manifests)
+        opening_markdown = session_openings_markdown(sessions, manifests, figures_relative_dirs, session_values)
     except (OSError, ValueError, KeyError) as error:
         print(f"refused: {error!r}", file=sys.stderr)
         return 1
     # Step 3: write JSON (all metrics) and markdown (headline metrics).
-    output_dir = arguments.output_dir or project_root / DEFAULT_OUTPUT_RELATIVE_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
     report = {"schema": REPORT_SCHEMA, "p1_point_set": P1_POINT_SET,
               "sessions": [{"session": entry["session"], "summary": entry["summary_path"],
                             "arms": entry["arms"]} for entry in sessions],
               "comparisons": comparisons}
     (output_dir / OUTPUT_JSON_NAME).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    (output_dir / OUTPUT_MARKDOWN_NAME).write_text(render_markdown(sessions, comparisons))
+    (output_dir / OUTPUT_MARKDOWN_NAME).write_text(render_markdown(sessions, comparisons, opening_markdown))
+    # Stand-alone terminology: glossary, definitions (first session's values), figure guides and the per-session value table.
+    write_terminology(output_dir / TERMINOLOGY_NAME, session_values[sessions[0]["session"]], session_values)
     print(f"wrote {output_dir / OUTPUT_JSON_NAME} and {output_dir / OUTPUT_MARKDOWN_NAME}")
     return 0
 

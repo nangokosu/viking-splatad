@@ -1,41 +1,27 @@
-# Last session summary (2026-11-24)
+# Session summary (2026-11-25)
 
 ## Done
-Branch `radar-init-loss-merge`, one commit on top of d2137d9: "Hidden-voxel evaluation: session hidden space, H_near headline, re-scored repeats" (the commit carrying this file). Pushed, with a PR to main.
-- **New headline metric: P2 hidden recall / precision / IoU.**
-  - **Hidden space H:** built once per session over all ~2000 recorded Ouster sweeps (`scripts/24_build_hidden_space.py`). A cell is in H when it is never seen, blocked at least once, and never passed through, with a range margin m measured from the data (T91, T92, T93; T78 gained `range_margin` and is vectorised, bit-identical).
-  - **Headline band H_near:** H within `hidden_space.near_band_m` = 20 m of the driven path. This was the user's decision, because most of H lies 30 m or more away.
-  - **Classes:** `obstacles` (trunk + rock + bush) first, then each class, with the other-class mask.
-  - **Averaging:** pooled and mean over objects (T94/T95; overlaps count against each object).
-  - **Thresholds:** P2 at 0.5 and 0.8; the threshold sweep is retired.
-  - **Image check:** PSNR/SSIM/LPIPS (`eval/run_quality.py`).
-  - **Scored range:** the 0.9999 quantile of return ranges instead of the farthest return, which was a 201 m stray.
-- **Label transitions:** `scripts/25_hidden_label_transitions.py` → `reports/hidden_space/<session>/label_transitions.md` shows how GT cells moved from the old test-sweep labels into H.
-- **Scripts 19/20/21:** schemas are now `/2`. Script 15 has `--p2-hidden [--hidden-band near|full]`. Docs updated (PLAN §5, evaluation_caveats §5–7, hidden_trunk_evaluation, pyvista_viewer, glossary).
-- **Re-scored:** all 30 repeat runs. Reports are in `reports/gaussian_occupancy/{june_tall_grass,may_short_grass}/gaussian_occupancy_summary.md` and `session_comparison.md`.
-  - **Radar init + loss** beats stock on P2 recall_Hnear (mean over objects), separated in both sessions: June 0.215 vs 0.115, May 0.358 vs 0.082.
-  - **Weak spots:** pooled recall and precision are not separated. At 0.8 June is not separated. May hidden precision falls (within spread).
-  - **Radar init alone** is at or below stock everywhere.
-  - **Thin evidence:** H_near holds June 276 cells / 14 objects, May 137 / 7.
-- Full suite in the image: 1753 passed, 1 skip (traceability "0 transforms pending").
+- Submitted the last missing 30k presentation run: June radar init + loss with the camera loss (`june_scene_a_radar_init_loss_cam_30k`), Slurm job 257748, run `june_tall_grass-june_scene_a_radar_init_loss_cam_30k-20261125-183814-7e63987`, staged at commit `7e63987`. Gates passed: 1976 passed, 1 skipped (traceability's own "0 transforms pending"); contract PASS; June split identical to the reference run.
+- Branch `whole-scene-figures`, last commit `7e63987` "Threshold curves: one band per line; define pooled vs mean over objects". Earlier figure and report work is in `8178e86` and `7e63987`.
 
 ## Current state
-- **Open issue, results affected: m is inflated by plane-fit error.** The T92 neighbour search has no distance limit. June m = 0.398 m unbounded, but 0.103 m when the neighbours must lie within 0.25 m (`docs/research/hidden_space/margin_neighbour_extent.py`; evaluation_caveats §6). A large m makes H too small. The committed results use the unbounded m.
-- **Disk:** the Mac has little free space (~6 GB). macOS swap (up to 8 GB while scoring) and Docker's disk file use it.
-  - Freed this session: `data/images/*.tar` deleted (rebuild the image from the recipe if needed); Docker build cache pruned and trimmed.
-  - A Docker Desktop auto-update download (~2.4 GB) is still on disk.
-- **Hidden-space files:** `data/gt/<session>/hidden_space.{npz,json}` are gitignored (`data/`). Teammates rebuild them with script 24 (about a minute per session).
-- **Known review findings, not fixed:**
-  - script 21: a scripts/13 report on only one arm breaks the comparison;
-  - script 25: an empty old archive gives an IndexError;
-  - script 24: an `--output-dir` outside the repo breaks after the npz is written;
-  - `hidden_space.npz` sha256 includes zip timestamps;
-  - the reach cull also drops no_return flags (H is unaffected);
-  - refactor candidates: scripts/15 (1236 lines) and hidden_geometry (duplicate slab function).
-- **Not committed:** the user's `.claude/settings.json` and `reports/gaussian_occupancy/with_older_code/` (old reports, carrying an absolute path).
+- **Cluster, 30k presentation runs (six in total):**
+  - Running: 257684 (`may_scene_a_30k`), 257686 (`may_scene_a_radar_init_30k`).
+  - Pending: 257687 (`may_scene_a_radar_init_loss_30k`), 257688 (`june_scene_a_cam_30k`), 257689 (`june_scene_a_radar_init_cam_30k`), 257748 (June radar init + loss, cam).
+  - None has finished; none is fetched yet.
+- **Not committed:** `reports/gaussian_occupancy/with_older_code/`.
+- **No source in the repo** (glossary entries without a formula or value): the render-metric formulas, PSNR/SSIM/LPIPS, and the radar seed resolutions.
+- **Known gaps** (not fixed):
+  - no unit test calls `estimate_range_margin` with `voxel_size`;
+  - the hidden-space schema is still /1;
+  - an empty residual set after the reach bound fails with a generic message;
+  - script 24 breaks with an `--output-dir` outside the repo;
+  - the `hidden_space.npz` sha256 includes zip timestamps;
+  - the reach cull also drops no_return flags.
 
 ## Next steps
-1. **Fix m:** bound the T92 neighbour reach by half a GT voxel (0.26 m), with a test. Rebuild H for both sessions (script 24), rerun script 25, re-score the 30 runs (script 19), then scripts 20 and 21. Watch the disk and stop below 3 GB.
-2. Fix the review findings above, or file them.
-3. PR review and merge to main (user's call). The PR lists the earlier branch commits that removed tests, with their reasons.
-4. Consider more repeats or a wider near band only if the H_near counts stay this small after the margin fix.
+1. Fetch each 30k run when it succeeds (`overfitting_plot: written`, `split_render_check: match`, `end_utc` in `job_info.txt`); clean up failed ones.
+2. Hidden-cell round: H_near versions of both figures and sections, and reorder the reports as hidden → lidar → image, adding the image and lidar-render rows to scripts/21.
+3. Optional: test whether the false alarms next to obstacles are unlabelled grass/ground (a height / distance split).
+4. Decide on the reach sensitivity check (re-score at 0.5 m).
+5. Collaborators review the PR; the user decides on the merge.
