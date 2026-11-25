@@ -63,8 +63,9 @@ def test_threshold_curves_one_row_bands_guides_and_xlim(settings):
     thresholds = np.linspace(settings.threshold_curve_min, settings.threshold_curve_max, 5)
     for arm_curves in curves.values():
         arm_curves["thresholds"] = thresholds
-    campaign = {arm: {metric: (thresholds, thresholds * 0.5, thresholds)
-                      for metric in ("recall", "precision")} for arm in settings.arm_order}
+    campaign = {arm: {curve_key: (thresholds, thresholds * 0.5, thresholds)
+                      for curve_key in ("pooled_recall", "mean_recall", "pooled_precision", "mean_precision")}
+                for arm in settings.arm_order}
     p2_thresholds = (0.5, 0.8)
     figure = mpl_figs.threshold_curves_figure(curves, settings, p2_thresholds=p2_thresholds,
                                               campaign_bands=campaign, title="curves")
@@ -72,12 +73,34 @@ def test_threshold_curves_one_row_bands_guides_and_xlim(settings):
     assert len(axes) == 2
     for axis in axes:
         assert axis.get_xlim() == (settings.threshold_curve_min, settings.threshold_curve_max)
-        assert sum(isinstance(item, PolyCollection) for item in axis.collections) == len(settings.arm_order)
+        # one band behind the pooled line and one behind the mean line, per arm
+        assert sum(isinstance(item, PolyCollection) for item in axis.collections) == 2 * len(settings.arm_order)
         # curves (2 per arm) + guide lines (one per P2 threshold)
         assert len(axis.lines) == 2 * len(settings.arm_order) + len(p2_thresholds)
-    assert any(text.get_text() == mpl_figs.CURVES_CAPTION for text in figure.texts)
+    # The caption is wrapped to the figure width, so compare its lines joined back (the longer caption wraps).
+    assert any(" ".join(text.get_text().split("\n")) == mpl_figs.CURVES_CAPTION for text in figure.texts)
+    assert "its min\u2013max" in mpl_figs.CURVES_CAPTION
     assert footer_present(figure, settings)
     assert png_bytes(figure) > 0
+
+
+def test_threshold_bands_pooled_stronger_than_mean_and_absent_without_repeats(settings):
+    """Per arm and panel: a pooled band (stronger alpha) then a mean band; an arm without bands draws none."""
+    thresholds = np.linspace(0, 1, 5)
+    curves = {arm: dict(curve_dict(), thresholds=thresholds) for arm in settings.arm_order}
+    banded_arm = settings.arm_order[0]
+    campaign = {banded_arm: {curve_key: (thresholds, thresholds * 0.5, thresholds)
+                             for curve_key in ("pooled_recall", "mean_recall", "pooled_precision",
+                                               "mean_precision")}}
+    figure = mpl_figs.threshold_curves_figure(curves, settings, p2_thresholds=(0.5,), campaign_bands=campaign,
+                                              title="curves")
+    for axis in data_axes(figure):
+        bands = [item for item in axis.collections if isinstance(item, PolyCollection)]
+        # only the banded arm draws bands: 2 of them, pooled first (drawn order), with the stronger alpha
+        assert len(bands) == 2
+        assert bands[0].get_alpha() == mpl_figs.POOLED_BAND_ALPHA
+        assert bands[1].get_alpha() == mpl_figs.MEAN_BAND_ALPHA
+        assert bands[0].get_alpha() > bands[1].get_alpha()
 
 
 def test_run_note_is_wrapped_to_figure_width_and_under_footer(settings):

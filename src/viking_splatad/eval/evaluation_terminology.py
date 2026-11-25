@@ -73,6 +73,45 @@ OUTCOME_COUNT_FIELDS = ("hit", "false_alarm", "missed", "context")
 EXAMPLE_ARM_KEY = "stock"
 # Decimal places of the worked-example recall and precision (3 places is enough to tell arms apart in prose).
 EXAMPLE_DECIMALS = 3
+# Illustrative two-object example of pooled vs mean over objects, stated in the text as made-up numbers:
+# (description, obstacle cells |G_k|, filled obstacle cells |O_t n G_k|). A large and a small object with very
+# different recalls show how the two averages weigh them; the values are chosen for readability, not measured.
+POOLING_EXAMPLE_OBJECTS = (("a large trunk", 90, 30), ("a small rock", 10, 8))
+
+
+def pooling_example_values(example_objects=POOLING_EXAMPLE_OBJECTS) -> Dict[str, str]:
+    """Pooled and mean-over-objects recall of the illustrative example, as formatted text.
+
+    pooled recall = sum_k |O_t n G_k| / sum_k |G_k| (one ratio over all cells);
+    mean recall = (1 / K) sum_k |O_t n G_k| / |G_k| (one ratio per object, then their average).
+    When objects share no cells, pooled recall is the cell-weighted average of the per-object recalls
+    (weights |G_k| / sum |G|), so a large object dominates it while every object counts once in the mean.
+
+    Args:
+        example_objects: (description, obstacle cells, filled obstacle cells) per object.
+
+    Returns:
+        {"pooling_example_objects": prose list, "pooling_example_per_object": per-object recalls,
+        "pooling_example_pooled", "pooling_example_mean"}, numbers at EXAMPLE_DECIMALS places.
+
+    Raises:
+        ValueError: An object has no obstacle cells (its recall is undefined).
+    """
+    # Step 1: every object needs obstacle cells, or its recall is undefined.
+    if any(obstacle_cells <= 0 for _, obstacle_cells, _ in example_objects):
+        raise ValueError("every example object needs at least one obstacle cell")
+    # Step 2: per-object recalls, then the pooled ratio and the plain average.
+    per_object_recalls = [filled_cells / obstacle_cells for _, obstacle_cells, filled_cells in example_objects]
+    pooled_recall = (sum(filled_cells for _, _, filled_cells in example_objects)
+                     / sum(obstacle_cells for _, obstacle_cells, _ in example_objects))
+    mean_recall = sum(per_object_recalls) / len(per_object_recalls)
+    # Step 3: prose fragments for the template.
+    objects_text = " and ".join(f"{description} with {obstacle_cells} obstacle cells, {filled_cells} of them filled"
+                                for description, obstacle_cells, filled_cells in example_objects)
+    per_object_text = " and ".join(f"{recall:.{EXAMPLE_DECIMALS}f}" for recall in per_object_recalls)
+    return {"pooling_example_objects": objects_text, "pooling_example_per_object": per_object_text,
+            "pooling_example_pooled": f"{pooled_recall:.{EXAMPLE_DECIMALS}f}",
+            "pooling_example_mean": f"{mean_recall:.{EXAMPLE_DECIMALS}f}"}
 
 
 def _require_fields(container: Mapping, field_names: Sequence[str], container_label: str) -> None:
@@ -244,6 +283,7 @@ def definition_values(summary: Mapping, curve_settings: Optional[Mapping], scene
         "example_recall": f"{example_recall:.{EXAMPLE_DECIMALS}f}",
         "example_precision": f"{example_precision:.{EXAMPLE_DECIMALS}f}",
         "example_iou": f"{example_iou:.{EXAMPLE_DECIMALS}f}",
+        **pooling_example_values(),
     }
 
 
@@ -345,7 +385,11 @@ Plain words first, the formula last. Every number is read from the run reports, 
    - **(d) Precision** = hit / (hit + false alarm) = |O_t ∩ G| / |O_t ∩ N|. *When it fills something, is it real?* The denominator is every filled scored cell; it depends on the model. Filling everything near obstacles raises recall and lowers precision. This is why both are read together, and why the reading rule asks for higher recall *without lower precision*.
    - **IoU** (intersection over union) = hit / (hit + missed + false alarm) = |O_t ∩ G| / |(O_t ∪ G) ∩ N|. In words: the overlap between what the model filled and the obstacles, divided by everything either of them covers in the scored area. It puts both kinds of error in one number: a miss and a false alarm each lower it. Correct-empty cells do not enter it. It is always ≤ min(recall, precision). It is a summary only: the reading rule uses recall and precision.
    - **(e) Worked example.** The stock arm's drawn run in {session} at t = {threshold}, with its real counts: {example_hit} hits, {example_missed} missed, {example_false_alarm} false alarms → recall {example_recall}, precision {example_precision}, IoU {example_iou}. These are one run; the tables give mean ± std over the repeats.
-   - **(f) Pooled vs mean over objects.** *Pooled* counts all cells together, so big objects weigh most. *Mean over objects* scores each object k alone, with its own cells G_k and its own ring N_k, and then averages, so every object weighs the same. An occupied cell inside several rings counts against each of them.
+   - **(f) Pooled vs mean over objects.** Recall, precision and IoU are each reported in two ways. They differ only in how the objects are combined.
+     - **Pooled** (T94): add up the cells of all objects first, then divide once. Pooled recall = Σ_k |O_t ∩ G_k| / Σ_k |G_k| = all hits / all obstacle cells; pooled precision = all hits / all filled scored cells. Every *cell* weighs the same, so objects with many cells (tall trunks, big bushes) dominate.
+     - **Mean over objects** (T95): score each object k on its own, inside its own grown box N_k with its own obstacle cells G_k, then take the plain average: mean recall = (1/K) Σ_k recall_k, and likewise precision and IoU. Every *object* weighs the same, however small. K counts only the objects where the ratio is defined (a non-zero denominator): an object with no filled cell in its box has no precision and is left out of the precision mean. A filled cell inside several objects' grown boxes counts as a false alarm of each of them.
+     - **Example (made-up numbers, for illustration only):** {pooling_example_objects}. The per-object recalls are {pooling_example_per_object}. Pooled recall = {pooling_example_pooled}, dominated by the large trunk; mean recall = {pooling_example_mean}, where the small rock counts as much as the trunk.
+     - **Reading the two together:** for recall, when objects share no cells, the pooled value is the average of the per-object recalls weighted by each object's cell count. So a mean above the pooled value means objects with few cells are recovered better, relative to their size, than objects with many cells; a mean below means the large objects carry the score.
    - **(g) Why precision stays below 1.** "Next to an obstacle" is not "empty space". The ring also holds things nobody labelled: grass (tall in June), ground and small plants, which really are solid. It also catches the edges of a trunk's own Gaussians, because a trunk is thinner than one cell. So precision stays below 1 even for a correct model. This is a likely cause, not a tested finding.
    - **(h) How the threshold changes both.** Raising t moves cells from filled to empty, so recall can only fall; precision usually rises.
 6. **Hidden cells (reference for the later round).** We replay every recorded lidar beam.
@@ -367,10 +411,11 @@ _FIGURE_READING_TEMPLATES = {
 """,
     "threshold_curves_scene": """\
 **How to read this figure**
-- **What is plotted:** recall (left) and precision (right) recomputed at each cut-off t {curve_range_text} ({curve_points_text}). Solid lines are pooled and dashed lines are the mean over objects. The line is the median repeat. The band spans, at each t, the lowest and highest value of both the pooled and the mean-over-objects curve over the {curve_repeat_count} repeats of the arm; it is therefore wider than either line's own spread, so "bands do not overlap" is a conservative reading. Dotted lines mark the table cut-offs {p2_thresholds}.
+- **What is plotted:** recall (left) and precision (right) recomputed at each cut-off t {curve_range_text} ({curve_points_text}). Solid lines are pooled and dashed lines are the mean over objects. The line is the median repeat. Each line has its own shaded band: at each t, the lowest and highest value of that same curve (pooled or mean over objects) over the {curve_repeat_count} repeats of the arm. The pooled band is shaded more strongly than the mean band. Dotted lines mark the table cut-offs {p2_thresholds}.
+- **Solid vs dashed:** solid = *pooled* (all objects' cells counted together, so large objects dominate); dashed = *mean over objects* (each object scored on its own, then averaged, so every object counts once). Full definitions and an example: point 5(f).
 - **Definitions:** see point 5. Only recall and precision are plotted; IoU is in the tables. Recall = hit / (hit + missed) has all {n_on} obstacle cells as its denominator; precision = hit / (hit + false alarm) has every filled scored cell as its denominator.
 - **How the curves move:** raising t fills fewer cells, so recall can only fall and precision usually rises.
-- **When one arm beats another:** its curve is higher and the bands do not overlap.
+- **When one arm beats another:** its line is higher and its band does not overlap the other arm's band of the same kind (pooled with pooled, mean with mean).
 - **Why t runs {curve_range_text}:** the extremes are left out because they say nothing about the model. At t = 0 every cell counts as filled (recall 1, precision = the share of obstacle cells). At t ≈ 1 precision rests on a handful of cells and jumps.
 """,
 }

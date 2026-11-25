@@ -132,11 +132,11 @@ def test_curve_settings_none_renders_fallbacks_and_session_is_named():
 
 
 def test_curve_band_text_says_what_the_band_spans():
-    """The band description names the pooled and mean-over-objects curves, and curve_repeat_counts feed the count."""
+    """Each line has its own band (same curve over the repeats), and curve_repeat_counts feed the count."""
     values = terminology.definition_values(SYNTHETIC_SUMMARY, SYNTHETIC_CURVE, SYNTHETIC_CELLS, SYNTHETIC_OUTCOMES,
                                            {"stock": 5, "radar_init": 4})
     text = terminology.figure_reading_markdown("threshold_curves_scene", values)
-    assert "lowest and highest value of both the pooled and the mean-over-objects curve" in text
+    assert "the lowest and highest value of that same curve (pooled or mean over objects)" in text
     assert "over the 4–5 (stock 5, radar init 4) repeats of the arm" in text
 def test_telescoping_identity_and_order_independence():
     """sum_i a_i prod_{j<i}(1-a_j) == 1 - prod(1-a), computed independently by a plain loop."""
@@ -229,3 +229,27 @@ def test_example_iou_from_counts_and_bounded_by_recall_and_precision():
     assert f"IoU {values['example_iou']}." in text
     assert "|(O_t ∪ G) ∩ N|" in text
     assert "IoU is in the tables" in terminology.figure_reading_markdown("threshold_curves_scene", values)
+
+
+def test_pooling_example_values_follow_the_two_definitions():
+    """Pooled = sum of hits / sum of cells; mean = average of per-object ratios; computed here from first principles."""
+    example_objects = (("big", 50, 10), ("small", 5, 4))
+    values = terminology.pooling_example_values(example_objects)
+    # Pooled: (10 + 4) / (50 + 5) = 14 / 55. Mean: (10/50 + 4/5) / 2 = (0.2 + 0.8) / 2 = 0.5.
+    assert values["pooling_example_pooled"] == f"{14 / 55:.{terminology.EXAMPLE_DECIMALS}f}"
+    assert values["pooling_example_mean"] == f"{0.5:.{terminology.EXAMPLE_DECIMALS}f}"
+    assert values["pooling_example_per_object"] == "0.200 and 0.800"
+    with pytest.raises(ValueError):
+        terminology.pooling_example_values((("empty", 0, 0),))
+
+
+def test_point_5f_defines_pooled_and_mean_and_the_curve_guide_names_solid_and_dashed():
+    """Point 5(f) carries both formulas, the undefined-object rule and the example; the guide maps line styles."""
+    values = terminology.definition_values(SYNTHETIC_SUMMARY, SYNTHETIC_CURVE, SYNTHETIC_CELLS, SYNTHETIC_OUTCOMES)
+    definitions = terminology.definitions_markdown(values)
+    assert "Σ_k |O_t ∩ G_k| / Σ_k |G_k|" in definitions and "(1/K) Σ_k recall_k" in definitions
+    assert "has no precision and is left out of the precision mean" in definitions
+    assert values["pooling_example_pooled"] in definitions and values["pooling_example_mean"] in definitions
+    assert "made-up numbers" in definitions
+    guide = terminology.figure_reading_markdown("threshold_curves_scene", values)
+    assert "solid = *pooled*" in guide and "dashed = *mean over objects*" in guide and "point 5(f)" in guide

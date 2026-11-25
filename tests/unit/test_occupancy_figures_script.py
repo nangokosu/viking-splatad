@@ -68,8 +68,8 @@ def test_threshold_grid_contains_p2_thresholds_or_raises():
         script.threshold_grid(20, [0.5])
 
 
-def test_campaign_envelope_min_max_over_repeats_and_both_curves():
-    """Per threshold the band is min/max over repeats of the pooled and mean curves; all-NaN stays NaN."""
+def test_campaign_envelope_one_band_per_curve_key():
+    """Per threshold each curve key has its own min/max over repeats (not mixed with its sibling); all-NaN stays NaN."""
     script = load_script()
     thresholds = np.array([0.0, 0.5, 1.0])
     nan = np.nan
@@ -80,12 +80,17 @@ def test_campaign_envelope_min_max_over_repeats_and_both_curves():
                   "mean_recall": np.array([0.5, 0.2, nan]), "pooled_precision": np.array([0.8, 0.7, nan]),
                   "mean_precision": np.array([0.85, 0.65, 0.3])}
     envelope = script.campaign_envelope([repeat_one, repeat_two])
-    _, recall_lower, recall_upper = envelope["recall"]
-    assert np.allclose(recall_lower, [0.2, 0.1, nan], equal_nan=True)
-    assert np.allclose(recall_upper, [0.5, 0.4, nan], equal_nan=True)
-    _, precision_lower, precision_upper = envelope["precision"]
-    assert np.allclose(precision_lower, [0.8, 0.5, 0.1])
-    assert np.allclose(precision_upper, [1.0, 0.7, 0.3])
+    assert set(envelope) == {"pooled_recall", "mean_recall", "pooled_precision", "mean_precision"}
+    # Expected: elementwise min / max of that key's two repeats only (NaN-ignoring).
+    expected = {"pooled_recall": ([0.2, 0.35, nan], [0.25, 0.4, nan]),
+                "mean_recall": ([0.3, 0.1, nan], [0.5, 0.2, nan]),
+                "pooled_precision": ([0.8, 0.5, 0.2], [1.0, 0.7, 0.2]),
+                "mean_precision": ([0.85, 0.6, 0.1], [0.9, 0.65, 0.3])}
+    for curve_key, (expected_lower, expected_upper) in expected.items():
+        returned_thresholds, lower, upper = envelope[curve_key]
+        assert np.allclose(returned_thresholds, thresholds)
+        assert np.allclose(lower, expected_lower, equal_nan=True)
+        assert np.allclose(upper, expected_upper, equal_nan=True)
 
 
 def test_scene_outcomes_follow_set_algebra():
@@ -330,7 +335,7 @@ def test_threshold_curve_numbers_and_title_state_the_repeat_count(tmp_path):
     stock_curves = reported["drawn_curves"]["stock"]
     assert stock_curves["pooled_recall"][half_position] == pytest.approx(1 / 2)
     assert stock_curves["pooled_precision"][half_position] == pytest.approx(1 / 2)
-    band = reported["campaign_bands"]["stock"]["recall"]
+    band = reported["campaign_bands"]["stock"]["pooled_recall"]
     assert len(band["lower"]) == len(band["upper"]) == len(grid)
     assert (tmp_path / "curves.png").is_file()
 

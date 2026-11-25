@@ -144,27 +144,27 @@ def threshold_grid(point_count: int, p2_thresholds: Sequence[float], minimum: fl
 
 
 def campaign_envelope(curves_per_repeat: Sequence[Mapping[str, np.ndarray]]) -> Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-    """Per-threshold min and max over repeats, for each plotted metric.
+    """Per-threshold min and max over repeats, one envelope per plotted curve.
 
-    For each metric (e.g. "recall") the band spans, at every threshold, the lowest and highest value of BOTH
-    the pooled and the mean-over-objects curve over all repeats, so it contains every line the figure draws for
-    the arm.
+    Every plotted curve key (``pooled_recall``, ``mean_recall``, ``pooled_precision``, ``mean_precision``) gets
+    its own band: at every threshold the lowest and highest value of THAT curve over the repeats, so the
+    pooled and the mean-over-objects bands do not merge.
     NaN is ignored per threshold (``fmin``/``fmax``); all-NaN thresholds stay NaN.
 
     Args:
         curves_per_repeat: One ``threshold_curves`` dict per repeat.
 
     Returns:
-        metric key -> (thresholds, lower, upper).
+        curve key -> (thresholds, lower, upper).
     """
     envelope: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     thresholds = np.asarray(curves_per_repeat[0]["thresholds"], dtype=float)
-    for metric_key, _label, pooled_key, mean_key in THRESHOLD_METRICS:
-        # Step 1: stack every repeat's pooled and mean curve as rows: (2 * repeats, thresholds).
-        stacked = np.vstack([np.asarray(curves[key], dtype=float) for curves in curves_per_repeat
-                             for key in (pooled_key, mean_key)])
-        # Step 2: NaN-ignoring min / max over the rows.
-        envelope[metric_key] = (thresholds, np.fmin.reduce(stacked, axis=0), np.fmax.reduce(stacked, axis=0))
+    for _metric_key, _label, pooled_key, mean_key in THRESHOLD_METRICS:
+        for curve_key in (pooled_key, mean_key):
+            # Step 1: stack this curve of every repeat as rows: (repeats, thresholds).
+            stacked = np.vstack([np.asarray(curves[curve_key], dtype=float) for curves in curves_per_repeat])
+            # Step 2: NaN-ignoring min / max over the rows.
+            envelope[curve_key] = (thresholds, np.fmin.reduce(stacked, axis=0), np.fmax.reduce(stacked, axis=0))
     return envelope
 
 
@@ -658,7 +658,7 @@ def whole_scene_cell_counts(context: FigureContext) -> Dict[str, int]:
 
 
 def draw_threshold_curves(context: FigureContext, output_path: Path, band: str) -> Dict[str, Any]:
-    """Threshold curves of one band: curves of the drawn run per arm with the min/max band over all repeats.
+    """Threshold curves of one band: curves of the drawn run per arm, each with its min/max band over all repeats.
 
     An arm without campaign runs (an override stands in) has its curves but no band.
 
@@ -684,8 +684,8 @@ def draw_threshold_curves(context: FigureContext, output_path: Path, band: str) 
         "repeat_counts": {arm: len(context.repeats[arm]) for arm in arms},
         "drawn_curves": {arm: {key: json_number_list(values) for key, values in curves.items() if key != "thresholds"}
                          for arm, curves in drawn_curves.items()},
-        "campaign_bands": {arm: {metric_key: {"lower": json_number_list(lower), "upper": json_number_list(upper)}
-                                 for metric_key, (_, lower, upper) in envelope.items()}
+        "campaign_bands": {arm: {curve_key: {"lower": json_number_list(lower), "upper": json_number_list(upper)}
+                                 for curve_key, (_, lower, upper) in envelope.items()}
                            for arm, envelope in campaign_bands.items()}}
     if band == BAND_ALL:
         # The cell counts are the whole scene's, so they belong to this band only (``scene_counts`` also has them).

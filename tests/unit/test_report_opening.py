@@ -261,8 +261,8 @@ def test_opening_names_the_session_and_curve_guide_uses_manifest_repeat_counts()
     """The definitions name the session; the curve band text states what it spans and the manifest's counts."""
     text = report_opening.whole_scene_opening_markdown(synthetic_summary(SESSIONS[0]), synthetic_manifest(SESSIONS[0]), "figs")
     assert f"Values for session {SESSIONS[0]}: trunk" in text and f"drawn run in {SESSIONS[0]} at t" in text
-    assert "lowest and highest value of both the pooled and the mean-over-objects curve" in text
-    assert "conservative reading" in text and "over the 3 repeats of the arm" in text
+    assert "the lowest and highest value of that same curve (pooled or mean over objects)" in text
+    assert "pooled band is shaded more strongly" in text and "over the 3 repeats of the arm" in text
     # Unequal campaign counts show per arm.
     manifest = synthetic_manifest(SESSIONS[0])
     manifest["arms"]["radar_init"]["campaign_run_count"] = 2

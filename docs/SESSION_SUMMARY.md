@@ -1,7 +1,9 @@
 # Last session summary (2026-11-25, second session)
 
 ## Done
-Branch `margin-reach-rescore`, one commit: "Whole-scene figures, report definitions and terminology document" (this commit).
+Branch `whole-scene-figures` (stacked on `margin-reach-rescore` / PR #15; its own PR targets that branch), commits:
+`8178e86` "Whole-scene figures, report definitions and terminology document" and the follow-up
+"Threshold curves: one band per line; define pooled vs mean over objects" (this commit).
 - **Figures (scripts/26), whole scene only** (user's decision; the H_near versions take the same form and come next):
   - `arms_scene_3d.png`: a 2 × 3 grid. Top: a GT-box panel coloured by class, plus the hit difference. Bottom: the 3 arms. One tight camera (`viz/camera_framing.py`), every panel cropped by the same content box.
   - `threshold_curves_scene.png`: recall | precision for t in [0.2, 0.9] (`eval.figures.threshold_curve_*`).
@@ -13,7 +15,7 @@ Branch `margin-reach-rescore`, one commit: "Whole-scene figures, report definiti
   - The manifest is checked against the summary before use.
 - **`reports/gaussian_occupancy/terminology.md`** (written by scripts/21) is for coworkers' write-up: a 66-term glossary (`eval/terminology_glossary.py`, every "Where" checked by a test), the definitions, the figure guides, the values per session, the caveats and the references.
 - **Checks:**
-  - Full suite in the image: 1973 passed; the only skip is traceability's.
+  - Full suite in the image: 1976 passed; the only skip is traceability's.
   - Every summary metric is identical to the previous commit (1365 descriptions per session).
   - `check_caption_numbers.py`: 24 / 24 OK.
   - `code-reviewer` ran and its findings are fixed.
@@ -21,7 +23,7 @@ Branch `margin-reach-rescore`, one commit: "Whole-scene figures, report definiti
 ## Current state
 - **30k presentation runs:** five are pending on the cluster (jobs 257684, 257686–257689). The June `radar_init_loss_cam_30k` run was not submitted.
 - **No source in the repo** (glossary entries without a formula or value): the render-metric formulas, PSNR/SSIM/LPIPS, and the radar seed resolutions.
-- **Threshold-curve band:** it spans the pooled and mean curves of all repeats together, so non-overlap is a conservative reading.
+- **Threshold curves:** one band per line (pooled stronger, mean over objects lighter and hatched); point 5(f) of the definitions explains pooled vs mean over objects with an illustrative example.
 - **Known gaps carried over** (not fixed):
   - no unit test calls `estimate_range_margin` with `voxel_size`;
   - the hidden-space schema is still /1;

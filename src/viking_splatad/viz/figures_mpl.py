@@ -51,8 +51,13 @@ LEGEND_PATCH_EDGE = "0.6"
 # Legend rows of the threshold figure: two entries per arm (pooled and mean line) laid out with one
 # column per arm, hence two rows.
 THRESHOLD_LEGEND_ROWS = 2
-# Alpha of the campaign spread bands.
-SPREAD_BAND_ALPHA = 0.2
+# Alpha of the campaign spread bands: the pooled line's band is stronger than the mean-over-objects line's, so
+# the two bands of one arm stay distinguishable where they overlap.
+POOLED_BAND_ALPHA = 0.25
+MEAN_BAND_ALPHA = 0.1
+# Hatch of the mean band (ties it to the dashed line) and the width (pt) of its hatch / edge lines.
+MEAN_BAND_HATCH = "///"
+MEAN_BAND_EDGE_WIDTH = 0.0
 # Dash pattern of the mean-over-objects curves and dotted style of threshold guides.
 MEAN_LINESTYLE = "--"
 GUIDE_LINESTYLE = ":"
@@ -75,7 +80,8 @@ CAPTION_LINE_HEIGHT_IN = 0.16
 CURVE_PANEL_WIDTH_IN = 5.5
 # Captions printed under the axes.
 CURVES_CAPTION = ("recall = share of obstacle cells filled; precision = share of filled cells on/next to "
-                  "obstacles that are obstacle; band = min\u2013max over the repeats")
+                  "obstacles that are obstacle; each line's band = its min\u2013max over the arm's repeats "
+                  "(stronger shading = pooled, lighter = mean over objects)")
 
 
 def _unit_rgb(settings: FigureSettings, colour_name: str) -> Tuple[float, float, float]:
@@ -248,7 +254,7 @@ def _plot_threshold_panel(axis: Any, arm_curves: Mapping[str, Mapping[str, np.nd
         arm_curves: arm -> curve dict from ``threshold_curves``.
         settings: Figure settings.
         metric: One entry of THRESHOLD_METRICS.
-        campaign_for_band: Optional arm -> metric -> (thresholds, lower, upper).
+        campaign_for_band: Optional arm -> curve key (pooled / mean key) -> (thresholds, lower, upper).
 
     Returns:
         None.
@@ -259,11 +265,16 @@ def _plot_threshold_panel(axis: Any, arm_curves: Mapping[str, Mapping[str, np.nd
             continue
         colour = _arm_colour(settings, arm)
         curves = arm_curves[arm]
-        # Step 1: campaign spread band first, so lines draw on top of it.
-        if campaign_for_band and arm in campaign_for_band and metric_key in campaign_for_band[arm]:
-            band_thresholds, lower, upper = campaign_for_band[arm][metric_key]
-            axis.fill_between(band_thresholds, lower, upper, color=colour, alpha=SPREAD_BAND_ALPHA,
-                              linewidth=0)
+        # Step 1: one spread band per line, drawn first so lines sit on top: strong for pooled, light and
+        # hatched for the mean (the hatch colour follows the edge colour).
+        arm_bands = campaign_for_band.get(arm, {}) if campaign_for_band else {}
+        for curve_key, band_alpha, band_hatch in ((pooled_key, POOLED_BAND_ALPHA, None),
+                                                  (mean_key, MEAN_BAND_ALPHA, MEAN_BAND_HATCH)):
+            if curve_key not in arm_bands:
+                continue
+            band_thresholds, lower, upper = arm_bands[curve_key]
+            axis.fill_between(band_thresholds, lower, upper, facecolor=colour, edgecolor=colour,
+                              alpha=band_alpha, linewidth=MEAN_BAND_EDGE_WIDTH, hatch=band_hatch)
         # Step 2: pooled solid, mean-over-objects dashed.
         label = settings.arm_labels.get(arm, arm)
         axis.plot(curves["thresholds"], curves[pooled_key], color=colour,
@@ -285,7 +296,8 @@ def threshold_curves_figure(curves_by_arm: Mapping[str, Mapping[str, np.ndarray]
         curves_by_arm: arm -> ``threshold_curves`` dict of the drawn run, on one band.
         settings: Figure settings.
         p2_thresholds: Thresholds marked by vertical dotted lines.
-        campaign_bands: Optional arm -> metric -> (thresholds, lower, upper) min/max spread over the repeats.
+        campaign_bands: Optional arm -> curve key (e.g. ``pooled_recall``) -> (thresholds, lower, upper) min/max
+            spread of that curve over the repeats.
         title: Figure title.
         run_note: Optional text naming the drawn runs.
 
