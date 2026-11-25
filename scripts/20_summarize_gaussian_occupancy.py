@@ -248,6 +248,9 @@ def load_scored_run(run_dir: Path, session: str, record: Optional[Dict[str, Any]
     Raises:
         ValueError: Wrong session or schema, split differs without permission, archive mismatch.
     """
+    # A split-change reason must say something: an empty or blank reason would let a run be pooled unexplained.
+    if allow_split_change is not None and not allow_split_change.strip():
+        raise ValueError(f"{run_dir}: --allow-split-change needs a non-empty reason")
     report = json.loads((run_dir / RUN_REPORT_RELATIVE_PATH).read_text())
     if report.get("schema") != RUN_REPORT_SCHEMA:
         raise ValueError(f"{run_dir}: report schema {report.get('schema')!r}, need {RUN_REPORT_SCHEMA!r} (rerun scripts/19)")
@@ -260,7 +263,10 @@ def load_scored_run(run_dir: Path, session: str, record: Optional[Dict[str, Any]
         raise ValueError(f"{run_dir}: split not shown equal to {REFERENCE_SPLIT_RELATIVE_DIR}/{session}.json: "
                          f"{differences[:QUOTED_DIFFERENCE_COUNT]}")
     split_note = "identical to the reference record"
-    if differences:
+    if record is None:
+        # No record at all is its own case: the split is unproven, not merely different.
+        split_note = f"NO REFERENCE RECORD, allowed: {allow_split_change}"
+    elif differences:
         split_note = f"NOT VERIFIED ({len(differences)} differences), allowed: {allow_split_change}"
     # Step 2: the archive is the one the report was written with, and reproduces its metrics.
     cells_path = run_dir / RUN_CELLS_RELATIVE_PATH

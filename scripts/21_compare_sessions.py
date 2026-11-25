@@ -92,8 +92,6 @@ LIDAR_WHOLE_SCENE_METRIC_SUFFIXES = ("P1/recall/pooled", "P1/precision/pooled")
 LIDAR_HIDDEN_METRIC_SUFFIXES = ("P1/recall_Hnear/pooled", "P1/recall_H/pooled")
 # Optional rows: they exist only when the arms' runs have scripts/13 reports.
 OPTIONAL_METRIC_SUFFIXES = ("P1cuboid/detection_rate", "P1cuboid/point_precision")
-# Decimal places in the markdown tables (metrics are fractions in [0, 1]; 3 places resolve 0.1 %).
-TABLE_DECIMALS = 3
 
 
 def headline_metric_suffixes(threshold_texts: Sequence[str]) -> List[str]:
@@ -294,6 +292,33 @@ def session_openings_markdown(sessions: List[Dict[str, Any]], manifests: Dict[st
     return "\n".join(parts)
 
 
+def arm_cell(entry: Dict[str, Any], method: str, metric_key: str, metric_suffix: str) -> str:
+    """One arm's table cell for one metric in one session.
+
+    Args:
+        entry: One session as built in main (``session``, ``arms``).
+        method: SplatAD method name of the arm.
+        metric_key: Flat metric key, e.g. ``obstacles/P2@0.5/recall/pooled``.
+        metric_suffix: The metric's suffix, used to tell optional rows from required ones.
+
+    Returns:
+        The formatted mean ± std, or ``n/a`` when the arm is absent or the row is optional and missing.
+
+    Raises:
+        ValueError: when a required metric is missing from an arm that is present.
+    """
+    # Step 1: an arm the session does not have shows n/a.
+    if method not in entry["arms"]:
+        return "n/a"
+    metrics = entry["arms"][method]["metrics"]
+    # Step 2: a present arm must carry every required metric; only the optional rows may be absent.
+    if metric_key not in metrics:
+        if metric_suffix in OPTIONAL_METRIC_SUFFIXES:
+            return "n/a"
+        raise ValueError(f"{entry['session']} {method}: required metric {metric_key} is missing from the summary")
+    return format_description(metrics[metric_key])
+
+
 def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, Any]],
                     opening_markdown: Optional[str] = None) -> str:
     """The comparison as markdown: per-session arm tables, then per method pair the gaps side by side.
@@ -336,9 +361,7 @@ def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, 
         for metric_suffix in metric_suffixes:
             metric_key = f"{class_name}/{metric_suffix}"
             for entry in sessions:
-                cells = [format_description(entry["arms"][method]["metrics"][metric_key])
-                         if method in entry["arms"] and metric_key in entry["arms"][method]["metrics"] else "n/a"
-                         for method in METHOD_ORDER]
+                cells = [arm_cell(entry, method, metric_key, metric_suffix) for method in METHOD_ORDER]
                 lines.append(f"| {metric_suffix} | {entry['session']} | " + " | ".join(cells) + " |")
         lines.append("")
     # Per method pair: the gaps of both sessions side by side, and their difference.
@@ -353,7 +376,10 @@ def render_markdown(sessions: List[Dict[str, Any]], comparisons: List[Dict[str, 
             for metric_suffix in metric_suffixes:
                 metric_key = f"{class_name}/{metric_suffix}"
                 if metric_key not in comparison["metrics"]:
-                    continue
+                    # Only the optional rows may be absent; a missing required row is a broken summary, so refuse.
+                    if metric_suffix in OPTIONAL_METRIC_SUFFIXES:
+                        continue
+                    raise ValueError(f"gap {later_label} - {earlier_label}: required metric {metric_key} is missing")
                 metric_entry = comparison["metrics"][metric_key]
                 session_cells = [f"{format_value(metric_entry['per_session'][session]['gap'])} "
                                  f"({separation_label(metric_entry['per_session'][session]['separated'])})"

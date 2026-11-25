@@ -628,7 +628,7 @@ def hidden_section_lines(report: Dict[str, Any]) -> List[str]:
     lines: List[str] = []
     near_band_m = report["hidden_space"]["near_band_m"]
     hidden_sections = (
-        (f"## Hidden-voxel metrics, hidden within {near_band_m:g} m of the path (H_near, headline; baseline = every scored cell)",
+        (f"## Hidden-voxel metrics, hidden within {near_band_m:g} m of the path (H_near, read after the whole scene; baseline = every scored cell)",
          REPORT_HIDDEN_NEAR_KEY, HIDDEN_NEAR_METRIC_SUFFIX),
         ("## Hidden-voxel metrics, whole session hidden space (H; baseline = every scored cell)",
          REPORT_HIDDEN_KEY, HIDDEN_FULL_METRIC_SUFFIX))
@@ -653,9 +653,7 @@ def report_markdown(report: Dict[str, Any]) -> str:
              f"Profile `{report['profile']}`, method `{report['train_method']}`, code `{report['git_sha']}`, "
              f"{report['gaussians']['count']} Gaussians (step {report['gaussians']['checkpoint_step']}), "
              f"occupied at >= {report['settings']['occupancy_threshold']}, {report['scored_cells']} scored cells.", ""]
-    # Step 1: hidden-voxel tables first, H_near (the headline) then full H.
-    lines += hidden_section_lines(report)
-    # Step 2: P1 and P2 side by side per class, with recall per evidence stratum.
+    # Step 1: P1 and P2 side by side per class over the whole neighbourhood, with recall per evidence stratum (read first).
     lines += ["## P1 and P2 over the whole neighbourhood", "",
               "| class | test | precision | recall | IoU | recall seen | recall blocked | recall no return |",
               "|---|---|---|---|---|---|---|---|"]
@@ -666,6 +664,8 @@ def report_markdown(report: Dict[str, Any]) -> str:
             lines.append(f"| {class_name} | {test_name} | {format_ratio(metrics['precision'])} | {format_ratio(metrics['recall'])} | "
                          f"{format_ratio(metrics['iou'])} | {format_ratio(strata['seen']['recall'])} | "
                          f"{format_ratio(strata['blocked']['recall'])} | {format_ratio(strata['no_return']['recall'])} |")
+    # Step 2: the hidden-voxel tables, H_near (read second, after the whole scene) then full H.
+    lines += hidden_section_lines(report)
     # Step 3: present-but-hidden and the detection curve per class.
     lines += ["", "## Present but hidden (GT cells occupied in P2, no P1 point)", ""]
     for class_name, class_report in report["classes"].items():

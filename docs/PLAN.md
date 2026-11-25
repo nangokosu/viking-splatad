@@ -183,7 +183,7 @@ R must beat B on at least one of them on hidden-space cells (H_near first, below
 
 **H = ¬seen ∧ blocked ∧ ¬passed.** No-return beams do not affect H. The margin m (T92, T78 `range_margin`) is the 95th percentile of cross-sweep point-to-plane residuals on near planar returns, measured from the data, keeping only residuals whose 10 plane-fit neighbours lie within half a GT voxel, 0.261 m (June 0.1065 m, May 0.0657 m: `hidden_space.json`; evaluation_caveats §6). H is stored with its input hashes in `data/gt/<session>/hidden_space.{npz,json}`.
 
-**Headline band H_near:** H within `hidden_space.near_band_m` (20 m) horizontal distance of the nearest sweep origin (the driven path). User's decision at the gate, 2026-11-24: most of H lies 30 m or more from the path (distance tables from `scripts/25_hidden_label_transitions.py`, measured with the earlier unbounded margin), which is distant occlusion rather than grass next to the robot. Full H is reported beside it.
+**Hidden band H_near (read second, after the whole scene):** H within `hidden_space.near_band_m` (20 m) horizontal distance of the nearest sweep origin (the driven path). User's decision at the gate, 2026-11-24: most of H lies 30 m or more from the path (distance tables from `scripts/25_hidden_label_transitions.py`, measured with the earlier unbounded margin), which is distant occlusion rather than grass next to the robot. Full H is reported beside it.
 
 The radar claim concerns H and H_near cells. B and R should agree on cells the lidar saw.
 
@@ -221,7 +221,9 @@ The radar claim concerns H and H_near cells. B and R should agree on cells the l
 | Camera PSNR / SSIM / LPIPS | final test-view values (training-eval split = test + guard frames) as a guard; extension runs also inside the trunk-above-grass mask (§4.3) | R+cam ≈ B+cam (radar must not hurt) |
 
 **Reading the results:**
-- **Headline:** class `obstacles`, June, P2 recall_H_near and precision_H_near at 0.5, pooled and mean over objects side by side. A result needs the variant gap to exceed the spread between repeats (n = 5) without losing precision. 0.8 can weaken but never replace 0.5. May is the low-grass comparison.
+- **Whole scene first:** class `obstacles`, June, P2 recall and precision at 0.5 over every scored cell, pooled and mean over objects side by side.
+- **Then the hidden band:** P2 recall_H_near and precision_H_near at 0.5, pooled and mean over objects side by side.
+- **Reading rule (both):** a result needs the variant gap to exceed the spread between repeats (n = 5) without losing precision. 0.8 can weaken but never replace 0.5. May is the low-grass comparison.
 - **Caveats to state:** unannotated objects lower precision; box GT caps recall; pooled values are dominated by large objects (hence the per-object mean); the radar response differs by class; bushes are porous (cells a beam passed through are excluded from H: quote the `passed_through_not_seen` counts); H_near is small, so per-object counts are low (quote `hidden_near_gt_cell_count_by_class` of both sessions); May's near band has almost no hidden trunk cells, consistent with short grass. Details: `docs/research/evaluation_caveats.md` §6–§7.
 - **R > B in P2 but not in P1:** the radar trunks exist in the model but are hidden behind grass from these poses. The claim "radar puts trunks into the reconstruction" holds. Showing them in a render needs other views: the backtrack split, or an approved raised-sensor extension (`evaluation_caveats.md` §4).
 - **R > B in P1 too:** visible gain.
