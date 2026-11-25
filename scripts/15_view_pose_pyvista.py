@@ -1186,7 +1186,8 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             stems = [P2_PICTURE_STEM]
         # --p2-hidden: one picture of the run's hidden-voxel cells at the chosen (or archived binding) threshold.
         elif arguments.p2_hidden:
-            _, p2_cells = load_p2_inputs(arguments.run_dirs[0])
+            # The report is kept: the drawing step takes the hidden class's box ids from it.
+            p2_report, p2_cells = load_p2_inputs(arguments.run_dirs[0])
             hidden_threshold = float(p2_cells["threshold"]) if arguments.hidden_threshold is None else arguments.hidden_threshold
             # Fail before drawing on a missing key or an unevaluated threshold (KeyError / ValueError -> refusal).
             hidden_cell_outcomes(p2_cells, arguments.hidden_class, hidden_threshold, arguments.hidden_band)

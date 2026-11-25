@@ -9,7 +9,7 @@ surface at different places). A point-to-plane residual against a local plane fi
 other sweep removes that spacing, leaving range noise plus pose error.
 """
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -33,6 +33,10 @@ MIDDLE_EIGENVALUE_INDEX = 1
 LARGEST_EIGENVALUE_INDEX = 2
 # Axis of the neighbour dimension in the (K, neighbour_count, 3) neighbour array.
 NEIGHBOUR_AXIS = 1
+# The neighbour reach bound must be strictly greater than this (a zero or negative reach would drop every point).
+MINIMUM_NEIGHBOUR_REACH_EXCLUSIVE_M = 0.0
+# cKDTree.query sorts neighbours by distance, so the last column holds the farthest one.
+FARTHEST_NEIGHBOUR_COLUMN = -1
 # Smallest sweep stride and gap (both count sweeps, so >= 1).
 MINIMUM_SWEEP_STEP = 1
 
@@ -57,6 +61,7 @@ def cross_sweep_plane_residuals(
     points_b_map: np.ndarray,
     neighbour_count: int,
     planarity_min: float,
+    max_neighbour_reach_m: Optional[float] = None,
 ) -> np.ndarray:
     """Point-to-plane residuals of sweep A's points against local planes fitted to sweep B.
 
@@ -65,20 +70,28 @@ def cross_sweep_plane_residuals(
     normal. Planarity = (l2 - l3) / l1 (Demantke / Weinmann): near 1 for a flat patch, near 0 for
     a line (l2 ~ l3 ~ 0) or an isotropic blob (l1 ~ l2 ~ l3). Only points with l1 > 0 and
     planarity >= ``planarity_min`` are kept. Residual = |(p - c) . n|, the distance of p to the
-    plane through c with normal n. Cost O(N_A log N_B) for the query plus O(K k) for the PCAs.
+    plane through c with normal n. When ``max_neighbour_reach_m`` = r is set, a point is also
+    dropped unless its farthest of the k neighbours lies within r (d_k <= r): neighbours spread
+    wider than r straddle curvature or mixed surfaces, so the plane residual would measure shape
+    instead of range noise plus pose error. Cost O(N_A log N_B) for the query plus O(N_A k) for the
+    PCAs (every query point is fitted; the planarity and reach filters apply afterwards).
 
     Args:
         points_a_map: (N_A, 3) points of the first sweep, map frame.
         points_b_map: (N_B, 3) points of the second sweep, map frame.
         neighbour_count: Neighbours per plane fit, >= 3.
         planarity_min: Minimum planarity in [0, 1] for a point to be kept.
+        max_neighbour_reach_m: Largest allowed distance (m) from a point to its farthest of the
+            ``neighbour_count`` neighbours, > 0. None = no bound (the historical behaviour, output
+            bit-identical to before the bound existed).
 
     Returns:
         (K,) float64 residuals of the kept points in A order; empty if B has fewer points than
         ``neighbour_count``.
 
     Raises:
-        ValueError: On a bad shape, ``neighbour_count`` < 3 or ``planarity_min`` outside [0, 1].
+        ValueError: On a bad shape, ``neighbour_count`` < 3, ``planarity_min`` outside [0, 1], or
+            ``max_neighbour_reach_m`` not None and <= 0.
     """
     # Step 1: validate inputs.
     _check_points(points_a_map, "points_a_map")
@@ -89,13 +102,16 @@ def cross_sweep_plane_residuals(
         raise ValueError(
             f"planarity_min must be in [{PLANARITY_LOWER_BOUND}, {PLANARITY_UPPER_BOUND}], got {planarity_min}"
         )
+    if max_neighbour_reach_m is not None and max_neighbour_reach_m <= MINIMUM_NEIGHBOUR_REACH_EXCLUSIVE_M:
+        raise ValueError(f"max_neighbour_reach_m must be > {MINIMUM_NEIGHBOUR_REACH_EXCLUSIVE_M}, got {max_neighbour_reach_m}")
     points_a = np.asarray(points_a_map, dtype=np.float64)
     points_b = np.asarray(points_b_map, dtype=np.float64)
     # Step 2: too few reference points (or no query points) -> nothing to measure.
     if points_b.shape[0] < neighbour_count or points_a.shape[0] == 0:
         return np.empty(0, dtype=np.float64)
-    # Step 3: one vectorised k-nearest-neighbour query; indices have shape (N_A, neighbour_count).
-    _, neighbour_indices = cKDTree(points_b).query(points_a, k=neighbour_count)
+    # Step 3: one vectorised k-nearest-neighbour query; indices and distances have shape
+    # (N_A, neighbour_count), distances ascending so the last column is the farthest neighbour.
+    neighbour_distances, neighbour_indices = cKDTree(points_b).query(points_a, k=neighbour_count)
     neighbours = points_b[neighbour_indices]  # (N_A, neighbour_count, 3)
     # Step 4: batch centroid and covariance, cov = (1/k) sum (q - c)(q - c)^T per point.
     centroids = neighbours.mean(axis=NEIGHBOUR_AXIS)
@@ -111,6 +127,9 @@ def cross_sweep_plane_residuals(
     planarity = np.zeros_like(largest)
     planarity[has_extent] = (middle[has_extent] - smallest[has_extent]) / largest[has_extent]
     keep = has_extent & (planarity >= planarity_min)
+    # Step 6b: optional reach bound, d_k = distance to the farthest neighbour must be <= r.
+    if max_neighbour_reach_m is not None:
+        keep &= neighbour_distances[:, FARTHEST_NEIGHBOUR_COLUMN] <= max_neighbour_reach_m
     # Step 7: residual |(p - c) . n| with n the eigenvector of the smallest eigenvalue.
     normals = eigenvectors[:, :, SMALLEST_EIGENVALUE_INDEX]
     residuals = np.abs(np.einsum("ni,ni->n", points_a - centroids, normals))

@@ -78,7 +78,7 @@ eval:
     scored_range_quantile: 0.9999
     # Headline hidden space H_near = H within this horizontal distance (m) of the nearest sweep origin
     # (the driven path). User's decision at the hidden-space gate (2026-11-24): most of H lies 30 m or
-    # more from the path (reports/hidden_space/<session>/label_transitions.md, distance table), where
+    # more from the path (scripts/25_hidden_label_transitions.py distance table, unbounded margin), where
     # "hidden" means distant occlusion rather than grass next to the robot; the research question is
     # about the latter. 20 m equals margin_max_range_m, the range within which the plane fits behind the
     # range margin are local. One value for both sessions, so May and June compare like for like. Full

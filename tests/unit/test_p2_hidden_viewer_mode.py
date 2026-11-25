@@ -97,3 +97,33 @@ def test_band_option_caption_and_default():
     assert "whole session" in full_caption and "recall_H 0.67, precision_H 0.67" in full_caption
     with pytest.raises(ValueError, match="band"):
         viewer.hidden_cell_layers(cells, "obstacles", 0.5, positions, 100.0, "bogus")
+
+
+def test_p2_hidden_main_draws_with_report_class_ids(monkeypatch, tmp_path):
+    """--p2-hidden reaches the renderer with the hidden class's ids taken from the scripts/19 report.
+
+    Regression: the mode discarded the report on load and the drawing step then read an unbound
+    ``p2_report`` (UnboundLocalError), so every hidden picture failed. Loaders and the renderer are
+    stubbed, so no run files or PyVista are needed.
+    """
+    viewer = load_viewer_script()
+    # Report entry of a group: its member class ids are what the renderer must receive.
+    group_class_ids = [3, 5, 7]
+    report = {"classes": {"obstacles": {"class_ids": group_class_ids}}}
+    archived_threshold = 0.5
+    cells = {"threshold": np.float64(archived_threshold)}
+    scene = type("SceneStub", (), {"run_id": "run_x"})()
+    rendered_calls = []
+    monkeypatch.setattr(viewer, "load_run_scene", lambda *arguments, **keywords: scene)
+    monkeypatch.setattr(viewer, "check_scenes_comparable", lambda scenes: None)
+    monkeypatch.setattr(viewer, "load_p2_inputs", lambda run_dir: (report, cells))
+    monkeypatch.setattr(viewer, "hidden_cell_outcomes", lambda *arguments, **keywords: None)
+    monkeypatch.setattr(viewer, "render_p2_hidden", lambda *arguments, **keywords: rendered_calls.append(arguments))
+    exit_code = viewer.main(["--run", str(tmp_path), "--p2-hidden", "--output-dir", str(tmp_path / "viz")])
+    assert exit_code == 0
+    assert len(rendered_calls) == 1
+    # Positional order of render_p2_hidden: scene, cells, class ids, class name, threshold, ...
+    drawn_scene, drawn_cells, drawn_class_ids, drawn_class_name, drawn_threshold = rendered_calls[0][:5]
+    assert drawn_scene is scene and drawn_cells is cells
+    assert drawn_class_ids == group_class_ids and drawn_class_name == "obstacles"
+    assert drawn_threshold == archived_threshold
