@@ -86,3 +86,67 @@ eval:
     near_band_m: 20.0
     # CPU workers; null = all CPU cores. Compute policy only, results do not depend on it.
     worker_count: null
+
+  # ---- Figure suite (src/viking_splatad/viz/figure_runs.py parses and validates this block) ----
+  figures:
+    # Arm order in every figure, left to right (the keys of arm_labels and the profile map).
+    arm_order: [stock, radar_init, radar_init_loss]
+    # Display text of each arm in titles and legends.
+    arm_labels:
+      stock: "stock"
+      radar_init: "radar init"
+      radar_init_loss: "radar init + loss"
+    # The 20k campaign profile per session and arm (5 repeats each) behind the statistics.
+    # The 30k presentation profiles (configs/slurm.yaml *_30k) can be added back here if those runs are restored.
+    campaign_profiles:
+      may_short_grass:
+        stock: may_scene_a
+        radar_init: may_scene_a_radar_init
+        radar_init_loss: may_scene_a_radar_init_loss
+      june_tall_grass:
+        stock: june_scene_a_cam
+        radar_init: june_scene_a_radar_init_cam
+        radar_init_loss: june_scene_a_radar_init_loss_cam
+    # Number of tree-trunk sections drawn per figure.
+    section_trunk_count: 6
+    # Rows of tiles per page of a multi-page figure.
+    rows_per_page: 7
+    # Output resolution (dots per inch) of the saved figures.
+    dpi: 150
+    # Side length (pixels) of one tile.
+    tile_px: 360
+    # Number of occupancy thresholds of the threshold-curve figures: an evenly spaced grid over [0, 1],
+    # ends included, step 1 / (21 - 1) = 0.05, so it contains the binding p2 thresholds 0.5 and 0.8 exactly
+    # (scripts/26 refuses a grid that lacks any p2_thresholds value).
+    threshold_curve_points: 21
+    # Bird's-eye-view bin edge (m); null = the session voxel size.
+    bev_bin_m: null
+    # Colormap of arm-difference maps and of occupancy maps (matplotlib names).
+    difference_cmap: "RdBu"
+    occupancy_cmap: "viridis"
+    # Display colours, RGB 0-255. A presentation choice with no data-derived value.
+    # false_alarm and only_radar_init_loss equal scripts/15's INSIDE_CUBOID_RGB / OUTSIDE_CUBOID_RGB
+    # and context is close to its GROUND_TRUTH_VOXEL_RGB (205); hit is a softer green than scripts/15's
+    # (0, 255, 60), chosen for print legibility.
+    colours:
+      hit: [46, 160, 67]
+      false_alarm: [214, 39, 40]
+      missed: [150, 150, 150]
+      context: [210, 210, 210]
+      only_radar_init_loss: [31, 119, 180]
+      only_stock: [255, 127, 14]
+      both: [46, 160, 67]
+      radar_seed: [148, 103, 189]
+      # Evidence classes of the section figure (keys evidence_<EVIDENCE_NAMES entry>): chosen so none
+      # resembles radar_seed purple, the black Gaussian dots or the dark occupancy shading.
+      evidence_seen: [31, 119, 180]
+      evidence_blocked: [253, 208, 162]
+      evidence_no_return: [200, 200, 200]
+      evidence_passed_through: [199, 233, 192]
+      evidence_unobserved: [255, 255, 255]
+    # Flat metric key (p2_repeats.flatten_hidden_metrics) that picks the run drawn per arm: the
+    # median repeat on the headline P2 recall_Hnear (mean over objects, binding threshold 0.5), so
+    # the drawn run is neither the arm's best nor its worst. The user chose 20k runs (2026-11-25).
+    representative_metric: "obstacles/P2@0.5/recall_Hnear/mean"
+    # Printed under every figure.
+    footer_note: "One run per arm (the median repeat of its 20k arm): illustrative. Arm separation is judged on the 5-repeat spread."

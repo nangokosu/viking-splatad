@@ -8,6 +8,8 @@ description = "PyVista viewer for SplatAD run outputs (read-only)"
 requires-python = ">=3.10"
 dependencies = [
   "pyvista>=0.43",
+  # Figure suite (scripts/26): matplotlib figures; imported by viking_splatad.viz.figures_mpl.
+  "matplotlib>=3.7",
   "numpy>=1.24",
   "scipy>=1.10",
   "pyyaml>=6",

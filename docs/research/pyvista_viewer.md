@@ -36,3 +36,28 @@ uv run --project viz python scripts/15_view_pose_pyvista.py --run runs/<run_id> 
 - **grey, translucent = missed** = G & H & not O (false negatives of recall_H).
 - **grey, very faint = context** = H & N (every scored hidden cell of the class).
 - Caption: recall_H = |hit| / (|hit| + |missed|), precision_H = |hit| / (|hit| + |false alarm|), counts over the whole scored region (the drawing is cut to the radius); "n/a" when a denominator is empty. Scored-box wireframes as in the other views.
+
+## Gaussian-occupancy figure suite (`scripts/26_occupancy_figures.py`)
+Static PNGs that show the P2 evaluation beyond the single frames above. Run per session in the viz env, after
+scripts/19 has scored the session's campaign runs:
+
+    uv run --project viz python scripts/26_occupancy_figures.py --session june_tall_grass [--run <arm>=<run dir> ...]
+
+- **Which run:** one per arm, the median repeat on `eval.figures.representative_metric` (`--run` overrides).
+  The footer of every cross-arm figure says the run is illustrative; the threshold curves draw the arm's
+  5-repeat min–max band behind it.
+- **Per run** (`<run>/eval/viz_figures/`): `occupancy_bev.png` (column-max occupancy, GT boxes, driven path,
+  H_near outline), `occupancy_outcomes_3d.png` (hit / false alarm / missed, seen vs hidden),
+  `gaussian_density_bev.png` (opacity-weighted Gaussian density; radar arms add a seed-density panel).
+- **Across arms** (`reports/gaussian_occupancy/figures/<session>/`): `arms_hidden_near_3d.png`,
+  `arms_scene_3d.png` (per-arm outcomes plus hits only init + loss / only stock / both), `trunk_gallery_pNN.png`
+  (H_near objects × arms, occupancy-coloured hidden GT cells, per-object recall_H and whole-box baseline),
+  `occlusion_sections.png` (vertical slice along the sensor ray through each trunk: evidence class per cell,
+  occupancy as shading, Gaussian means, radar seeds), `threshold_curves.png`, `occupancy_histograms.png`,
+  `hidden_near_heat_bev.png`.
+- **Audit:** `figures_manifest.json` beside each set records the input sha256s, git state, the representative
+  metric of every repeat, every caption number, and each figure's status. A failed figure is printed and
+  recorded and the exit code is 1.
+- **Code:** data preparation in `src/viking_splatad/viz/figure_{grids,metrics,sections,runs}.py` (tested in the
+  image); drawing in `figures_mpl.py` and `figures_pyvista.py` (PyVista passed in, never imported by `src/`).
+  Settings live in `configs/eval.yaml` → `eval.figures`.

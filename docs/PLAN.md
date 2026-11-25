@@ -226,10 +226,13 @@ The radar claim concerns H and H_near cells. B and R should agree on cells the l
 - **R > B in neither:** no gain.
 - **R precision < B in either test:** radar invents geometry.
 
-**Figures (`09_compare_runs.py`):**
-- **BEV** (T47): rendered points B | R | GT June lidar, with cuboid outlines;
-- occupancy grids against `data/gt/june_tall_grass/occupancy.npz`: P1 and P2 for B and R, with the hidden-space cells (H_near, H) marked;
-- zooms on trunks that B misses and R recovers.
+**Figures (`scripts/26_occupancy_figures.py`, viz env; the planned `09_compare_runs.py` was never written):**
+one run per arm, the arm's median repeat on P2 recall_Hnear (mean over objects, binding threshold), so the
+pictures illustrate and the repeat spread decides. Per run: column-max occupancy BEV, 3D hit/false-alarm/miss
+strata split by seen vs hidden, Gaussian and radar-seed density. Across arms: H_near and whole-scene 3D panels
+with a hit-difference panel, a per-object gallery of the H_near objects, occlusion sections through the trunks
+with the most hidden GT cells (evidence, occupancy, Gaussians, radar seeds), recall/precision against threshold
+with the 5-repeat band, occupancy histograms, and H_near heat maps. See `docs/research/pyvista_viewer.md`.
 
 ## 6. New transforms and tests (one known-answer test each; add tests, never edit existing ones)
 | id | what | known-answer test |
