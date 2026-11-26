@@ -5,7 +5,7 @@ Runs are found from rows of the submission ledger (runs/submitted.tsv, parsed by
 ``read_ledger`` in scripts/slurm/submit_run.py) and the local run folders runs/<run_id>/.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -36,10 +36,12 @@ class FigureSettings:
         arm_order: Arm keys, left to right.
         arm_labels: Display text per arm.
         campaign_profiles: session -> arm -> 20k campaign profile name.
+        presentation_profiles: session -> arm -> 30k presentation profile name (one run per arm).
         dpi: Figure resolution.
         tile_px: Tile side in pixels.
         colours: name -> (R, G, B) in 0-255.
-        footer_note: Text printed under every figure.
+        footer_note: Text printed under every figure of the campaign profile set.
+        presentation_footer_note: Text printed under every figure of the presentation profile set.
         representative_metric: Flat metric key (``p2_repeats.flatten_hidden_metrics``) whose median
             repeat represents an arm in the figures.
         threshold_curve_min: Lowest occupancy threshold of the threshold-curve grid.
@@ -56,6 +58,10 @@ class FigureSettings:
     colours: Dict[str, Tuple[int, int, int]]
     footer_note: str
     representative_metric: str
+    # Presentation-set entries come last with defaults so that callers built before them (tests) still work;
+    # ``load_figure_settings`` always fills both from the required config keys.
+    presentation_profiles: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    presentation_footer_note: str = ""
     threshold_curve_points: int = DEFAULT_THRESHOLD_CURVE_POINTS
     threshold_curve_min: float = DEFAULT_THRESHOLD_CURVE_MIN
     threshold_curve_max: float = DEFAULT_THRESHOLD_CURVE_MAX
@@ -161,6 +167,7 @@ def load_figure_settings(eval_config: Mapping[str, Any]) -> FigureSettings:
         raise ValueError(f"figures.arm_labels keys must equal arm_order {arm_order}, got {arm_labels!r}")
     # Step 3: profile maps.
     campaign_profiles = _require_profile_map(figures_block, "campaign_profiles", arm_order)
+    presentation_profiles = _require_profile_map(figures_block, "presentation_profiles", arm_order)
     # Step 4: colours are RGB triples within range.
     colour_block = figures_block.get("colours")
     if not isinstance(colour_block, Mapping) or not colour_block:
@@ -176,7 +183,7 @@ def load_figure_settings(eval_config: Mapping[str, Any]) -> FigureSettings:
         colours[colour_name] = tuple(channels)
     # Step 5: required non-empty text entries.
     text_values = {}
-    for text_key in ("footer_note", "representative_metric"):
+    for text_key in ("footer_note", "presentation_footer_note", "representative_metric"):
         text_value = figures_block.get(text_key)
         if not isinstance(text_value, str) or not text_value:
             raise ValueError(f"figures.{text_key} must be a non-empty string, got {text_value!r}")
@@ -199,10 +206,12 @@ def load_figure_settings(eval_config: Mapping[str, Any]) -> FigureSettings:
         arm_order=tuple(arm_order),
         arm_labels=dict(arm_labels),
         campaign_profiles=campaign_profiles,
+        presentation_profiles=presentation_profiles,
         dpi=_require_positive_int(figures_block, "dpi"),
         tile_px=_require_positive_int(figures_block, "tile_px"),
         colours=colours,
         footer_note=text_values["footer_note"],
+        presentation_footer_note=text_values["presentation_footer_note"],
         representative_metric=text_values["representative_metric"],
         threshold_curve_points=threshold_curve_points,
         threshold_curve_min=curve_min,

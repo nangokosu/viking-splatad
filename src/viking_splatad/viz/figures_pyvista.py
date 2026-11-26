@@ -4,9 +4,11 @@ PyVista is installed only in the isolated ``viz/`` project, so nothing here impo
 every renderer takes the imported module as ``pyvista_module`` (as ``pyvista_scene.draw_voxels`` does).
 Renderers return RGB uint8 images and never write files. Voxel drawing reuses ``pyvista_scene``; the
 oblique camera is fitted exactly by ``camera_framing`` (scripts/15 uses PyVista's default and ``view_xy`` instead).
+``render_difference_panel`` draws the hit-difference panel alone, zoomed to its cells.
 Matplotlib is imported lazily, and only inside ``compose_scene_figure`` and the legend helper.
 """
 
+import itertools
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -51,6 +53,8 @@ CONTENT_TOLERANCE = 1
 # every grid row, as a fraction of the cropped panel height (the titles are drawn there by ``compose_scene_figure``).
 CROP_MARGIN_FRACTION = 0.03
 TITLE_BAND_FRACTION = 0.14
+# The stand-alone difference panel has no panel title, so it keeps no title band (only the figure title above).
+SINGLE_PANEL_TITLE_BAND_FRACTION = 0.0
 # Colour name (settings.colours) of the cuboid edges.
 CUBOID_EDGE_COLOUR_NAME = "cuboid_edge"
 # Corners of one box face as sign pairs on the face's two free axes, in ring order (each consecutive pair, and the
@@ -58,6 +62,8 @@ CUBOID_EDGE_COLOUR_NAME = "cuboid_edge"
 FACE_RING_SIGN_PAIRS = ((-1, -1), (1, -1), (1, 1), (-1, 1))
 # VTK "faces" cell layout: a leading corner count (a quad has four corners) then the corner indices.
 QUAD_CORNER_COUNT = 4
+# Corners of an axis-aligned cube as (x, y, z) sign triples: every combination of -1 / +1 on the three axes (8 rows).
+CUBE_CORNER_SIGNS = np.array(list(itertools.product((-1.0, 1.0), repeat=3)))
 # Scene-figure layout (inches): width of one scene panel when the screenshot is placed in a matplotlib figure,
 # title band, and font size (pt) of its legend and titles.
 SCENE_PANEL_WIDTH_IN = 6.0
@@ -300,6 +306,80 @@ def scene_camera_aspect(points: np.ndarray) -> float:
     return tight_projected_aspect(points, OBLIQUE_CAMERA_DIRECTION, VIEW_UP_VECTOR)
 
 
+def draw_difference_cells(plotter, pyvista_module, centres: np.ndarray, voxel_size: float,
+                          difference_sets: Mapping[str, np.ndarray], colours: Mapping[str, Sequence[int]],
+                          first_colour_name: str = FIRST_ARM_COLOUR_NAME,
+                          second_colour_name: str = SECOND_ARM_COLOUR_NAME) -> None:
+    """Draw the hit-difference cells into the active subplot (shared by the grid and the stand-alone panel).
+
+    Args:
+        plotter: ``pyvista.Plotter`` whose active subplot receives the cells.
+        pyvista_module: The imported ``pyvista``.
+        centres: (V, 3) cell centres.
+        voxel_size: Voxel edge (m).
+        difference_sets: {"only_first","only_second","both"} (V,) bool (``arm_difference_sets``).
+        colours: Colour name -> 0-255 RGB (``FigureSettings.colours``).
+        first_colour_name: Colour name of the hits only the first compared arm has.
+        second_colour_name: Colour name of the hits only the second compared arm has.
+    """
+    # Solid cubes, "both" first so the single-arm hits sit on top.
+    for set_name, colour_name in (("both", "both"), ("only_first", first_colour_name),
+                                  ("only_second", second_colour_name)):
+        draw_voxels(plotter, pyvista_module, centres[np.asarray(difference_sets[set_name], dtype=bool)],
+                    voxel_size, colours[colour_name], SOLID_VOXEL_OPACITY)
+
+
+def difference_camera_points(centres: np.ndarray, difference_sets: Mapping[str, np.ndarray]) -> np.ndarray:
+    """Centres of the cells in any difference mask: the points a difference-only camera must keep in view.
+
+    Args:
+        centres: (V, 3) cell centres.
+        difference_sets: Difference masks (``arm_difference_sets``).
+
+    Returns:
+        (N, 3) array (N = 0 when no difference cell exists); no GT box corners and no other outcomes.
+    """
+    # Union of the difference masks.
+    difference_mask = np.zeros(centres.shape[0], dtype=bool)
+    for set_mask in difference_sets.values():
+        difference_mask |= np.asarray(set_mask, dtype=bool)
+    return centres[difference_mask]
+
+
+def cell_corner_points(cell_centres: np.ndarray, voxel_size: float) -> np.ndarray:
+    """The 8 corners of every cubic cell: centre + (±voxel_size / 2) on each axis.
+
+    Framing corners instead of centres keeps the outermost cubes whole, and gives any non-empty set of cells a
+    projected extent of at least one voxel on both screen axes, so the framing aspect is finite and > 0 even
+    for one cell or a line of cells.
+
+    Args:
+        cell_centres: (N, 3) cell centres.
+        voxel_size: Voxel edge (m).
+
+    Returns:
+        (8 N, 3) corner points (empty for N = 0).
+    """
+    # Broadcast (N, 1, 3) centres against (1, 8, 3) half-edge offsets, then flatten to (8 N, 3).
+    half_edge_offsets = CUBE_CORNER_SIGNS * (voxel_size / 2.0)
+    return (cell_centres[:, None, :] + half_edge_offsets[None, :, :]).reshape(-1, CUBE_CORNER_SIGNS.shape[1])
+
+
+def difference_frame_points(centres: np.ndarray, difference_sets: Mapping[str, np.ndarray],
+                            voxel_size: float) -> np.ndarray:
+    """Corners of the difference cells: what the stand-alone difference panel frames (camera and window aspect).
+
+    Args:
+        centres: (V, 3) cell centres.
+        difference_sets: Difference masks (``arm_difference_sets``).
+        voxel_size: Voxel edge (m).
+
+    Returns:
+        (8 N, 3) corner points of the N difference cells (empty when there is none).
+    """
+    return cell_corner_points(difference_camera_points(centres, difference_sets), voxel_size)
+
+
 def render_arm_panels(pyvista_module, centres: np.ndarray, voxel_size: float,
                       outcomes_by_arm: Mapping[str, Mapping[str, np.ndarray]],
                       difference_sets: Mapping[str, np.ndarray], settings: FigureSettings, *,
@@ -366,10 +446,8 @@ def render_arm_panels(pyvista_module, centres: np.ndarray, voxel_size: float,
                            settings.colours[CUBOID_EDGE_COLOUR_NAME] if gt_cuboids else ())
         # Step 3: difference panel.
         plotter.subplot(0, DIFFERENCE_PANEL_COLUMN)
-        for set_name, colour_name in (("both", "both"), ("only_first", first_colour_name),
-                                      ("only_second", second_colour_name)):
-            draw_voxels(plotter, pyvista_module, centres[np.asarray(difference_sets[set_name], dtype=bool)],
-                        voxel_size, settings.colours[colour_name], SOLID_VOXEL_OPACITY)
+        draw_difference_cells(plotter, pyvista_module, centres, voxel_size, difference_sets, settings.colours,
+                              first_colour_name, second_colour_name)
         # Step 4: arm panels (bottom row), faint context first so the solid hits sit on top.
         for column_index, arm_key in enumerate(arm_keys):
             plotter.subplot(ARM_PANEL_ROW, column_index)
@@ -398,6 +476,58 @@ def render_arm_panels(pyvista_module, centres: np.ndarray, voxel_size: float,
     if layout_report is not None:
         layout_report.update(report)
     return cropped
+
+
+def render_difference_panel(pyvista_module, centres: np.ndarray, voxel_size: float,
+                            difference_sets: Mapping[str, np.ndarray], colours: Mapping[str, Sequence[int]],
+                            window_size: Tuple[int, int], *,
+                            first_colour_name: str = FIRST_ARM_COLOUR_NAME,
+                            second_colour_name: str = SECOND_ARM_COLOUR_NAME) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """The hit-difference panel alone, zoomed so the difference cells fill the frame.
+
+    One off-screen plotter (no grid) of ``window_size``; the cells are drawn by ``draw_difference_cells`` and the
+    camera is fitted exactly to the difference cells' cube corners only (``difference_frame_points``) for the
+    window aspect ``width / height``. The screenshot is cropped to its content (``crop_grid_to_content`` on a (1, 1) grid) with
+    no per-panel title band: the lone panel has no panel title, ``compose_scene_figure`` puts the figure title above.
+
+    Args:
+        pyvista_module: The imported ``pyvista``.
+        centres: (V, 3) cell centres.
+        voxel_size: Voxel edge (m).
+        difference_sets: {"only_first","only_second","both"} (V,) bool (``arm_difference_sets``).
+        colours: Colour name -> 0-255 RGB (``FigureSettings.colours``).
+        window_size: (width, height) of the window in pixels.
+        first_colour_name: Colour name of the hits only the first compared arm has.
+        second_colour_name: Colour name of the hits only the second compared arm has.
+
+    Returns:
+        (cropped (H, W, 3) uint8 image, ``crop_grid_to_content`` report).
+
+    Raises:
+        ValueError: When no cell is in any difference mask (nothing to frame).
+    """
+    # Step 1: camera fitted to the difference cells' cube corners for the window aspect (width / height).
+    camera_points = difference_frame_points(centres, difference_sets, voxel_size)
+    if camera_points.shape[0] == 0:
+        raise ValueError("no difference cell to frame")
+    window_aspect = window_size[0] / window_size[1]
+    camera_position = tight_oblique_camera(camera_points, window_aspect, SCENE_CAMERA_PADDING,
+                                           OBLIQUE_CAMERA_DIRECTION, VIEW_UP_VECTOR, CAMERA_VIEW_ANGLE_DEGREES)
+    plotter = pyvista_module.Plotter(off_screen=True, window_size=window_size, border=False)
+    # Plain background so the content crop's background assumption (BACKGROUND_RGB) always holds.
+    plotter.set_background(to_unit_rgb(BACKGROUND_RGB))
+    try:
+        # Step 2: draw, then camera and depth peeling as in the grid panels.
+        draw_difference_cells(plotter, pyvista_module, centres, voxel_size, difference_sets, colours,
+                              first_colour_name, second_colour_name)
+        plotter.camera_position = camera_position
+        plotter.enable_depth_peeling()
+        screenshot = capture_image(plotter)
+    finally:
+        plotter.close()
+    # Step 3: crop to content, with no title band (the figure title sits above the image).
+    return crop_grid_to_content(screenshot, (1, 1), [(0, 0)], BACKGROUND_RGB, CONTENT_TOLERANCE,
+                                CROP_MARGIN_FRACTION, SINGLE_PANEL_TITLE_BAND_FRACTION)
 
 
 def _legend_handles(entries: Sequence[Tuple[str, Sequence[int], str]]) -> List[Any]:

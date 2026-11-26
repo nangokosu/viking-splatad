@@ -185,3 +185,68 @@ def test_bad_curve_range_settings_rejected(key, bad_value):
     section["figures"][key] = bad_value
     with pytest.raises(ValueError, match="threshold_curve"):
         load_figure_settings(section)
+
+
+PRESENTATION_PROFILES = {
+    "may_short_grass": {"stock": "may_scene_a_30k", "radar_init": "may_scene_a_radar_init_30k",
+                        "radar_init_loss": "may_scene_a_radar_init_loss_30k"},
+    "june_tall_grass": {"stock": "june_scene_a_cam_30k", "radar_init": "june_scene_a_radar_init_cam_30k",
+                        "radar_init_loss": "june_scene_a_radar_init_loss_cam_30k"},
+}
+
+
+def test_presentation_settings_parsed_from_the_real_config():
+    """The 30k profile map and its footer note are read as written in configs/eval.yaml."""
+    settings = _settings()
+    assert settings.presentation_profiles == PRESENTATION_PROFILES
+    assert settings.presentation_footer_note.startswith("One 30k run per arm")
+    # The campaign settings are untouched by the new keys.
+    assert settings.footer_note != settings.presentation_footer_note
+
+
+def test_presentation_profiles_exist_in_the_slurm_config():
+    """Every presentation profile names a profile of configs/slurm.yaml."""
+    slurm_profiles = yaml.safe_load(SLURM_YAML_PATH.read_text())["profiles"]
+    for profile_by_arm in _settings().presentation_profiles.values():
+        for profile in profile_by_arm.values():
+            assert profile in slurm_profiles
+
+
+def test_presentation_map_missing_an_arm_rejected():
+    """A presentation map lacking one arm is refused, naming the entry."""
+    section = copy.deepcopy(_real_eval_section())
+    del section["figures"]["presentation_profiles"][SESSION_NAME]["radar_init"]
+    with pytest.raises(ValueError, match="presentation_profiles"):
+        load_figure_settings(section)
+
+
+@pytest.mark.parametrize("missing_key", ["presentation_profiles", "presentation_footer_note"])
+def test_missing_presentation_key_rejected(missing_key):
+    """Both new keys are required."""
+    section = copy.deepcopy(_real_eval_section())
+    del section["figures"][missing_key]
+    with pytest.raises(ValueError, match=missing_key):
+        load_figure_settings(section)
+
+
+def test_resolve_arm_runs_with_presentation_map_selects_only_30k_rows(tmp_path):
+    """A ledger mixing 20k and 30k rows resolves the 30k runs only when given the presentation map."""
+    settings = _settings()
+    session_profiles = settings.presentation_profiles[SESSION_NAME]
+    campaign_profiles = settings.campaign_profiles[SESSION_NAME]
+    rows = []
+    run_ids = []
+    for arm in settings.arm_order:
+        # Two 20k repeats and one 30k run per arm.
+        for suffix, profile in (("20k-a", campaign_profiles[arm]), ("20k-b", campaign_profiles[arm]),
+                                ("30k", session_profiles[arm])):
+            run_id = f"{SESSION_NAME}-{arm}-{suffix}"
+            rows.append(_row(run_id, SESSION_NAME, profile))
+            run_ids.append(run_id)
+    runs_dir = _make_runs(tmp_path, run_ids)
+    presentation_runs = resolve_arm_runs(SESSION_NAME, session_profiles, rows, runs_dir)
+    campaign_runs = resolve_arm_runs(SESSION_NAME, campaign_profiles, rows, runs_dir)
+    for arm in settings.arm_order:
+        assert presentation_runs[arm] == [runs_dir / f"{SESSION_NAME}-{arm}-30k"]
+        assert campaign_runs[arm] == [runs_dir / f"{SESSION_NAME}-{arm}-20k-a",
+                                      runs_dir / f"{SESSION_NAME}-{arm}-20k-b"]

@@ -79,9 +79,28 @@ CAPTION_FONT_SIZE = 8
 CAPTION_LINE_HEIGHT_IN = 0.16
 CURVE_PANEL_WIDTH_IN = 5.5
 # Captions printed under the axes.
+CURVES_CAPTION_NO_BAND = ("recall = share of obstacle cells filled; precision = share of filled cells on/next to "
+                         "obstacles that are obstacle; one run per arm, so no spread band is drawn")
 CURVES_CAPTION = ("recall = share of obstacle cells filled; precision = share of filled cells on/next to "
                   "obstacles that are obstacle; each line's band = its min\u2013max over the arm's repeats "
                   "(stronger shading = pooled, lighter = mean over objects)")
+
+
+def _band_has_spread(lower: Any, upper: Any) -> bool:
+    """Whether a min/max band has any width (a single repeat gives lower == upper everywhere).
+
+    Args:
+        lower: Lower envelope values.
+        upper: Upper envelope values.
+
+    Returns:
+        True when some threshold has lower != upper (NaN positions never count as spread).
+    """
+    # Step 1: NaN != NaN is True, so compare only the positions where both ends are defined.
+    lower_values = np.asarray(lower, dtype=float)
+    upper_values = np.asarray(upper, dtype=float)
+    defined = ~np.isnan(lower_values) & ~np.isnan(upper_values)
+    return bool(np.any(lower_values[defined] != upper_values[defined]))
 
 
 def _unit_rgb(settings: FigureSettings, colour_name: str) -> Tuple[float, float, float]:
@@ -273,6 +292,9 @@ def _plot_threshold_panel(axis: Any, arm_curves: Mapping[str, Mapping[str, np.nd
             if curve_key not in arm_bands:
                 continue
             band_thresholds, lower, upper = arm_bands[curve_key]
+            # A zero-width band (one repeat) would be an invisible fill: skip it.
+            if not _band_has_spread(lower, upper):
+                continue
             axis.fill_between(band_thresholds, lower, upper, facecolor=colour, edgecolor=colour,
                               alpha=band_alpha, linewidth=MEAN_BAND_EDGE_WIDTH, hatch=band_hatch)
         # Step 2: pooled solid, mean-over-objects dashed.
@@ -304,8 +326,13 @@ def threshold_curves_figure(curves_by_arm: Mapping[str, Mapping[str, np.ndarray]
     Returns:
         The figure (not saved); both x axes are limited to [min, max] of the threshold grid.
     """
+    # The band sentence is kept only when some drawn band has a width (one repeat per arm has none).
+    any_band_drawn = any(_band_has_spread(lower, upper)
+                         for arm_bands in (campaign_bands or {}).values()
+                         for _thresholds, lower, upper in arm_bands.values())
     fig, axes_grid = _new_figure(len(THRESHOLD_METRICS), 1, title, settings, footer=True, run_note=run_note,
-                                 legend_rows=THRESHOLD_LEGEND_ROWS, caption=CURVES_CAPTION,
+                                 legend_rows=THRESHOLD_LEGEND_ROWS,
+                                 caption=CURVES_CAPTION if any_band_drawn else CURVES_CAPTION_NO_BAND,
                                  panel_size=(CURVE_PANEL_WIDTH_IN, PANEL_HEIGHT_IN))
     # Step 1: x range = the grid's own ends (every arm shares one grid).
     grid = np.concatenate([np.asarray(curves["thresholds"], dtype=float) for curves in curves_by_arm.values()])
