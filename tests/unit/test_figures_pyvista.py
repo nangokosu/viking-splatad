@@ -1,9 +1,11 @@
 """Tests of the off-screen figure renderers (viz/figures_pyvista.py) against a recording stand-in for pyvista."""
 
 import dataclasses
+import itertools
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from viking_splatad.viz.figure_runs import FigureSettings
 from viking_splatad.viz.pyvista_scene import MAX_CHANNEL_VALUE
@@ -20,7 +22,12 @@ from viking_splatad.viz.figures_pyvista import (
     SCENE_GRID_COLUMNS,
     SCENE_GRID_ROWS,
     cuboid_face_cells,
+    cell_corner_points,
+    difference_camera_points,
+    difference_frame_points,
     draw_class_cuboids,
+    render_difference_panel,
+    scene_camera_aspect,
     render_arm_panels,
     BACKGROUND_RGB,
     content_bounding_box,
@@ -404,3 +411,129 @@ def test_crop_grid_without_content_keeps_the_whole_cell():
     """Nothing drawn: the crop is the full cell."""
     cropped, report = crop_grid_to_content(blank_image(8, 12), (2, 3), [(0, 0)], WHITE, 0, 0.1, 0.0)
     assert report["cell_shape"] == [4, 4] and cropped.shape == (8, 12, CHANNELS)
+
+
+# ---- stand-alone difference panel ----
+def test_difference_camera_points_are_the_union_of_the_difference_masks():
+    """Exactly the centres of cells in any difference mask, in cell order."""
+    centres = np.arange(15, dtype=float).reshape(5, 3)
+    difference = {"only_first": np.array([True, False, False, False, False]),
+                  "only_second": np.array([False, False, True, False, False]),
+                  "both": np.array([False, False, False, False, False])}
+    expected = centres[[0, 2]]
+    np.testing.assert_allclose(difference_camera_points(centres, difference), expected)
+
+
+def test_difference_camera_ignores_cells_outside_every_difference_mask():
+    """A far cell in no mask leaves the fitted camera unchanged."""
+    near = np.array([[0.0, 0.0, 0.0], [3.0, 1.0, 0.5]])
+    centres_with_far = np.vstack([near, [[500.0, 400.0, 30.0]]])
+    mask_near = np.array([True, True])
+    mask_with_far = np.array([True, True, False])
+    points_without = difference_camera_points(near, {"both": mask_near})
+    points_with = difference_camera_points(centres_with_far, {"both": mask_with_far})
+    aspect = 2.0
+    camera_without = tight_oblique_camera(points_without, aspect, SCENE_CAMERA_PADDING, OBLIQUE_CAMERA_DIRECTION,
+                                          VIEW_UP_VECTOR, CAMERA_VIEW_ANGLE_DEGREES)
+    camera_with = tight_oblique_camera(points_with, aspect, SCENE_CAMERA_PADDING, OBLIQUE_CAMERA_DIRECTION,
+                                       VIEW_UP_VECTOR, CAMERA_VIEW_ANGLE_DEGREES)
+    for camera_part_without, camera_part_with in zip(camera_without, camera_with):
+        np.testing.assert_allclose(np.asarray(camera_part_without), np.asarray(camera_part_with))
+
+
+class BlockScreenshotPlotter(RecordingPlotter):
+    """Plotter whose screenshot is a white window with a block coloured like the only_stock cells."""
+
+    def screenshot(self, return_img=False):
+        """White window_size image with a centred only_stock-coloured block."""
+        window_width, window_height = self.kwargs["window_size"]
+        image = np.full((window_height, window_width, CHANNELS), BACKGROUND_RGB, dtype=np.uint8)
+        quarter_height, quarter_width = window_height // 4, window_width // 4
+        image[quarter_height:window_height - quarter_height,
+              quarter_width:window_width - quarter_width] = COLOURS["only_stock"]
+        return image
+
+
+class BlockFakePyvista(FakePyvista):
+    """Fake pyvista whose plotter returns the block screenshot."""
+
+    Plotter = BlockScreenshotPlotter
+
+
+def test_render_difference_panel_returns_a_cropped_uint8_image_with_the_difference_colour():
+    """(H, W, 3) uint8, content kept, width within the window, one camera on one plotter without a grid."""
+    centres = np.array([[0.0, 0.0, 0.0], [3.0, 1.0, 0.5], [9.0, 2.0, 0.0]])
+    none = np.zeros(3, dtype=bool)
+    difference = {"only_first": none, "only_second": np.array([True, True, False]), "both": none}
+    window_size = (200, 100)
+    image, report = render_difference_panel(BlockFakePyvista, centres, VOXEL_EDGE_METERS, difference, COLOURS,
+                                            window_size)
+    plotter = last_plotter()
+    assert "shape" not in plotter.kwargs and plotter.closed
+    assert image.dtype == np.uint8 and image.ndim == 2 + 1 and image.shape[2] == CHANNELS
+    assert image.shape[1] <= window_size[0]
+    # Height = the cropped panel alone: the lone panel keeps no title band.
+    cell_height, cell_width = report["cell_shape"]
+    assert report["title_band_px"] == 0
+    assert image.shape[:2] == (cell_height, cell_width)
+    assert cell_height <= window_size[1]
+    # Only-stock colour survives the crop.
+    assert (image == np.asarray(COLOURS["only_stock"], dtype=np.uint8)).all(axis=2).any()
+    assert content_bounding_box(image, BACKGROUND_RGB, 1) is not None
+    # Camera is the one fitted to the difference cells' cube corners (centre ± half edge per axis) at the window aspect.
+    half_edge = VOXEL_EDGE_METERS / 2.0
+    corners = np.array([centre + half_edge * np.array(signs) for centre in centres[:2]
+                        for signs in itertools.product((-1.0, 1.0), repeat=3)])
+    expected = tight_oblique_camera(corners, window_size[0] / window_size[1], SCENE_CAMERA_PADDING,
+                                    OBLIQUE_CAMERA_DIRECTION, VIEW_UP_VECTOR, CAMERA_VIEW_ANGLE_DEGREES)
+    for camera_part, expected_part in zip(plotter.camera_position, expected):
+        np.testing.assert_allclose(np.asarray(camera_part), np.asarray(expected_part))
+
+
+def test_cell_corner_points_are_centre_plus_minus_half_edge_on_every_axis():
+    """Eight corners per cell, each centre ± voxel / 2 per axis; empty in, empty out."""
+    centres = np.array([[1.0, 2.0, 3.0], [-4.0, 0.0, 5.0]])
+    voxel_edge = 0.4
+    corners = cell_corner_points(centres, voxel_edge)
+    corners_per_cell = 2 ** 3
+    assert corners.shape == (centres.shape[0] * corners_per_cell, 3)
+    for cell_index, centre in enumerate(centres):
+        cell_corners = corners[cell_index * corners_per_cell:(cell_index + 1) * corners_per_cell]
+        # Every corner is exactly half an edge from the centre on each axis, and all 8 are distinct.
+        np.testing.assert_allclose(np.abs(cell_corners - centre), voxel_edge / 2.0)
+        assert len({tuple(corner) for corner in np.round(cell_corners, 12)}) == corners_per_cell
+    assert cell_corner_points(np.zeros((0, 3)), voxel_edge).shape == (0, 3)
+
+
+@pytest.mark.parametrize("centres", [np.array([[2.0, 3.0, 1.0]]),
+                                     np.array([[0.0, 0.0, z_metres] for z_metres in (0.0, 1.0, 2.0, 3.0)]),
+                                     np.array([[x_metres, 0.0, 0.0] for x_metres in (0.0, 1.0, 2.0, 3.0)])],
+                         ids=["one cell", "vertical line", "horizontal line"])
+def test_difference_frame_aspect_is_finite_and_positive_for_degenerate_cell_sets(centres):
+    """One cell or a line of cells has a zero extent on a screen axis by centres; the cube corners frame it."""
+    difference = {"only_first": np.ones(centres.shape[0], dtype=bool),
+                  "only_second": np.zeros(centres.shape[0], dtype=bool),
+                  "both": np.zeros(centres.shape[0], dtype=bool)}
+    aspect = scene_camera_aspect(difference_frame_points(centres, difference, VOXEL_EDGE_METERS))
+    assert np.isfinite(aspect) and aspect > 0
+
+
+def test_render_difference_panel_frames_a_single_cell():
+    """A single difference cell still renders (no NaN aspect or empty frame)."""
+    centres = np.array([[0.0, 0.0, 0.0], [5.0, 5.0, 0.0]])
+    difference = {"only_first": np.zeros(2, dtype=bool), "only_second": np.array([True, False]),
+                  "both": np.zeros(2, dtype=bool)}
+    aspect = scene_camera_aspect(difference_frame_points(centres, difference, VOXEL_EDGE_METERS))
+    window_width = WINDOW_SIZE[0]
+    window_size = (window_width, max(1, round(window_width / aspect)))
+    image, _ = render_difference_panel(BlockFakePyvista, centres, VOXEL_EDGE_METERS, difference, COLOURS, window_size)
+    assert image.dtype == np.uint8 and image.size > 0
+
+
+def test_render_difference_panel_without_difference_cells_raises():
+    """Nothing to frame: ValueError."""
+    centres = np.arange(6, dtype=float).reshape(2, 3)
+    none = np.zeros(2, dtype=bool)
+    with pytest.raises(ValueError):
+        render_difference_panel(FakePyvista, centres, VOXEL_EDGE_METERS,
+                                {"only_first": none, "only_second": none, "both": none}, COLOURS, WINDOW_SIZE)

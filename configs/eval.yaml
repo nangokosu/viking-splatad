@@ -97,7 +97,8 @@ eval:
       radar_init: "radar init"
       radar_init_loss: "radar init + loss"
     # The 20k campaign profile per session and arm (5 repeats each) behind the statistics.
-    # The 30k presentation profiles (configs/slurm.yaml *_30k) can be added back here if those runs are restored.
+    # The 30k presentation profiles (one run per arm) are in presentation_profiles below; draw them with
+    # scripts/26_occupancy_figures.py --profile-set presentation.
     campaign_profiles:
       may_short_grass:
         stock: may_scene_a
@@ -107,6 +108,17 @@ eval:
         stock: june_scene_a_cam
         radar_init: june_scene_a_radar_init_cam
         radar_init_loss: june_scene_a_radar_init_loss_cam
+    # The 30k presentation profile per session and arm (configs/slurm.yaml *_30k, one run each), drawn by
+    # scripts/26 --profile-set presentation into reports/gaussian_occupancy/figures_30k/<session>.
+    presentation_profiles:
+      may_short_grass:
+        stock: may_scene_a_30k
+        radar_init: may_scene_a_radar_init_30k
+        radar_init_loss: may_scene_a_radar_init_loss_30k
+      june_tall_grass:
+        stock: june_scene_a_cam_30k
+        radar_init: june_scene_a_radar_init_cam_30k
+        radar_init_loss: june_scene_a_radar_init_loss_cam_30k
     # Output resolution (dots per inch) of the saved figures.
     dpi: 150
     # Side length (pixels) of one tile.
@@ -144,5 +156,7 @@ eval:
     # median repeat on the headline P2 recall_Hnear (mean over objects, binding threshold 0.5), so
     # the drawn run is neither the arm's best nor its worst. The user chose 20k runs (2026-11-25).
     representative_metric: "obstacles/P2@0.5/recall_Hnear/mean"
-    # Printed under every figure.
+    # Printed under every figure of the campaign profile set (the default).
     footer_note: "One run per arm (the median repeat of its 20k arm): illustrative. Arm separation is judged on the 5-repeat spread."
+    # Printed under every figure of the presentation profile set (one 30k run per arm, no repeats).
+    presentation_footer_note: "One 30k run per arm: illustrative. Arm separation is judged on the 20k 5-repeat spread."

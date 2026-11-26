@@ -58,6 +58,13 @@ def test_choose_drawn_run_median_or_override():
     assert suite_io.choose_drawn_run(metric_by_run, Path("elsewhere")) == Path("elsewhere")
 
 
+@pytest.mark.parametrize("only_value", [0.4, None], ids=["defined metric", "undefined metric"])
+def test_choose_drawn_run_single_run_is_drawn_whatever_its_metric(only_value):
+    """One run per arm (the 30k presentation set): that run is drawn, even when its metric is undefined."""
+    only_run = Path("only_run")
+    assert suite_io.choose_drawn_run({only_run: only_value}, None) == only_run
+
+
 def test_check_runs_consistent_detects_mismatch():
     """A differing hidden_near or truth array raises, naming the key; identical archives pass."""
     reference = tiny_cells(np.zeros(CELL_COUNT))

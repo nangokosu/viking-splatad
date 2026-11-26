@@ -1,17 +1,21 @@
 """Gaussian-occupancy figure suite of one session: cross-arm comparison figures.
 
-Reads each arm's campaign runs (the arm's repeats of the ``eval.figures.campaign_profiles`` profile), draws ONE
+Reads each arm's campaign runs (the arm's repeats of the ``eval.figures.campaign_profiles`` profile, or with
+``--profile-set presentation`` its single 30k run of ``eval.figures.presentation_profiles``), draws ONE
 run per arm (the median repeat on ``eval.figures.representative_metric`` of ``<run>/eval/gaussian_occupancy.json``,
 or the folder given by ``--run arm=<dir>``, which may be a run of another arm or stand in for an arm without
 campaign runs) and writes PNGs plus a ``figures_manifest.json`` into ``reports/gaussian_occupancy/figures/<session>/``
-(or ``--output-dir``).
+(``reports/gaussian_occupancy/figures_30k/<session>/`` for the presentation set; or ``--output-dir``).
 Everything is read-only on the runs, GT and session data.
 
 Figures:
     ``arms_scene_3d.png``         whole-scene per-arm outcome panels (hit / false alarm / missed / context) plus a
                                   hit-difference panel; ``draw_arm_outcome_panels`` also takes the H_near band
+    ``hit_difference_scene.png``  the hit-difference panel alone (only init+loss / only stock / both), camera
+                                  fitted to the difference cells so the scene fills the frame (presentation)
     ``threshold_curves_scene.png``  whole-scene recall and precision against the occupancy threshold (the configured curve range),
-                                  with the repeat min/max band
+                                  with each line's repeat min/max band (not drawn when it has zero width,
+                                  e.g. one run per arm)
 
 The class is the headline group (``obstacles``) at the binding threshold ``p2_thresholds[0]`` read from the archive.
 A figure that fails is reported on stderr, recorded in the manifest (status "failed") and the others are still
@@ -25,6 +29,7 @@ Run loading, consistency checks, hashing, failure bookkeeping and manifests live
 Usage (isolated viz environment, which has PyVista and matplotlib):
     uv run --project viz python scripts/26_occupancy_figures.py --session june_tall_grass
         [--run stock=<dir> --run radar_init=<dir> --run radar_init_loss=<dir>] [--output-dir <dir>]
+        [--profile-set {campaign,presentation}]
 """
 
 import argparse
@@ -32,7 +37,7 @@ import importlib.util
 import json
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -65,7 +70,9 @@ from viking_splatad.viz.figures_pyvista import (
     SCENE_GRID_COLUMNS,
     SCENE_GRID_ROWS,
     compose_scene_figure,
+    difference_frame_points,
     render_arm_panels,
+    render_difference_panel,
     scene_camera_aspect,
     scene_camera_points,
     scene_panel_titles,
@@ -77,6 +84,15 @@ LEDGER_PATH = PROJECT_ROOT / "runs" / "submitted.tsv"
 RUNS_DIR = PROJECT_ROOT / "runs"
 SUBMIT_RUN_PATH = PROJECT_ROOT / "scripts" / "slurm" / "submit_run.py"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "reports" / "gaussian_occupancy" / "figures"
+# Output root of the presentation (30k, one run per arm) figures; the session name is appended.
+PRESENTATION_OUTPUT_ROOT = PROJECT_ROOT / "reports" / "gaussian_occupancy" / "figures_30k"
+# Profile sets of ``--profile-set``: the 20k campaign (repeats) or the 30k presentation runs (one per arm).
+PROFILE_SET_CAMPAIGN = "campaign"
+PROFILE_SET_PRESENTATION = "presentation"
+PROFILE_SET_CHOICES = (PROFILE_SET_CAMPAIGN, PROFILE_SET_PRESENTATION)
+# Default output root per profile set.
+OUTPUT_ROOT_BY_PROFILE_SET = {PROFILE_SET_CAMPAIGN: DEFAULT_OUTPUT_ROOT,
+                              PROFILE_SET_PRESENTATION: PRESENTATION_OUTPUT_ROOT}
 GT_DIR = PROJECT_ROOT / "data" / "gt"
 CUBOIDS_FILE_NAME = "cuboids.json"
 
@@ -213,7 +229,8 @@ def repeat_count_text(repeat_count_by_arm: Mapping[str, int], arm_labels: Mappin
     """
     distinct_counts = set(repeat_count_by_arm.values())
     if len(distinct_counts) == 1 and next(iter(distinct_counts)) > 0:
-        return f"n = {next(iter(distinct_counts))} repeats per arm"
+        only_count = next(iter(distinct_counts))
+        return f"n = {only_count} {'repeat' if only_count == 1 else 'repeats'} per arm"
     return "repeats: " + ", ".join(f"{arm_labels[arm]} {count}" + ("" if count else " (no band)")
                                    for arm, count in repeat_count_by_arm.items())
 
@@ -253,12 +270,14 @@ class FigureContext:
         threshold: Binding threshold ``p2_thresholds[0]``.
         curve_grid: Threshold grid of the curves (contains every P2 threshold).
         drawn: arm -> the run drawn for it.
-        repeats: arm -> its campaign runs ([] when an override stands in).
+        repeats: arm -> its runs of the chosen profile set (the 20k repeats, or the 30k presentation run);
+            [] when an override stands in.
         git: ``git_state`` result.
         arms_info: arm -> manifest entry on how its run was chosen.
         hashes: sha256 recorder of every input read.
         scored_boxes: GT boxes to draw when ``cuboids_path`` is None (tests); otherwise loaded by the figure.
         cuboids_path: GT cuboid file the figure loads its scored boxes from (hashed when used).
+        profile_set: ``campaign`` (20k repeats) or ``presentation`` (one 30k run per arm); recorded in the manifest.
     """
 
     session: str
@@ -275,6 +294,7 @@ class FigureContext:
     hashes: HashRecorder
     scored_boxes: List[Any] = field(default_factory=list)
     cuboids_path: Optional[Path] = None
+    profile_set: str = PROFILE_SET_CAMPAIGN
 
     @property
     def reference_cells(self) -> Dict[str, np.ndarray]:
@@ -387,11 +407,14 @@ def context_manifest(context: FigureContext, scope_label: str, figures: Mapping[
     Returns:
         JSON-serialisable dict.
     """
-    return build_manifest(
+    manifest = build_manifest(
         session=context.session, scope_label=scope_label, git=context.git, class_name=HEADLINE_CLASS_NAME,
         binding_threshold=context.threshold, p2_thresholds=context.p2_thresholds,
         representative_metric=context.settings.representative_metric, arms_info=context.arms_info,
         figures=figures, hashes=context.hashes.scope, reported_numbers=reported_numbers)
+    # The profile set tells a reader whether the arms are 20k repeats or single 30k runs.
+    manifest["profile_set"] = context.profile_set
+    return manifest
 
 
 # ----------------------------------------------------------------------------------------------
@@ -523,16 +546,8 @@ def draw_arm_outcome_panels(context: FigureContext, output_path: Path, band: str
     scored_boxes = (load_scored_boxes(context.session, context.cuboids_path, context.drawn[context.settings.arm_order[0]],
                                       context.eval_section, context.class_ids)
                     if context.cuboids_path is not None else list(context.scored_boxes))
-    # Step 1: outcome sets per arm on the band.
-    outcomes_by_arm: Dict[str, Dict[str, np.ndarray]] = {}
-    for arm in arms_in_order(context):
-        context.hashes.record(context.drawn[arm].cells_path)
-        cells = context.drawn[arm].cells
-        outcomes_by_arm[arm] = (scene_outcomes(cells, HEADLINE_CLASS_NAME) if band == BAND_ALL else
-                                hidden_cell_outcomes(cells, HEADLINE_CLASS_NAME, context.threshold, band))
-    # Step 2: hits of the two compared arms -> only-first / only-second / both.
-    difference_sets = arm_difference_sets(outcomes_by_arm[DIFFERENCE_FIRST_ARM]["hit"],
-                                          outcomes_by_arm[DIFFERENCE_SECOND_ARM]["hit"])
+    # Steps 1-2: outcome sets per arm on the band, and the hit difference of the two compared arms.
+    outcomes_by_arm, difference_sets = band_outcomes_and_difference(context, band)
     band_text = BAND_TEXT[band]
     titles = [context.arm_label(arm) for arm in arms_in_order(context)]
     titles.append(f"hits: {context.arm_label(DIFFERENCE_FIRST_ARM)} vs {context.arm_label(DIFFERENCE_SECOND_ARM)}")
@@ -560,11 +575,7 @@ def draw_arm_outcome_panels(context: FigureContext, output_path: Path, band: str
                       ("false alarm", colours["false_alarm"], LEGEND_KIND_PATCH),
                       ("missed", colours["missed"], LEGEND_KIND_PATCH),
                       ("context", colours["context"], LEGEND_KIND_PATCH),
-                      (f"only {context.arm_label(DIFFERENCE_FIRST_ARM)}", colours[first_colour_name],
-                       LEGEND_KIND_PATCH),
-                      (f"only {context.arm_label(DIFFERENCE_SECOND_ARM)}", colours[second_colour_name],
-                       LEGEND_KIND_PATCH),
-                      ("both", colours["both"], LEGEND_KIND_PATCH)]
+                      *difference_legend_entries(context)]
     legend_entries += [(f"{class_name} ({box_count})", colours[f"{GT_CLASS_COLOUR_PREFIX}{class_name}"],
                         LEGEND_KIND_PATCH) for class_name, box_count in gt_box_counts.items()]
     figure = compose_scene_figure(
@@ -578,6 +589,93 @@ def draw_arm_outcome_panels(context: FigureContext, output_path: Path, band: str
     counts["gt_box_counts"] = gt_box_counts
     counts["panel_crop"] = layout_report
     return counts
+
+
+def band_outcomes_and_difference(context: FigureContext, band: str
+                                 ) -> Tuple[Dict[str, Dict[str, np.ndarray]], Dict[str, np.ndarray]]:
+    """Outcome masks of every drawn arm on a band and the hit difference of the two compared arms.
+
+    Records each drawn run's cells archive as an input of the calling figure.
+
+    Args:
+        context: Shared context.
+        band: ``HEADLINE_BAND`` (H_near cells) or ``BAND_ALL`` (whole scene).
+
+    Returns:
+        (arm -> outcome name -> mask, difference set name -> mask from ``arm_difference_sets``).
+    """
+    # Step 1: outcome sets per arm on the band.
+    outcomes_by_arm: Dict[str, Dict[str, np.ndarray]] = {}
+    for arm in arms_in_order(context):
+        context.hashes.record(context.drawn[arm].cells_path)
+        cells = context.drawn[arm].cells
+        outcomes_by_arm[arm] = (scene_outcomes(cells, HEADLINE_CLASS_NAME) if band == BAND_ALL else
+                                hidden_cell_outcomes(cells, HEADLINE_CLASS_NAME, context.threshold, band))
+    # Step 2: hits of the two compared arms -> only-first / only-second / both.
+    difference_sets = arm_difference_sets(outcomes_by_arm[DIFFERENCE_FIRST_ARM]["hit"],
+                                          outcomes_by_arm[DIFFERENCE_SECOND_ARM]["hit"])
+    return outcomes_by_arm, difference_sets
+
+
+def difference_legend_entries(context: FigureContext) -> List[Tuple[str, Sequence[int], str]]:
+    """Legend entries of the hit-difference colours: only first arm, only second arm, both.
+
+    Args:
+        context: Shared context (arm labels, colours).
+
+    Returns:
+        ``(label, 0-255 RGB, kind)`` entries for ``compose_scene_figure``.
+    """
+    colours = context.settings.colours
+    first_colour_name, second_colour_name = difference_colour_names(context.settings)
+    return [(f"only {context.arm_label(DIFFERENCE_FIRST_ARM)}", colours[first_colour_name], LEGEND_KIND_PATCH),
+            (f"only {context.arm_label(DIFFERENCE_SECOND_ARM)}", colours[second_colour_name], LEGEND_KIND_PATCH),
+            ("both", colours["both"], LEGEND_KIND_PATCH)]
+
+
+def draw_difference_figure(context: FigureContext, output_path: Path, band: str) -> Dict[str, Any]:
+    """The hit-difference panel alone (first = init+loss, second = stock), zoomed to fill the frame.
+
+    The camera is fitted to the difference cells only (``render_difference_panel``), so the scene fills the
+    panel. The window is as wide as the whole ``arms_scene_3d`` grid (``SCENE_GRID_COLUMNS`` panels of
+    ``tile_px * SCENE_PANEL_TILES`` pixels) and has the aspect of the difference cells' projection, so the
+    single panel is drawn at the full width of the grid figure.
+
+    Args:
+        context: Shared context.
+        output_path: PNG path.
+        band: ``HEADLINE_BAND`` (H_near cells) or ``BAND_ALL`` (whole scene).
+
+    Returns:
+        Cell counts of each difference set and the crop report (for the manifest).
+
+    Raises:
+        FigureSkipped: When no cell is in any difference set.
+    """
+    # Step 0: the compared arms exist.
+    check_difference_arms(context)
+    # Step 1: the difference sets of the two compared arms on the band.
+    _, difference_sets = band_outcomes_and_difference(context, band)
+    # Cube corners (not centres), as the renderer frames them: a finite aspect > 0 even for one cell or a line.
+    camera_points = difference_frame_points(context.reference_cells["centres"], difference_sets, context.voxel_size)
+    if camera_points.shape[0] == 0:
+        raise FigureSkipped("no cell in any hit-difference set")
+    # Step 2: window: full grid width, height = width / (projected aspect = width / height) of the cells.
+    window_width = context.settings.tile_px * SCENE_PANEL_TILES * SCENE_GRID_COLUMNS
+    window_size = (window_width, max(1, round(window_width / scene_camera_aspect(camera_points))))
+    first_colour_name, second_colour_name = difference_colour_names(context.settings)
+    image, crop_report = render_difference_panel(import_pyvista(), context.reference_cells["centres"],
+                                                 context.voxel_size, difference_sets, context.settings.colours,
+                                                 window_size, first_colour_name=first_colour_name,
+                                                 second_colour_name=second_colour_name)
+    # Step 3: title, difference legend with each set's cell count, footer and run note.
+    cell_counts = {name: int(mask.sum()) for name, mask in difference_sets.items()}
+    title = (f"hits: {context.arm_label(DIFFERENCE_FIRST_ARM)} vs {context.arm_label(DIFFERENCE_SECOND_ARM)}, "
+             f"{BAND_TEXT[band]} {HEADLINE_CLASS_NAME} @ {context.threshold}")
+    figure = compose_scene_figure(image, context.short_title(title), difference_legend_entries(context),
+                                  context.settings, panel_count=SCENE_GRID_COLUMNS, run_note=context.run_note())
+    save_matplotlib_figure(figure, output_path, context.settings.dpi)
+    return {"difference": cell_counts, "panel_crop": crop_report}
 
 
 def load_scored_boxes(session: str, cuboids_path: Path, reference_run: ArmRun,
@@ -660,7 +758,8 @@ def whole_scene_cell_counts(context: FigureContext) -> Dict[str, int]:
 def draw_threshold_curves(context: FigureContext, output_path: Path, band: str) -> Dict[str, Any]:
     """Threshold curves of one band: curves of the drawn run per arm, each with its min/max band over all repeats.
 
-    An arm without campaign runs (an override stands in) has its curves but no band.
+    An arm without campaign runs (an override stands in) has its curves but no band; a zero-width band (a single
+    run) is recorded in the manifest but not filled (``threshold_curves_figure``).
 
     Args:
         context: Shared context.
@@ -732,6 +831,8 @@ def generate_arm_figures(context: FigureContext, output_dir: Path) -> FigureReco
     # Step 1: one attempt per figure; a failure is recorded and the next figure still runs.
     attempt_with_numbers("arms_scene_3d", "arms_scene_outcome_counts",
                          lambda path: draw_arm_outcome_panels(context, path, BAND_ALL))
+    attempt_with_numbers("hit_difference_scene", "hit_difference_scene",
+                         lambda path: draw_difference_figure(context, path, BAND_ALL))
     attempt_with_numbers("threshold_curves_scene", "threshold_curves_scene",
                          lambda path: draw_threshold_curves(context, path, BAND_ALL))
     # Step 2: the manifest is written whatever happened.
@@ -753,7 +854,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run", action="append", default=[], metavar="ARM=DIR",
                         help="draw this run folder for the arm instead of its median repeat (repeatable)")
     parser.add_argument("--output-dir", type=Path, default=None,
-                        help="cross-arm output folder (default reports/gaussian_occupancy/figures/<session>)")
+                        help="cross-arm output folder (default reports/gaussian_occupancy/figures/<session>, "
+                             "or figures_30k/<session> with --profile-set presentation)")
+    parser.add_argument("--profile-set", choices=PROFILE_SET_CHOICES, default=PROFILE_SET_CAMPAIGN,
+                        help="runs behind the figures: the 20k campaign repeats (default) or the 30k "
+                             "presentation run per arm")
     parser.add_argument("--eval-config", type=Path, default=EVAL_CONFIG_PATH, help="default: configs/eval.yaml")
     return parser
 
@@ -787,12 +892,19 @@ def build_context(arguments: argparse.Namespace) -> FigureContext:
     eval_section = yaml.safe_load(Path(arguments.eval_config).read_text())["eval"]
     settings = load_figure_settings(eval_section)
     session = arguments.session
-    if session not in settings.campaign_profiles:
-        raise ValueError(f"unknown session {session!r}; known: {sorted(settings.campaign_profiles)}")
+    # Step 0: the profile set picks the profile map and the footer text printed under every figure.
+    if arguments.profile_set == PROFILE_SET_PRESENTATION:
+        profiles_by_session = settings.presentation_profiles
+        settings = replace(settings, footer_note=settings.presentation_footer_note)
+    else:
+        profiles_by_session = settings.campaign_profiles
+    if session not in profiles_by_session:
+        raise ValueError(f"unknown session {session!r}; known: {sorted(profiles_by_session)}")
     overrides = parse_run_overrides(arguments.run, settings.arm_order)
     ledger_rows = load_submit_run_module().read_ledger(LEDGER_PATH)
-    # Step 1: campaign runs per arm, then the loaded runs, the consistency checks and the drawn run per arm.
-    campaign_profiles = settings.campaign_profiles[session]
+    # Step 1: runs per arm of the chosen profile set, then the loaded runs, the consistency checks and the drawn
+    # run per arm.
+    campaign_profiles = profiles_by_session[session]
     runs_by_arm = resolve_arm_runs(session, campaign_profiles, ledger_rows, RUNS_DIR)
     selection = select_arm_runs(settings.arm_order, campaign_profiles, runs_by_arm, overrides,
                                 ledger_profile_by_run(ledger_rows), settings.representative_metric)
@@ -810,7 +922,7 @@ def build_context(arguments: argparse.Namespace) -> FigureContext:
         threshold=selection.binding_threshold, curve_grid=curve_grid, drawn=selection.drawn,
         repeats=selection.repeats, git=git_state(PROJECT_ROOT), arms_info=selection.arms_info,
         hashes=HashRecorder(),
-        cuboids_path=cuboids_path)
+        cuboids_path=cuboids_path, profile_set=arguments.profile_set)
 
 
 def main(argument_list: Optional[List[str]] = None) -> int:
@@ -834,7 +946,7 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         print(f"{arm}: drawn {context.drawn[arm].run_id} ({context.arms_info[arm]['drawn_by']})")
     any_failed = False
     # Step 2: the cross-arm figures.
-    output_dir = arguments.output_dir or DEFAULT_OUTPUT_ROOT / context.session
+    output_dir = arguments.output_dir or OUTPUT_ROOT_BY_PROFILE_SET[arguments.profile_set] / context.session
     any_failed |= generate_arm_figures(context, output_dir).any_failed()
     print(f"done in {time.time() - start_time:.1f} s; {'SOME FIGURES FAILED' if any_failed else 'all figures written'}")
     return EXIT_FAILED if any_failed else EXIT_OK

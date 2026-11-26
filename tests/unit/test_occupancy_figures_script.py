@@ -432,3 +432,119 @@ def test_difference_arms_missing_from_the_arm_order_raise_a_clear_error(tmp_path
     context.settings = dataclasses.replace(context.settings, arm_order=reduced_order)
     with pytest.raises(ValueError, match=script.DIFFERENCE_SECOND_ARM):
         script.check_difference_arms(context)
+
+
+def test_profile_set_defaults_to_campaign_and_accepts_presentation():
+    """--profile-set defaults to campaign, accepts presentation and refuses anything else."""
+    script = load_script()
+    parser = script.build_argument_parser()
+    assert parser.parse_args(["--session", SESSION_NAME]).profile_set == script.PROFILE_SET_CAMPAIGN
+    assert parser.parse_args(["--session", SESSION_NAME, "--profile-set", "presentation"]).profile_set == "presentation"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--session", SESSION_NAME, "--profile-set", "other"])
+
+
+def test_default_output_dir_per_profile_set(tmp_path, monkeypatch):
+    """The campaign set writes under figures/<session>, the presentation set under figures_30k/<session>."""
+    script = load_script()
+    context = make_context(script, tmp_path)
+    written_dirs = []
+    monkeypatch.setattr(script, "build_context", lambda arguments: dataclasses.replace(
+        context, profile_set=arguments.profile_set))
+    monkeypatch.setattr(script, "generate_arm_figures", lambda context, output_dir: (
+        written_dirs.append(output_dir) or SimpleNamespace(any_failed=lambda: False)))
+    for profile_set in script.PROFILE_SET_CHOICES:
+        assert script.main(["--session", SESSION_NAME, "--profile-set", profile_set]) == 0
+    campaign_root = script.PROJECT_ROOT / "reports" / "gaussian_occupancy" / "figures"
+    assert written_dirs == [campaign_root / SESSION_NAME,
+                            script.PROJECT_ROOT / "reports" / "gaussian_occupancy" / "figures_30k" / SESSION_NAME]
+    # --output-dir still overrides.
+    assert script.main(["--session", SESSION_NAME, "--profile-set", "presentation",
+                        "--output-dir", str(tmp_path)]) == 0
+    assert written_dirs[-1] == tmp_path
+
+
+def test_manifest_records_the_profile_set(tmp_path):
+    """The manifest names the profile set of the context."""
+    script = load_script()
+    context = dataclasses.replace(make_context(script, tmp_path), profile_set=script.PROFILE_SET_PRESENTATION)
+    context.hashes.begin_scope()
+    manifest = script.context_manifest(context, "arms", {}, {})
+    assert manifest["profile_set"] == "presentation"
+
+
+def test_build_context_uses_presentation_profiles_and_footer(tmp_path, monkeypatch):
+    """build_context picks the 30k profile map and the presentation footer for --profile-set presentation."""
+    script = load_script()
+    eval_settings = load_figure_settings(yaml.safe_load(EVAL_YAML_PATH.read_text())["eval"])
+    seen = {}
+
+    def fake_resolve(session, profile_by_arm, ledger_rows, runs_dir):
+        """Record the profile map and stop the setup there."""
+        seen["profiles"] = dict(profile_by_arm)
+        raise ValueError("stop after resolve")
+    monkeypatch.setattr(script, "resolve_arm_runs", fake_resolve)
+    monkeypatch.setattr(script, "load_submit_run_module", lambda: SimpleNamespace(read_ledger=lambda path: []))
+    parsed = script.build_argument_parser().parse_args(["--session", SESSION_NAME, "--profile-set", "presentation"])
+    with pytest.raises(ValueError, match="stop after resolve"):
+        script.build_context(parsed)
+    assert seen["profiles"] == eval_settings.presentation_profiles[SESSION_NAME]
+
+
+def test_repeat_count_text_singular_for_one_repeat():
+    """One repeat per arm reads 'n = 1 repeat per arm'."""
+    script = load_script()
+    labels = {"stock": "stock", "radar_init": "radar init"}
+    assert script.repeat_count_text({"stock": 1, "radar_init": 1}, labels) == "n = 1 repeat per arm"
+
+
+def _threshold_figure(script, lower_offset):
+    """Draw the threshold figure with one arm whose band has half-width ``lower_offset`` around its curves."""
+    from viking_splatad.viz.figures_mpl import THRESHOLD_METRICS
+    settings = load_figure_settings(yaml.safe_load(EVAL_YAML_PATH.read_text())["eval"])
+    thresholds = np.linspace(0.2, 0.9, 5)
+    curve = np.linspace(0.1, 0.9, 5)
+    curves = {"thresholds": thresholds}
+    bands = {}
+    for _key, _label, pooled_key, mean_key in THRESHOLD_METRICS:
+        for curve_key in (pooled_key, mean_key):
+            curves[curve_key] = curve
+            bands[curve_key] = (thresholds, curve - lower_offset, curve + lower_offset)
+    return script.threshold_curves_figure(
+        {"stock": curves}, settings, p2_thresholds=[0.5], campaign_bands={"stock": bands}, title="t")
+
+
+def test_single_repeat_band_is_not_filled_and_caption_has_no_band_claim():
+    """Zero-width band (n = 1): no fill collections and no 'min-max over repeats' caption; n = 2 keeps both."""
+    import matplotlib
+    matplotlib.use("Agg")
+    script = load_script()
+    from matplotlib.collections import PolyCollection
+    single = _threshold_figure(script, 0.0)
+    spread = _threshold_figure(script, 0.05)
+    count_fills = lambda figure: sum(isinstance(collection, PolyCollection)
+                                     for axis in figure.axes for collection in axis.collections)
+    caption_texts = lambda figure: " ".join(text.get_text() for text in figure.texts)
+    assert count_fills(single) == 0
+    assert "min–max" not in caption_texts(single)
+    assert "one run per arm" in caption_texts(single)
+    # Two lines per panel, two panels: four fills.
+    assert count_fills(spread) == 2 * 2
+    assert "min–max" in caption_texts(spread)
+
+
+def test_report_numbers_come_from_the_campaign_figures_not_the_presentation_ones():
+    """Only the graphs come from the 30k runs; every reported number comes from the 20k campaign.
+
+    The reports (scripts 20/21 via ``report_opening``) read the manifest under ``FIGURES_RELATIVE_DIR``; that must be
+    the campaign output root and never the presentation one, and no presentation profile may be a campaign profile.
+    """
+    from viking_splatad.eval.report_opening import FIGURES_RELATIVE_DIR
+    script = load_script()
+    report_root = script.PROJECT_ROOT / FIGURES_RELATIVE_DIR
+    assert report_root == script.OUTPUT_ROOT_BY_PROFILE_SET[script.PROFILE_SET_CAMPAIGN]
+    assert report_root != script.OUTPUT_ROOT_BY_PROFILE_SET[script.PROFILE_SET_PRESENTATION]
+    settings = load_figure_settings(yaml.safe_load(EVAL_YAML_PATH.read_text())["eval"])
+    for session, presentation_by_arm in settings.presentation_profiles.items():
+        campaign_profiles = set(settings.campaign_profiles[session].values())
+        assert campaign_profiles.isdisjoint(presentation_by_arm.values())

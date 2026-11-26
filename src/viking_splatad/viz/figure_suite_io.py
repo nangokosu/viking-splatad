@@ -123,9 +123,14 @@ def choose_drawn_run(metric_by_run: Mapping[Path, Optional[float]], override: Op
         override: Folder from ``--run``, or None.
 
     Returns:
-        The run folder to draw.
+        The run folder to draw: the override; else the only run when the arm has one (nothing to choose, so its
+        metric may be undefined); else the median repeat.
     """
-    return override if override is not None else median_repeat(metric_by_run)
+    if override is not None:
+        return override
+    if len(metric_by_run) == 1:
+        return next(iter(metric_by_run))
+    return median_repeat(metric_by_run)
 
 
 def check_runs_consistent(cells_by_run: Mapping[str, Mapping[str, np.ndarray]]) -> None:
@@ -286,7 +291,8 @@ def select_arm_runs(arm_order: Sequence[str], campaign_profile_by_arm: Mapping[s
         repeats[arm] = [arm_runs[(arm, run_dir)] for run_dir in campaign_dirs]
         arms_info[arm] = {
             "profile": drawn[arm].profile, "campaign_profile": campaign_profile_by_arm[arm],
-            "drawn_run_id": drawn_dir.name, "drawn_by": "override" if arm in overrides else "median repeat",
+            "drawn_run_id": drawn_dir.name,
+            "drawn_by": ("override" if arm in overrides else "only run" if len(campaign_dirs) == 1 else "median repeat"),
             "campaign_run_count": len(campaign_dirs), "campaign_band": bool(campaign_dirs),
             "campaign_band_note": None if campaign_dirs else
             "no campaign runs for this arm: the override stands in and no spread band is drawn",
