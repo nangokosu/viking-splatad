@@ -1,14 +1,13 @@
 # Session summary (2026-11-27)
 
 ## Done
-- Commit `404086c` on `main` adds the revised poster PDF and editable PPTX to `docs/proposal/`; both are pushed.
-- Revised the poster's three radar-method steps for clarity, explained opacity, and replaced the two separate result views with the blue/orange 3D hit-difference figure.
-- PR #18 is merged.
+- Finalized the poster layout within the existing rounded-panel template: aligned and enlarged the threshold-curve and 3D comparison images, removed run-note overlays, and aligned the hidden-trunk text with its image.
+- Re-exported and verified the editable PPTX and one-page PDF; poster files committed in `1107867`.
 
 ## Current state
-- `main` is pushed through `404086c`; the poster exports are in `docs/proposal/`.
-- The last known cluster state (2026-11-26) had no active jobs and all runs fetched. This session's run tracker could not run because `uv` is unavailable, so cluster state was not rechecked.
-- Last reported full suite: 2000 passed, 1 skipped (traceability's “0 transforms pending”).
+- The final poster PDF and PPTX are in `docs/proposal/`; commit `1107867` contains the exports. PR #18 remains merged.
+- The run tracker could not run because `uv` is unavailable. Last known cluster status (2026-11-26): no active jobs; all runs fetched.
+- No source code changed; no tests were needed for this presentation-only update. Last reported full suite: 2000 passed, 1 skipped (traceability's “0 transforms pending”).
 
 ## Next steps
 1. Complete the hidden-cell round: H_near versions of both figures and sections, then reorder reports as hidden → lidar → image and add image and lidar-render rows to script 21.
