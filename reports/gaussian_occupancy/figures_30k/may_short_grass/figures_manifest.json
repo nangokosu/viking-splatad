@@ -9,7 +9,7 @@
       "drawn_run_id": "may_short_grass-may_scene_a_radar_init_30k-20261125-141332-e458f7f",
       "profile": "may_scene_a_radar_init_30k",
       "repeat_metric_values": {
-        "may_short_grass-may_scene_a_radar_init_30k-20261125-141332-e458f7f": 0.2844729344729345
+        "may_short_grass-may_scene_a_radar_init_30k-20261125-141332-e458f7f": 0.22505102040816327
       }
     },
     "radar_init_loss": {
@@ -21,7 +21,7 @@
       "drawn_run_id": "may_short_grass-may_scene_a_radar_init_loss_30k-20261125-141648-e458f7f",
       "profile": "may_scene_a_radar_init_loss_30k",
       "repeat_metric_values": {
-        "may_short_grass-may_scene_a_radar_init_loss_30k-20261125-141648-e458f7f": 0.5272079772079772
+        "may_short_grass-may_scene_a_radar_init_loss_30k-20261125-141648-e458f7f": 0.36826530612244895
       }
     },
     "stock": {
@@ -33,7 +33,7 @@
       "drawn_run_id": "may_short_grass-may_scene_a_30k-20261125-141014-e458f7f",
       "profile": "may_scene_a_30k",
       "repeat_metric_values": {
-        "may_short_grass-may_scene_a_30k-20261125-141014-e458f7f": 0.1252136752136752
+        "may_short_grass-may_scene_a_30k-20261125-141014-e458f7f": 0.2869897959183674
       }
     }
   },
@@ -58,14 +58,14 @@
   },
   "git": {
     "dirty": true,
-    "head_sha": "b00d6fa3e4ce3f12732c17770f1e2f0c369a436f"
+    "head_sha": "009ae26e8b41b8e2d526cb9b45ec17af43e6c9d3"
   },
   "input_sha256": {
     "data/gt/may_short_grass/cuboids.json": "ad853652734abbfe358554b15eb29fb21a1afe9cbc9aa2fe23992f36067a410f",
-    "runs/may_short_grass-may_scene_a_30k-20261125-141014-e458f7f/eval/gaussian_occupancy.json": "5049ad9c9c04595de16b0cd92efcdf37be68247b9bff4831a3705ef5cc18b6bc",
-    "runs/may_short_grass-may_scene_a_30k-20261125-141014-e458f7f/eval/gaussian_occupancy_cells.npz": "ae1e9649906cf22cf8d6a9d50bff5c3eee20d3ce37f6f4ceb56c7a898a4f4325",
-    "runs/may_short_grass-may_scene_a_radar_init_30k-20261125-141332-e458f7f/eval/gaussian_occupancy_cells.npz": "91d38e88fc9cc54e61c807551a587bead3b9d92628e9273026a6a0c468c7d50c",
-    "runs/may_short_grass-may_scene_a_radar_init_loss_30k-20261125-141648-e458f7f/eval/gaussian_occupancy_cells.npz": "9ec45363735711fce9baf00ba87d945cc6735013f25fbb6ce4eb41f7ee44f892"
+    "runs/may_short_grass-may_scene_a_30k-20261125-141014-e458f7f/eval/gaussian_occupancy.json": "3f1520bae51cc3d16cbd8896de454811a70c61b80bd6edc51ed987bcb3390516",
+    "runs/may_short_grass-may_scene_a_30k-20261125-141014-e458f7f/eval/gaussian_occupancy_cells.npz": "1d830e1ab285ba69a8ffe54a5c61f8e4fa21c70efbaf0e111fc006d064724cc5",
+    "runs/may_short_grass-may_scene_a_radar_init_30k-20261125-141332-e458f7f/eval/gaussian_occupancy_cells.npz": "e961caba2d984fb373773b8381829585a342975521e0736902477e3a40645694",
+    "runs/may_short_grass-may_scene_a_radar_init_loss_30k-20261125-141648-e458f7f/eval/gaussian_occupancy_cells.npz": "d7c8fa0b9919dc7b4a170d637c10bf5c7043e3d68f8c1d2ff283d82ea84a43aa"
   },
   "p2_thresholds": [
     0.5,
@@ -165,7 +165,6 @@
       }
     },
     "scene_counts": {
-      "band": "all",
       "cell_counts": {
         "next_to_obstacle": 16407,
         "on_obstacle": 19600
@@ -192,7 +191,6 @@
       }
     },
     "threshold_curves_scene": {
-      "band": "all",
       "campaign_bands": {
         "radar_init": {
           "mean_precision": {
@@ -873,7 +871,7 @@
       }
     }
   },
-  "representative_metric": "obstacles/P2@0.5/recall_Hnear/mean",
+  "representative_metric": "obstacles/P2@0.5/recall/pooled",
   "schema": "occupancy-figures/1",
   "scope": "arms",
   "session": "may_short_grass"

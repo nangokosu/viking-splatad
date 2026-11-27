@@ -48,8 +48,7 @@ precision and matching metric views are implemented. The first full pair is
 complete; a second matched B/L pair is running under a predeclared two-per-arm
 initial repeat budget. The tested summary measures gaps against within-arm
 spread. Global unmatched-trunk false positives and finer-grid sensitivity remain
-additional work. No benefit is inferred from the first pair alone. See
-[hidden_trunk_evaluation.md](hidden_trunk_evaluation.md).
+additional work. No benefit is inferred from the first pair alone. (The hidden-trunk evaluation note and scripts 17 and 18 were removed 2026-11-27; see git history.)
 
 Implementation and live launch records: [loss_only_implementation.md](loss_only_implementation.md).
 Proposal interpretation and acceptance gates: [proposal_implementation_plan.md](proposal_implementation_plan.md).

@@ -16,15 +16,15 @@ TOPIC_MODEL = "Model"
 TOPIC_GROUND_TRUTH = "Ground truth and grid"
 TOPIC_OCCUPANCY = "Occupancy"
 TOPIC_LIDAR_VIEW = "Lidar view"
-TOPIC_HIDDEN = "Hidden space"
 TOPIC_OUTCOMES = "Outcomes and metrics"
 TOPIC_STATISTICS = "Statistics"
 TOPIC_IMAGE = "Image metrics (auxiliary)"
 TOPIC_BOOKKEEPING = "Bookkeeping"
 TOPIC_ORDER = (TOPIC_EXPERIMENT, TOPIC_RADAR, TOPIC_MODEL, TOPIC_GROUND_TRUTH, TOPIC_OCCUPANCY, TOPIC_LIDAR_VIEW,
-               TOPIC_HIDDEN, TOPIC_OUTCOMES, TOPIC_STATISTICS, TOPIC_IMAGE, TOPIC_BOOKKEEPING)
+               TOPIC_OUTCOMES, TOPIC_STATISTICS, TOPIC_IMAGE, TOPIC_BOOKKEEPING)
 
-# File name suffix that marks a Python source (its anchors are symbols; any other file's anchors are text snippets).
+# File name suffix that marks a Python source (its anchors are defined symbols, transform ids or verbatim phrases;
+# any other file's anchors are text snippets).
 PYTHON_SUFFIX = ".py"
 
 
@@ -33,8 +33,9 @@ class WhereRef(NamedTuple):
 
     Attributes:
         path: Repo-relative file path.
-        anchor: For a ``.py`` file a function, class or constant name, or a transform id ``T<n>``; for any other
-            file a text snippet (heading or phrase) that must occur in the file.
+        anchor: For a ``.py`` file a function, class or constant name, a transform id ``T<n>``, or a phrase (any
+            anchor that is not a single identifier) that must occur verbatim; for any other file a text snippet
+            (heading or phrase) that must occur in the file.
     """
 
     path: str
@@ -80,10 +81,8 @@ SLURM_YAML = "configs/slurm.yaml"
 EVAL_YAML = "configs/eval.yaml"
 TERMINOLOGY_SOURCE = "src/viking_splatad/eval/evaluation_terminology.py"
 DETECTION = "src/viking_splatad/eval/detection.py"
-HIDDEN_METRICS = "src/viking_splatad/eval/hidden_metrics.py"
-HIDDEN_GEOMETRY = "src/viking_splatad/eval/hidden_geometry.py"
-SESSION_HIDDEN = "src/viking_splatad/eval/session_hidden_space.py"
-RANGE_MARGIN = "src/viking_splatad/eval/range_margin.py"
+SCENE_METRICS = "src/viking_splatad/eval/scene_metrics.py"
+VOXEL_OCCUPANCY = "src/viking_splatad/eval/voxel_occupancy.py"
 P2_CELLS = "src/viking_splatad/eval/p2_cells.py"
 P2_REPEATS = "src/viking_splatad/eval/p2_repeats.py"
 RENDERED_POINTCLOUD = "src/viking_splatad/eval/rendered_pointcloud.py"
@@ -122,7 +121,7 @@ GLOSSARY: Tuple[GlossaryEntry, ...] = (
     GlossaryEntry(TOPIC_EXPERIMENT, "Median repeat (drawn run)",
                   "The run drawn in the 3D figures: per arm, the repeat whose value of the configured representative metric "
                   "is the median, so the drawn run is neither the arm's best nor its worst. The setting is "
-                  "`eval.figures.representative_metric` (headline P2 recall on H_near, mean over objects, binding cut-off).",
+                  "`eval.figures.representative_metric` (whole-scene pooled P2 recall of `obstacles` at the binding cut-off).",
                   None, _refs((EVAL_YAML, "representative_metric"))),
     GlossaryEntry(TOPIC_EXPERIMENT, "Campaign",
                   "The full set of runs the comparison rests on: three arms on each of the two sessions, each trained "
@@ -219,8 +218,8 @@ GLOSSARY: Tuple[GlossaryEntry, ...] = (
                   "A cube of the grid the scene is cut into. Its edge is `voxel_size_m` (see the value table); all scoring counts cells.",
                   None, _refs(("src/viking_splatad/labels/occupancy.py", "T31"), ("scripts/20_summarize_gaussian_occupancy.py", "run_provenance"))),
     GlossaryEntry(TOPIC_GROUND_TRUTH, "Centre-of-cell rule (T31)",
-                  "A cell belongs to a box when its centre lies inside the box. Whether a trunk thinner than one cell covers 0, 1 or "
-                  "2 cells therefore depends on where the grid lines fall.",
+                  "A cell belongs to a box when its centre lies inside the box. A trunk narrower than the typical one (about two cells "
+                  "across) can therefore get one cell across or none, depending on where the grid lines fall.",
                   "centre = origin + (index + 0.5) * edge",
                   _refs(("src/viking_splatad/labels/occupancy.py", "T31"), (DETECTION, "cuboid_voxel_mask"))),
     GlossaryEntry(TOPIC_GROUND_TRUTH, "Margin (median_half_footprint)",
@@ -237,11 +236,11 @@ GLOSSARY: Tuple[GlossaryEntry, ...] = (
                   "range and vertical field of view of at least one recorded sweep, minus the cells of the other-class mask. Everything "
                   "else is ignored.",
                   "N = (union_c N_c) minus other-class cells",
-                  _refs((DETECTION, "visible_neighbourhood_mask"), (HIDDEN_METRICS, "class_group_masks"))),
+                  _refs((DETECTION, "visible_neighbourhood_mask"), (SCENE_METRICS, "class_group_masks"))),
     GlossaryEntry(TOPIC_GROUND_TRUTH, "On an obstacle (G)",
                   "A scored cell whose centre lies inside a box of the group (the ground-truth cells; G is a subset of N).",
                   "G = cells with GT label in the group, inside N",
-                  _refs((HIDDEN_METRICS, "class_group_masks"))),
+                  _refs((SCENE_METRICS, "class_group_masks"))),
     GlossaryEntry(TOPIC_GROUND_TRUTH, "Next to an obstacle (N minus G)",
                   "The scored cells that are in the grown area but not inside any box of the group.",
                   "N minus G",
@@ -249,7 +248,7 @@ GLOSSARY: Tuple[GlossaryEntry, ...] = (
     GlossaryEntry(TOPIC_GROUND_TRUTH, "Other-class mask",
                   "Cells whose centre lies in a box of an annotated class outside the group are removed from the scored area, so they count "
                   "neither for nor against the group.",
-                  None, _refs((HIDDEN_METRICS, "class_group_masks"))),
+                  None, _refs((SCENE_METRICS, "class_group_masks"))),
     GlossaryEntry(TOPIC_GROUND_TRUTH, "Scored range and vertical field of view",
                   "A box or cell is scored only when it is inside the lidar's reach from at least one recorded sweep: within the scored range "
                   "(a quantile of all return ranges) and within the vertical half field of view (the largest absolute beam elevation).",
@@ -258,21 +257,22 @@ GLOSSARY: Tuple[GlossaryEntry, ...] = (
                         (EVAL_YAML, "scored_range_quantile"))),
     # ---- Occupancy ----
     GlossaryEntry(TOPIC_OCCUPANCY, "P2 occupancy (T57, T81)",
-                  "How solid the model says a cell is, from 0 to 1, read from the Gaussians directly (not from a render): the blocking "
-                  "probability of all Gaussians touching the cell. T57 samples each Gaussian's alpha at the cell centre within 3 sigma; "
+                  "How solid the model says a cell is, from 0 to 1, read from the Gaussians directly (not from a render): the opacity "
+                  "that all Gaussians touching the cell would collect, combined as 1 - prod(1 - alpha). T57 samples each Gaussian's alpha at the cell centre within 3 sigma; "
                   "T81, the binding estimator, adds the Gaussian's peak opacity to the cell that holds its mean.",
                   "occupancy = 1 - prod_k(1 - alpha_k); alpha_k(x) = sigma(o_k) exp(-0.5 (x - mu_k)^T Sigma_k^-1 (x - mu_k))",
-                  _refs((HIDDEN_GEOMETRY, "T57"), (HIDDEN_GEOMETRY, "T81"), (PLAN, "T81, peak alpha in the voxel"))),
+                  _refs((VOXEL_OCCUPANCY, "T57"), (VOXEL_OCCUPANCY, "T81"), (PLAN, "T81, peak alpha in the voxel"))),
     GlossaryEntry(TOPIC_OCCUPANCY, "Peak-alpha rule",
                   "SplatAD's Gaussians are thin discs far smaller than a cell, so almost none reach a cell centre. The Gaussian therefore "
                   "adds its peak sigma(o) to the cell holding its mean, and its centre-sampled tail to every other cell within 3 sigma.",
                   "alpha_kv = sigma(o_k) in the home cell; sigma(o_k) exp(-d^2 / 2) elsewhere (d = Mahalanobis distance)",
-                  _refs((HIDDEN_GEOMETRY, "T81"))),
+                  _refs((VOXEL_OCCUPANCY, "T81"))),
     GlossaryEntry(TOPIC_OCCUPANCY, "Blocking probability",
-                  "The chance that a ray through the point is stopped, assuming each Gaussian blocks light independently. It is a value at "
-                  "a point of the cell, not the fraction of the cell that is filled.",
+                  "The chance that a ray through a point is stopped, assuming each Gaussian blocks light independently. Our cell occupancy "
+                  "applies it with each Gaussian at its peak in its own cell, which counts for more than one ray through the cell would "
+                  "collect from it (a more generous call than SplatAD's stop rule, the same for every arm), not the fraction of the cell that is filled.",
                   "1 - prod_k(1 - alpha_k(x))",
-                  _refs((CAVEATS, "Blocking probability"), (TERMINOLOGY_SOURCE, "blocking probability at one point"))),
+                  _refs((CAVEATS, "Blocking probability"), (TERMINOLOGY_SOURCE, "more than one ray through the cell would collect"))),
     GlossaryEntry(TOPIC_OCCUPANCY, "Cut-off t and filled cell O_t",
                   "A cell with occupancy at or above the cut-off t counts as filled; O_t is the set of filled cells.",
                   "O_t = {cells with occupancy >= t}",
@@ -280,7 +280,7 @@ GLOSSARY: Tuple[GlossaryEntry, ...] = (
     GlossaryEntry(TOPIC_OCCUPANCY, "P2 binding cut-off and strictness check",
                   "P2 scored at the cut-offs of `eval.p2_thresholds`: the first value (binding) decides; the second (strictness check) only checks that a "
                   "result survives a stricter cut-off. It can weaken a result but never replace the first. The values are in the value table.",
-                  None, _refs((PLAN, "Thresholds:"), (EVAL_YAML, "p2_thresholds"), ("src/viking_splatad/eval/hidden_settings.py", "binding_threshold"))),
+                  None, _refs((PLAN, "Thresholds:"), (EVAL_YAML, "p2_thresholds"), ("src/viking_splatad/eval/occupancy_settings.py", "binding_threshold"))),
     # ---- Lidar view ----
     GlossaryEntry(TOPIC_LIDAR_VIEW, "P1 (rendered lidar)",
                   "The test that asks what a lidar at the held-out poses would see: a cell is hit when at least one ungated rendered point of "
@@ -303,61 +303,39 @@ GLOSSARY: Tuple[GlossaryEntry, ...] = (
                   "Lidar render error scores of SplatAD's own evaluation on the test sweeps. They are report only and never decide a "
                   "comparison. Their exact formulas are those of the SplatAD evaluation code.",
                   None, _refs((RUN_QUALITY, "REPORTED_LIDAR_METRICS"), (EXTENSION_POINTS, "chamfer_distance"))),
-    # ---- Hidden space ----
-    GlossaryEntry(TOPIC_HIDDEN, "Seen / blocked / passed through",
-                  "Evidence a recorded beam gives about a cell, with cube interval [entry, exit] along the beam and range margin m: **seen** "
-                  "when a returned depth d lies within the cube (widened by m), **blocked** when d falls short of it, **passed through** "
-                  "when d lies beyond it.",
-                  "seen: entry - m <= d <= exit + m; blocked: d < entry - m; passed: d > exit + m",
-                  _refs((HIDDEN_GEOMETRY, "recorded_ray_evidence"))),
-    GlossaryEntry(TOPIC_HIDDEN, "Range margin m (T92) and neighbour reach",
-                  "The range noise below which a return counts as seen. It is measured from the data as a quantile of point-to-plane "
-                  "residuals between two sweeps of the same scene. The neighbour reach bounds how far the plane fit's neighbours may lie, "
-                  "so the residual measures range noise and not shape.",
-                  "residual = |(p - c) . n|; m = quantile of residuals",
-                  _refs((RANGE_MARGIN, "T92"), (RANGE_MARGIN, "range_margin"), (RANGE_MARGIN, "max_neighbour_reach_m"))),
-    GlossaryEntry(TOPIC_HIDDEN, "Hidden space H",
-                  "A scored cell that, over all recorded sweeps of the session, was never seen, was blocked at least once and was never "
-                  "passed through. A beam without a return neither proves nor disproves it.",
-                  "H = NOT seen AND blocked AND NOT passed_through",
-                  _refs((HIDDEN_GEOMETRY, "hidden_space_mask"), (SESSION_HIDDEN, "Session-wide hidden space H"))),
-    GlossaryEntry(TOPIC_HIDDEN, "Near band and H_near",
-                  "The near band is the horizontal distance from the driven path that bounds the hidden space read after the whole scene. H_near is the "
-                  "hidden cells within it.",
-                  "H_near = H AND d_nearest <= near band",
-                  _refs((SESSION_HIDDEN, "near_band_hidden_mask"), (EVAL_YAML, "near_band_m"))),
     # ---- Outcomes and metrics ----
     GlossaryEntry(TOPIC_OUTCOMES, "Hit, false alarm, missed, context",
-                  "Cell sets behind the ratios: **context** is every scored cell (of the hidden band); **hit** is a filled cell on an obstacle; "
+                  "Cell sets behind the ratios: **context** is every scored cell; **hit** is a filled cell on an obstacle; "
                   "**false alarm** a filled cell next to an obstacle; **missed** an obstacle cell left empty.",
-                  "hit = O & G (& H); false alarm = O & N & ~G (& H); missed = G & ~O (& H)",
-                  _refs((P2_CELLS, "hidden_cell_outcomes"), (P2_CELLS, "p2_cell_outcomes"))),
+                  "hit = O & G; false alarm = O & N & ~G; missed = G & ~O",
+                  _refs((P2_CELLS, "p2_cell_outcomes"))),
     GlossaryEntry(TOPIC_OUTCOMES, "Correct empty",
                   "A cell next to an obstacle that the model left empty. It is the fourth outcome beside hit, false alarm and missed, "
                   "and it enters neither recall nor precision.",
                   "correct empty = N & ~G & ~O",
-                  _refs((P2_CELLS, "p2_cell_outcomes"), (P2_CELLS, "hidden_cell_outcomes"))),
+                  _refs((P2_CELLS, "p2_cell_outcomes"))),
     GlossaryEntry(TOPIC_OUTCOMES, "Recall",
                   "Of the obstacle cells, the share the model filled.",
                   "recall = |O & G| / |G|",
-                  _refs((HIDDEN_METRICS, "T94"))),
+                  _refs((SCENE_METRICS, "T94"))),
     GlossaryEntry(TOPIC_OUTCOMES, "Precision",
                   "Of the filled cells in the scored area, the share that is on an obstacle.",
                   "precision = |O & G| / |O & N|",
-                  _refs((HIDDEN_METRICS, "T94"))),
+                  _refs((SCENE_METRICS, "T94"))),
     GlossaryEntry(TOPIC_OUTCOMES, "IoU",
                   "Overlap of the filled cells and the obstacle cells inside the scored area.",
                   "IoU = TP / (TP + FP + FN)",
-                  _refs((HIDDEN_METRICS, "T94"))),
+                  _refs((SCENE_METRICS, "T94"))),
     GlossaryEntry(TOPIC_OUTCOMES, "Pooled (T94)",
                   "The metrics counted over all scored cells together, so big objects weigh most.",
                   "TP = |O & G|, FP = |O & N minus G|, FN = |G minus O|",
-                  _refs((HIDDEN_METRICS, "T94"))),
+                  _refs((SCENE_METRICS, "T94"))),
     GlossaryEntry(TOPIC_OUTCOMES, "Mean over objects (T95)",
                   "Each object is scored alone inside its own grown box, and the metric is averaged over the objects where it is defined, "
-                  "so every object weighs the same. A cell in the grown boxes of two objects is scored in both.",
+                  "so every object weighs the same. A cell in the grown boxes of two objects is scored in both, and a filled cell on a "
+                  "different obstacle inside an object's grown box is a false alarm of that object.",
                   "mean_m = (1 / |D_m|) * sum over objects k in D_m of m_k",
-                  _refs((HIDDEN_METRICS, "T95"))),
+                  _refs((SCENE_METRICS, "T95"))),
     GlossaryEntry(TOPIC_OUTCOMES, "Threshold curve",
                   "Recall and precision (pooled and mean over objects) recomputed at each cut-off of a grid, with filled = occupancy at or "
                   "above the cut-off.",
@@ -385,9 +363,9 @@ GLOSSARY: Tuple[GlossaryEntry, ...] = (
                   "comparison is read without repeats.",
                   None, _refs((CLAUDE, "run-to-run noise is accepted"))),
     GlossaryEntry(TOPIC_STATISTICS, "The reading rule",
-                  "Compare arms only by the gap against the spread over the repeats: a gap counts only when it is larger than the spread "
-                  "within the arms.",
-                  None, _refs((CLAUDE, "Compare arms only by the gap"), (TERMINOLOGY_SOURCE, "A gap is read only when"))),
+                  "Compare arms only by the gap against the spread over the repeats: a variant gap counts only when it exceeds the spread "
+                  "between repeats without losing precision.",
+                  None, _refs((CLAUDE, "Compare arms only by the gap"), (TERMINOLOGY_SOURCE, "A variant gap counts only when"))),
     # ---- Image metrics (auxiliary) ----
     GlossaryEntry(TOPIC_IMAGE, "PSNR, SSIM, LPIPS",
                   "Image-quality scores of SplatAD's built-in evaluation of the rendered camera images, read from the training-time eval on "
@@ -417,13 +395,12 @@ CODE_REFERENCES: Tuple[Tuple[str, WhereRef], ...] = (
     ("Centre-of-cell rule: voxelising cuboids into a class-id grid", WhereRef("src/viking_splatad/labels/occupancy.py", "T31")),
     ("Cuboid detection rate (P1cuboid)", WhereRef(DETECTION, "T45")),
     ("Neighbourhood point precision (P1cuboid)", WhereRef(DETECTION, "T46")),
-    ("Three-sigma Gaussian occupancy", WhereRef(HIDDEN_GEOMETRY, "T57")),
-    ("Peak-alpha occupancy, the binding estimator", WhereRef(HIDDEN_GEOMETRY, "T81")),
-    ("Lidar range margin m", WhereRef(RANGE_MARGIN, "T92")),
-    ("Pooled recall, precision and IoU", WhereRef(HIDDEN_METRICS, "T94")),
-    ("Per-object recall, precision and IoU, averaged", WhereRef(HIDDEN_METRICS, "T95")),
+    ("Three-sigma Gaussian occupancy", WhereRef(VOXEL_OCCUPANCY, "T57")),
+    ("Peak-alpha occupancy, the binding estimator", WhereRef(VOXEL_OCCUPANCY, "T81")),
+    ("Pooled recall, precision and IoU", WhereRef(SCENE_METRICS, "T94")),
+    ("Per-object recall, precision and IoU, averaged", WhereRef(SCENE_METRICS, "T95")),
     ("Margin of a class", WhereRef(DETECTION, "median_half_footprint")),
-    ("Other-class mask and class-group masks", WhereRef(HIDDEN_METRICS, "class_group_masks")),
+    ("Other-class mask and class-group masks", WhereRef(SCENE_METRICS, "class_group_masks")),
     ("Grown box", WhereRef(DETECTION, "grow_cuboid_horizontally")),
     ("Scored area of one class", WhereRef(DETECTION, "visible_neighbourhood_mask")),
     ("Occupancy values on and next to obstacles", WhereRef(FIGURE_METRICS, "occupancy_samples")),

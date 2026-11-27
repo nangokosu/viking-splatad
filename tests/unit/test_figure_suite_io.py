@@ -13,7 +13,7 @@ from viking_splatad.viz import figure_suite_io as suite_io
 ARMS = ("stock", "radar_init", "radar_init_loss")
 CELL_COUNT = 6
 CAMPAIGN_PROFILES = {"stock": "profile_stock", "radar_init": "profile_init", "radar_init_loss": "profile_loss"}
-METRIC_KEY = "obstacles/P2@0.5/recall_Hnear/mean"
+METRIC_KEY = "obstacles/P2@0.5/recall/pooled"
 
 
 def tiny_cells(occupancy_values):
@@ -31,8 +31,6 @@ def tiny_cells(occupancy_values):
         "occupancy": np.asarray(occupancy_values, dtype=float),
         "threshold": np.array(0.5),
         "p2_thresholds": np.array([0.5, 0.8]),
-        "evidence": np.arange(CELL_COUNT),
-        "hidden_near": np.ones(CELL_COUNT, dtype=bool),
         "neighbourhood_obstacles": np.array([True, True, True, True, False, False]),
         "truth_obstacles": np.array([True, True, False, False, False, False]),
     }
@@ -66,24 +64,23 @@ def test_choose_drawn_run_single_run_is_drawn_whatever_its_metric(only_value):
 
 
 def test_check_runs_consistent_detects_mismatch():
-    """A differing hidden_near or truth array raises, naming the key; identical archives pass."""
+    """A differing neighbourhood or truth array raises, naming the key; identical archives pass."""
     reference = tiny_cells(np.zeros(CELL_COUNT))
     identical = tiny_cells(np.ones(CELL_COUNT))  # occupancy is model-dependent and must be ignored
     suite_io.check_runs_consistent({"run_a": reference, "run_b": identical})
-    for key in ("hidden_near", "truth_obstacles"):
+    for key in ("neighbourhood_obstacles", "truth_obstacles"):
         changed = tiny_cells(np.zeros(CELL_COUNT))
         changed[key] = ~changed[key]
         with pytest.raises(ValueError, match=key):
             suite_io.check_runs_consistent({"run_a": reference, "run_b": changed})
 
 
-@pytest.mark.parametrize("key, changed_value", [("threshold", np.array(0.8)),
-                                                ("evidence", np.arange(CELL_COUNT)[::-1].copy())])
-def test_check_runs_consistent_compares_threshold_and_evidence(key, changed_value):
-    """Regression: the archived threshold and the evidence labels are compared across runs too (they were not)."""
+def test_check_runs_consistent_compares_threshold():
+    """Regression: the archived threshold is compared across runs too (it was not)."""
+    key = "threshold"
     reference = tiny_cells(np.zeros(CELL_COUNT))
     changed = tiny_cells(np.zeros(CELL_COUNT))
-    changed[key] = changed_value
+    changed[key] = np.array(0.8)
     with pytest.raises(ValueError, match=key):
         suite_io.check_runs_consistent({"run_a": reference, "run_b": changed})
 
@@ -190,14 +187,31 @@ def test_select_arm_runs_override_stands_in_for_an_arm_without_campaign_runs(tmp
         select(tmp_path, overrides={})
 
 
-def test_select_arm_runs_checks_threshold_and_evidence_of_every_loaded_run(tmp_path):
-    """Regression: an override archived at another threshold, or with other evidence, is refused."""
-    for key, changed_value in (("threshold", np.array(0.8)), ("evidence", np.arange(CELL_COUNT)[::-1].copy())):
-        outside_run = tmp_path / "outside"
-        outside_cells = tiny_cells(np.zeros(CELL_COUNT))
-        outside_cells[key] = changed_value
-        with pytest.raises(ValueError, match=key):
-            select(tmp_path, overrides={"radar_init_loss": outside_run}, cells_extra={outside_run: outside_cells})
+def test_select_arm_runs_checks_threshold_of_every_loaded_run(tmp_path):
+    """Regression: an override archived at another threshold is refused."""
+    key, changed_value = "threshold", np.array(0.8)
+    outside_run = tmp_path / "outside"
+    outside_cells = tiny_cells(np.zeros(CELL_COUNT))
+    outside_cells[key] = changed_value
+    with pytest.raises(ValueError, match=key):
+        select(tmp_path, overrides={"radar_init_loss": outside_run}, cells_extra={outside_run: outside_cells})
+
+
+def test_representative_value_reads_flat_run_metric_key(tmp_path):
+    """representative_value finds ``<class>/P2@<t>/<metric>/<pooled|mean>`` in a schema-3 report."""
+    pooled_recall, mean_recall = 0.75, 0.5
+    metric_block = {"pooled": {"precision": 0.1, "recall": pooled_recall, "iou": 0.2},
+                    "per_object": {"mean_precision": 0.3, "mean_recall": mean_recall, "mean_iou": 0.4,
+                                   "defined_counts": {"precision": 2, "recall": 2, "iou": 2}}}
+    report = {"classes": {"obstacles": {"P1": metric_block, "P2": {"0.5": metric_block},
+                                        "detection": {"curve": {"f_min": [0.5], "detection_rate": [1.0]}}}}}
+    run_dir = tmp_path / "run"
+    (run_dir / "eval").mkdir(parents=True)
+    (run_dir / suite_io.REPORT_RELATIVE_PATH).write_text(json.dumps(report))
+    assert suite_io.representative_value(run_dir, "obstacles/P2@0.5/recall/pooled") == pooled_recall
+    assert suite_io.representative_value(run_dir, "obstacles/P2@0.5/recall/mean") == mean_recall
+    with pytest.raises(KeyError):
+        suite_io.representative_value(run_dir, "obstacles/P2@0.5/recall_Hnear/mean")
 
 
 def test_recorder_records_written_skipped_and_failed(tmp_path, capsys):

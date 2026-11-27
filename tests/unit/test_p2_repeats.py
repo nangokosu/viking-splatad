@@ -2,14 +2,11 @@
 
 import math
 
-import numpy as np
 import pytest
 
-from viking_splatad.eval.hidden_geometry import EVIDENCE_NAMES
 from viking_splatad.eval.p2_repeats import (
     arm_pairs,
     compare_arms,
-    consistent_cell_counts,
     describe_arm,
     describe_values,
     flatten_run_metrics,
@@ -54,44 +51,93 @@ def test_describe_arm_refuses_runs_with_different_metric_sets():
         describe_arm([{"metric": 0.1}, {"other": 0.2}])
 
 
-def test_consistent_cell_counts_per_stratum():
-    """4 GT cells (seen, blocked, no_return, unobserved) and one non-GT cell.
-
-    Arm A recovers cells 0, 1 in both repeats and cell 2 in one; arm B recovers cell 3 in both and cell 1 once.
-    Only cell 0 is A-always and B-never; cell 3 is B-always and A-never; the non-GT cell never counts.
-    """
-    truth = np.array([True, True, True, True, False])
-    evidence = np.zeros((5, 4), dtype=bool)
-    evidence[0, 0], evidence[1, 1], evidence[2, 2] = True, True, True
-    first = [np.array([True, True, True, False, True]), np.array([True, True, False, False, True])]
-    second = [np.array([False, True, False, True, False]), np.array([False, False, False, True, False])]
-    counts = consistent_cell_counts(first, second, truth, evidence)
-    expected_first = {name: 0 for name in EVIDENCE_NAMES} | {"seen": 1}
-    expected_second = {name: 0 for name in EVIDENCE_NAMES} | {"unobserved": 1}
-    assert counts == {"first_only": expected_first, "second_only": expected_second}
-
-
 def test_arm_pairs_lists_every_unordered_pair_once():
     """k arms give k(k-1)/2 pairs, first-listed arm first."""
     assert arm_pairs(["a", "b", "c"]) == [("a", "b"), ("a", "c"), ("b", "c")]
 
 
+METRIC_NAMES = ("precision", "recall", "iou")
+
+
+def schema3_block(precision, recall, iou, mean_precision, mean_recall, mean_iou, defined_counts):
+    """One schema-3 test block ({pooled, per_object}) with the given metric values.
+
+    Args:
+        precision, recall, iou: Pooled values. mean_precision, mean_recall, mean_iou: Means over objects.
+        defined_counts: {metric: objects defining it}.
+    Returns:
+        The block as scripts/19 writes it.
+    """
+    return {"pooled": {"precision": precision, "recall": recall, "iou": iou},
+            "per_object": {"mean_precision": mean_precision, "mean_recall": mean_recall, "mean_iou": mean_iou,
+                           "defined_counts": defined_counts}}
+
+
+# Distinct values per test so a key that read the wrong block would show.
+P1_BLOCK = schema3_block(0.5, 0.4, 0.3, 0.55, 0.45, 0.35, {"precision": 4, "recall": 5, "iou": 3})
+P2_LOW_BLOCK = schema3_block(0.6, 0.7, 0.8, 0.65, 0.75, None, {"precision": 6, "recall": 7, "iou": 0})
+P2_HIGH_BLOCK = schema3_block(None, 0.1, 0.2, None, 0.15, 0.25, {"precision": 0, "recall": 2, "iou": 1})
+DETECTION = {"curve": {"f_min": [0.0, 0.5], "detection_rate": [1.0, None]}}
+
+
+def schema2_baseline_keys(report):
+    """Flat baseline keys of a schema-2 report, as the removed hidden flattener spelled them.
+
+    Args:
+        report: A schema-2 report (each test block has baseline_pooled / baseline_per_object).
+    Returns:
+        {key: value} for ``<class>/<P1|P2@t>/<metric>/<pooled|mean|n_defined>``.
+    """
+    flat = {}
+    for class_name, class_report in report["classes"].items():
+        hidden_block = class_report["hidden"]
+        test_blocks = {"P1": hidden_block["P1"]} | {f"P2@{threshold}": block for threshold, block in hidden_block["P2"].items()}
+        for test_name, block in test_blocks.items():
+            for metric_name in METRIC_NAMES:
+                prefix = f"{class_name}/{test_name}/{metric_name}"
+                flat[f"{prefix}/pooled"] = block["baseline_pooled"][metric_name]
+                flat[f"{prefix}/mean"] = block["baseline_per_object"][f"mean_{metric_name}"]
+                flat[f"{prefix}/n_defined"] = block["baseline_per_object"]["defined_counts"][metric_name]
+    return flat
+
+
 def test_flatten_run_metrics_keys_and_values():
-    """A one-class report flattens to P1/P2 P/R/IoU, stratum recalls, hidden counts and detection rates."""
-    strata = {name: {"recall": None} for name in EVIDENCE_NAMES} | {"blocked": {"recall": 0.25}}
-    test_metrics = {"precision": 0.5, "recall": 0.4, "iou": 0.3, "strata": strata}
-    hidden_strata = {name: {"present_but_hidden": 0} for name in EVIDENCE_NAMES} | {"no_return": {"present_but_hidden": 3}}
+    """A one-class schema-3 report flattens to exactly P1/P2@t P/R/IoU keys (pooled, mean, n_defined) and detection rates."""
     report = {"classes": {"tree_trunk": {
-        "P1": test_metrics, "P2": test_metrics,
-        "present_but_hidden": {"strata": hidden_strata, "totals": {"present_but_hidden": 3}},
-        "detection": {"curve": {"f_min": [0.0, 0.5], "detection_rate": [1.0, None]}},
-    }}}
+        "P1": P1_BLOCK, "P2": {"0.5": P2_LOW_BLOCK, "0.8": P2_HIGH_BLOCK}, "detection": DETECTION}}}
     flat = flatten_run_metrics(report)
-    assert flat["tree_trunk/P2/precision"] == 0.5
-    assert flat["tree_trunk/P1/recall_blocked"] == 0.25
-    assert flat["tree_trunk/present_but_hidden/no_return"] == 3
-    assert flat["tree_trunk/P2/detection_rate@0.0"] == 1.0
-    assert flat["tree_trunk/P2/detection_rate@0.5"] is None
+    expected = {}
+    for test_name, block in (("P1", P1_BLOCK), ("P2@0.5", P2_LOW_BLOCK), ("P2@0.8", P2_HIGH_BLOCK)):
+        for metric_name in METRIC_NAMES:
+            prefix = f"tree_trunk/{test_name}/{metric_name}"
+            expected[f"{prefix}/pooled"] = block["pooled"][metric_name]
+            expected[f"{prefix}/mean"] = block["per_object"][f"mean_{metric_name}"]
+            expected[f"{prefix}/n_defined"] = block["per_object"]["defined_counts"][metric_name]
+    expected["tree_trunk/P2/detection_rate@0.0"] = 1.0
+    expected["tree_trunk/P2/detection_rate@0.5"] = None
+    assert flat == expected
+    # Spot values by hand: P1 pooled recall, P2@0.8 mean iou, an undefined ratio stays None.
+    assert flat["tree_trunk/P1/recall/pooled"] == 0.4
+    assert flat["tree_trunk/P2@0.8/iou/mean"] == 0.25
+    assert flat["tree_trunk/P2@0.8/precision/pooled"] is None
+
+
+def test_flatten_run_metrics_keys_match_the_schema2_baseline_keys():
+    """Key compatibility: a schema-3 report and the schema-2 report with the same numbers give the same baseline keys and values."""
+    def hidden_variant(block):
+        """A schema-2 block: made-up hidden numbers beside the baseline pair that equals ``block``."""
+        decoy = schema3_block(0.01, 0.02, 0.03, 0.04, 0.05, 0.06, {"precision": 9, "recall": 9, "iou": 9})
+        return {"pooled": decoy["pooled"], "per_object": decoy["per_object"],
+                "baseline_pooled": block["pooled"], "baseline_per_object": block["per_object"]}
+    schema2_report = {"classes": {"tree_trunk": {"hidden": {
+        "P1": hidden_variant(P1_BLOCK), "P2": {"0.5": hidden_variant(P2_LOW_BLOCK), "0.8": hidden_variant(P2_HIGH_BLOCK)}}}}}
+    schema3_report = {"classes": {"tree_trunk": {
+        "P1": P1_BLOCK, "P2": {"0.5": P2_LOW_BLOCK, "0.8": P2_HIGH_BLOCK}, "detection": DETECTION}}}
+    flat = flatten_run_metrics(schema3_report)
+    baseline = schema2_baseline_keys(schema2_report)
+    assert baseline.items() <= flat.items()
+    # Nothing but the baseline keys and the detection rates is produced.
+    assert set(flat) - set(baseline) == {"tree_trunk/P2/detection_rate@0.0", "tree_trunk/P2/detection_rate@0.5"}
 
 
 def test_single_repeat_arms_are_never_read_as_separated():

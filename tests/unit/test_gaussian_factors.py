@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from viking_splatad.eval.gaussian_occupancy import checkpoint_gaussians_to_map_frame, save_gaussian_factors
-from viking_splatad.eval.hidden_geometry import gaussian_occupancy_at_centres
+from viking_splatad.eval.voxel_occupancy import gaussian_occupancy_at_centres
 
 
 @pytest.mark.covers("T57")

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from viking_splatad.eval.hidden_geometry import gaussian_occupancy_at_centres, peak_alpha_voxel_occupancy
+from viking_splatad.eval.voxel_occupancy import gaussian_occupancy_at_centres, peak_alpha_voxel_occupancy
 
 VOXEL_SIZE = 0.5
 GRID_ORIGIN = np.zeros(3)

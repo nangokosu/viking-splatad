@@ -42,7 +42,7 @@ class FigureSettings:
         colours: name -> (R, G, B) in 0-255.
         footer_note: Text printed under every figure of the campaign profile set.
         presentation_footer_note: Text printed under every figure of the presentation profile set.
-        representative_metric: Flat metric key (``p2_repeats.flatten_hidden_metrics``) whose median
+        representative_metric: Flat metric key (``p2_repeats.flatten_run_metrics``) whose median
             repeat represents an arm in the figures.
         threshold_curve_min: Lowest occupancy threshold of the threshold-curve grid.
         threshold_curve_max: Highest occupancy threshold of the grid (> min).

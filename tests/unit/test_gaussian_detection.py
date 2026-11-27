@@ -1,12 +1,11 @@
-"""Known-answer tests for P2 cuboid detection (T79) and present-but-hidden counts (T80)."""
+"""Known-answer tests for P2 cuboid detection (T79) and the occupancy-threshold sweep."""
 
 import numpy as np
 import pytest
 
 from viking_splatad.eval.gaussian_detection import (
-    cuboid_occupied_fractions, detection_curve, f_min_grid, present_but_hidden, threshold_sweep,
+    cuboid_occupied_fractions, detection_curve, f_min_grid, threshold_sweep,
 )
-from viking_splatad.eval.hidden_geometry import EVIDENCE_NAMES
 from viking_splatad.labels.cuboids import DEFAULT_BOUNDARY_TOLERANCE_METERS, Cuboid
 
 # Synthetic scene sizes: chosen so the yawed box covers part of the grid and
@@ -130,64 +129,26 @@ def test_f_min_grid_spans_unit_interval_evenly_and_validates_count():
         f_min_grid(True)
 
 
-@pytest.mark.covers("T80")
-def test_present_but_hidden_counts_per_exclusive_evidence_stratum():
-    """Hand-made cells: hidden = GT & P2 & ~P1, each GT cell in exactly one stratum."""
-    # Columns: seen, blocked, no_return, passed_through. Row 3 is a conflict (seen wins).
-    evidence = np.array([
-        [True, False, False, False],   # cell 0: seen
-        [False, True, False, False],   # cell 1: blocked
-        [False, True, False, False],   # cell 2: blocked
-        [True, True, False, False],    # cell 3: seen and blocked -> seen
-        [False, False, True, False],   # cell 4: no_return
-        [False, False, False, True],   # cell 5: passed_through
-        [False, False, False, False],  # cell 6: unobserved
-        [False, True, False, False],   # cell 7: blocked, but not GT
-    ])
-    truth = np.array([True, True, True, True, True, True, True, False])
-    p2_occupied = np.array([True, True, True, False, True, False, True, True])
-    p1_hit = np.array([True, False, True, False, False, False, False, False])
-    # Expected per stratum, from the row comments: GT cells, GT&P2, GT&P1, GT&P2&~P1.
-    expected_strata = {
-        "seen": {"gt_cells": 2, "p2_occupied": 1, "p1_hit": 1, "present_but_hidden": 0},
-        "blocked": {"gt_cells": 2, "p2_occupied": 2, "p1_hit": 1, "present_but_hidden": 1},
-        "no_return": {"gt_cells": 1, "p2_occupied": 1, "p1_hit": 0, "present_but_hidden": 1},
-        "passed_through": {"gt_cells": 1, "p2_occupied": 0, "p1_hit": 0, "present_but_hidden": 0},
-        "unobserved": {"gt_cells": 1, "p2_occupied": 1, "p1_hit": 0, "present_but_hidden": 1},
-    }
-    # Totals are the stratum sums because the strata partition the GT cells.
-    expected_totals = {key: sum(stratum[key] for stratum in expected_strata.values())
-                       for key in expected_strata["seen"]}
-
-    result = present_but_hidden(p2_occupied, p1_hit, truth, evidence)
-
-    assert set(result["strata"]) == set(EVIDENCE_NAMES)
-    assert result["strata"] == expected_strata
-    assert result["totals"] == expected_totals
-    assert result["totals"]["present_but_hidden"] == int(np.count_nonzero(truth & p2_occupied & ~p1_hit))
-    with pytest.raises(ValueError, match="evidence"):
-        present_but_hidden(p2_occupied, p1_hit, truth, evidence[:, :3])
-
-
 def test_threshold_sweep_recall_is_monotone_and_matches_counts():
     """occupied = p >= t; recall over 4 GT cells falls as t rises."""
     probabilities = np.array([0.9, 0.6, 0.3, 0.1, 0.8, 0.05])
     truth = np.array([True, True, True, True, False, False])
-    evidence = np.zeros((len(truth), 4), dtype=bool)
     thresholds = np.array([0.0, 0.2, 0.5, 0.7, 0.95])
     gt_count = int(np.count_nonzero(truth))
     # Hand count of GT cells with p >= t: t=0 -> 4, 0.2 -> 3, 0.5 -> 2, 0.7 -> 1, 0.95 -> 0.
     expected_recall = np.array([4, 3, 2, 1, 0]) / gt_count
 
-    sweep = threshold_sweep(probabilities, truth, evidence, thresholds)
+    sweep = threshold_sweep(probabilities, truth, thresholds)
 
     recalls = np.array([entry["metrics"]["recall"] for entry in sweep])
     np.testing.assert_allclose(recalls, expected_recall)
     assert np.all(np.diff(recalls) <= 0)
     assert [entry["threshold"] for entry in sweep] == list(thresholds)
-    # All GT cells are unobserved, so that stratum's recall equals the overall recall.
-    np.testing.assert_allclose([entry["metrics"]["strata"]["unobserved"]["recall"] for entry in sweep],
-                               expected_recall)
+    # Hand count at t=0.5: occupied cells 0, 1 and 4, so tp=2 (cells 0, 1), fp=1 (cell 4), fn=2 (cells 2, 3).
+    # precision = 2/3, recall = 2/4, iou = tp / (tp + fp + fn) = 2/5.
+    entry = sweep[list(thresholds).index(0.5)]["metrics"]
+    assert (entry["true_positive"], entry["false_positive"], entry["false_negative"]) == (2, 1, 2)
+    np.testing.assert_allclose([entry["precision"], entry["recall"], entry["iou"]], [2 / 3, 2 / 4, 2 / 5])
 
 
 def test_exact_ratio_on_a_grid_value_is_detected():

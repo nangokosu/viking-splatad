@@ -9,7 +9,7 @@ Current scope: **Scene A**, a region with tree trunks, low grass in May and high
 
 Both sessions train with the camera (photometric) loss. May's campaign profiles are `may_scene_a{,_radar_init,_radar_init_loss}`. June's are the `june_scene_a{,_radar_init,_radar_init_loss}_cam` profiles (`train_lidar_only: false`, user's approval 2026-11-16), because the lidar-only June radar init run rendered nothing like the ground truth. The lidar-only June profiles (`june_scene_a*` without `_cam`) still exist but are not part of the campaign. Radar is **never rendered**. The loss-only method `splatad-radar-lidar` (`june_loss_only*` profiles) still exists, outside the campaign. Extension, run only with the user's approval: the radar depth loss.
 
-Evaluation order: first the whole scene (P2 recall and precision of class `obstacles` over every scored cell, with the lidar view P1 beside them), then the hidden cells: P2 hidden-voxel recall and precision of `obstacles` on H_near, the space no recorded lidar sweep could see within 20 m of the driven path (scripts 24 → 19 → 20 → 21; `docs/PLAN.md` §5, `docs/research/evaluation_caveats.md` §6–§7). Compare arms only by the gap against the spread over the repeats.
+Evaluation: the whole scene (P2 recall and precision of class `obstacles` over every scored cell, each class beside it, with the lidar view P1), plus image and lidar-render metrics (scripts 24 → 19 → 20 → 21, and 26 for the figures; `docs/PLAN.md` §5). Compare arms only by the gap against the spread over the repeats.
 
 **No May ↔ June mapping:** no ICP and no cross-run alignment.
 

@@ -135,11 +135,11 @@ def test_median_repeat_raises_without_defined_values():
 
 
 def test_real_representative_metric_is_a_flat_metric_key():
-    """The configured key follows flatten_hidden_metrics' H_near grammar and names a per-object mean."""
+    """The configured key follows flatten_run_metrics' grammar and names the pooled recall at a P2 threshold."""
     settings = load_figure_settings(_real_eval_section())
-    # Key grammar (p2_repeats.flatten_hidden_metrics): <class>/P2@<threshold key>/<metric>_Hnear/<pooled|mean|n_defined>.
+    # Key grammar (p2_repeats.flatten_run_metrics): <class>/P2@<threshold key>/<metric>/<pooled|mean|n_defined>.
     class_name, test_name, metric_name, segment = settings.representative_metric.split("/")
-    assert test_name.startswith("P2@") and metric_name.endswith("_Hnear") and segment == "mean"
+    assert test_name.startswith("P2@") and metric_name == "recall" and segment == "pooled"
 
 
 def test_threshold_curve_points_parsed_and_grid_contains_p2_thresholds():

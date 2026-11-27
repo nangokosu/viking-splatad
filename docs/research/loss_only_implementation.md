@@ -131,7 +131,7 @@ without changing the trained model or its legacy archive.
 Two runs per arm are the initial repeat budget. Additional B/L jobs 244827/244828
 are running; comparison 244830 and repeat-aware summary 244855 are success-dependent.
 The tested summary compares between-arm gaps against within-arm spread and refuses
-a single pair. Details and limits: [hidden_trunk_evaluation.md](hidden_trunk_evaluation.md).
+a single pair. (The hidden-trunk evaluation note and scripts 17 and 18 were removed 2026-11-27; see git history.)
 
 No radar improvement has been established from the first pair alone. Global
 unmatched-trunk false positives, camera occlusion labels, finer-grid sensitivity

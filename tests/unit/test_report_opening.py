@@ -24,10 +24,11 @@ CELL_COUNTS = {"on_obstacle": 111, "next_to_obstacle": 222}
 # CELL_COUNTS["on_obstacle"] (11 + 100 = 111), as definition_values requires.
 OUTCOME_COUNTS_BY_ARM = {arm_key: {"hit": 11, "missed": 100, "false_alarm": 5, "context": 333}
                          for arm_key in ("stock", "radar_init", "radar_init_loss")}
-PROVENANCE = {"voxel_size_m": 0.25, "near_band_m": 20.0, "max_range_m": 70.0, "vertical_half_fov_rad": 0.5,
+PROVENANCE = {"voxel_size_m": 0.25, "scored_range_m": 70.0, "scored_range_quantile": 0.9999, "vertical_half_fov_rad": 0.5,
               "margin_m_by_class": {"tree_trunk": 0.5, "rock": 0.6, "bush_or_small_tree": 0.9}}
 REPEAT_VALUES = {"arm_stock": [0.2, 0.3, 0.4], "arm_radar": [0.6, 0.7, 0.8]}
 ERROR_TEXT = "boom in drawing"
+REPRESENTATIVE_METRIC = "obstacles/P2@0.5/recall/pooled"
 
 
 def load_script(file_name: str, module_name: str):
@@ -86,7 +87,7 @@ def synthetic_manifest(session: str, missing=()):
     # Manifest arms: figure key -> summary arm key (profile); the drawn run is the arm's first run.
     arms = {figure_key: {"profile": arm_name, "drawn_run_id": f"{session}-{arm_name}-0", "campaign_run_count": len(REPEAT_VALUES[arm_name])}
             for figure_key, arm_name in (("stock", "arm_stock"), ("radar_init", "arm_radar"))}
-    return {"session": session, "binding_threshold": float(THRESHOLDS[0]), "arms": arms, "figures": figures,
+    return {"session": session, "binding_threshold": float(THRESHOLDS[0]), "representative_metric": REPRESENTATIVE_METRIC, "arms": arms, "figures": figures,
             "reported_numbers": {
                 "threshold_curves_scene": {"curve_grid": CURVE_GRID},
                 SCENE_COUNTS_KEY: {"band": "all", "cell_counts": CELL_COUNTS, "outcome_counts_by_arm": OUTCOME_COUNTS_BY_ARM}}}
@@ -143,8 +144,10 @@ def synthetic_report(margin_shift: float = 0.0):
     Returns:
         Report dict.
     """
-    return {"ground_truth": {"voxel_size_m": PROVENANCE["voxel_size_m"]}, "hidden_space": {"near_band_m": PROVENANCE["near_band_m"]},
-            "settings": {"max_range_m": PROVENANCE["max_range_m"], "vertical_half_fov_rad": PROVENANCE["vertical_half_fov_rad"]},
+    return {"ground_truth": {"voxel_size_m": PROVENANCE["voxel_size_m"]},
+            "settings": {"scored_range_m": PROVENANCE["scored_range_m"],
+                         "scored_range_quantile": PROVENANCE["scored_range_quantile"],
+                         "vertical_half_fov_rad": PROVENANCE["vertical_half_fov_rad"]},
             "classes": {name: {"margin_m": margin + margin_shift} for name, margin in PROVENANCE["margin_m_by_class"].items()}}
 
 
@@ -161,7 +164,7 @@ def test_margin_mismatch_across_runs_raises():
     runs = [{"run_dir": Path(f"run{index}"), "cells": cells,
              "report": {**synthetic_report(margin_shift), "run_id": f"run{index}", "profile": "p", "train_method": "splatad",
                         "ground_truth": synthetic_report()["ground_truth"], "settings": synthetic_report()["settings"],
-                        "split_membership_sha256": "s", "hidden_space": synthetic_report()["hidden_space"]}}
+                        "split_membership_sha256": "s", "scored_cells": {"path": "cells.npz", "sha256": "c"}}}
             for index, margin_shift in enumerate((0.0, 0.1))]
     with pytest.raises(ValueError, match="provenance"):
         script.summarize(runs)
@@ -275,3 +278,13 @@ def test_terminology_names_the_session_of_its_definitions():
     values = report_opening.manifest_definition_values(synthetic_summary(SESSIONS[0]), synthetic_manifest(SESSIONS[0]))
     text = report_opening.terminology_markdown(values, {SESSIONS[0]: values})
     assert f"rendered once, with the values of session {SESSIONS[0]}" in text
+
+
+def test_values_table_prints_the_scored_range_and_no_near_band():
+    """The value table has a "Scored range (m)" row read from scored_range_m and no near-band row."""
+    values = report_opening.manifest_definition_values(synthetic_summary(SESSIONS[0]), synthetic_manifest(SESSIONS[0]))
+    table = report_opening.values_table_markdown({SESSIONS[0]: values})
+    assert f"| Scored range (m) | {PROVENANCE['scored_range_m']:g} |" in table
+    assert "Near band" not in table
+    opening = report_opening.whole_scene_opening_markdown(synthetic_summary(SESSIONS[0]), synthetic_manifest(SESSIONS[0]), "figs")
+    assert f"metric `{REPRESENTATIVE_METRIC}`" in opening and "hidden" not in opening.lower()

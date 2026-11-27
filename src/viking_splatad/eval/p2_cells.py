@@ -1,10 +1,10 @@
-"""Per-run P2 inputs on the shared scored cells: recorded evidence, P1 hits and the Gaussian factors.
+"""Per-run P2 inputs on the shared scored cells: P1 hits and the Gaussian factors.
 
 P2 (PLAN §5) scores T81 peak-alpha occupancy from a run's Gaussians on the voxel cells of the scored
 neighbourhoods. This module builds what scripts/19 needs beside that occupancy, all on the same
-cells: the recorded-beam evidence of the test sweeps (T78), the cells the run's ungated rendered
-points hit (P1, T68), and the factorized checkpoint Gaussians (T56), which need torch and so are
-exported inside the reference image.
+cells: the cells the run's ungated rendered points hit (P1, T68), and the factorized checkpoint
+Gaussians (T56), which need torch and so are exported inside the reference image. It also
+classifies the archived cells for the P2 precision picture (``p2_cell_outcomes``).
 """
 
 from pathlib import Path
@@ -12,18 +12,8 @@ from typing import Dict, List, Mapping, Sequence
 
 import numpy as np
 
-from viking_splatad.eval.hidden_geometry import recorded_ray_evidence
-from viking_splatad.eval.rendered_pointcloud import RenderedSweep, points_to_map_voxels, ray_directions
+from viking_splatad.eval.rendered_pointcloud import RenderedSweep, points_to_map_voxels
 
-# Rendered lidar npz keys (scripts/08) holding the recorded scan: per ray (azimuth deg, elevation deg,
-# depth, ...) and whether the beam returned. Layout of raster_pts: 5 values per ray.
-RASTER_POINTS_KEY = "raster_pts"
-RASTER_DID_RETURN_KEY = "raster_did_return"
-LIDAR_TO_MAP_KEY = "lidar_to_map"
-RASTER_VALUES_PER_RAY = 5
-RASTER_AZIMUTH_COLUMN, RASTER_ELEVATION_COLUMN, RASTER_DEPTH_COLUMN = 0, 1, 2
-# T78 evidence columns: seen, blocked, no_return, passed_through (hidden_geometry.recorded_ray_evidence).
-EVIDENCE_COLUMN_COUNT = 4
 # Factorized archive keys (gaussian_occupancy.save_gaussian_factors).
 FACTOR_KEYS = ("means", "principal_axes", "axis_std", "opacities", "checkpoint_step")
 # Mount points inside the reference image; the repo path matches scripts/test_in_image.sh.
@@ -33,39 +23,6 @@ EXPORT_SCRIPT_RELATIVE_PATH = Path("scripts") / "10_export_gaussians.py"
 # Per-class key prefixes of the cells archive (scripts/19 writes neighbourhood_<class> and truth_<class>).
 NEIGHBOURHOOD_KEY_PREFIX = "neighbourhood_"
 TRUTH_KEY_PREFIX = "truth_"
-
-
-def accumulate_recorded_evidence(render_dir: Path, stems: Sequence[str], centres: np.ndarray, voxel_size: float) -> np.ndarray:
-    """OR the T78 recorded-beam evidence of every test sweep over the scored cells.
-
-    Per sweep, the recorded rays are rotated into map-grid axes and the cells are taken relative to
-    the sweep origin; rotating the cell centres alone would rotate the voxel boxes (scripts/17).
-
-    Args:
-        render_dir: ``renders/test/lidar`` of the run (one ``<stem>.npz`` per test sweep).
-        stems: Test sweep stems to use.
-        centres: (V, 3) map-frame voxel centres.
-        voxel_size: Voxel edge in metres.
-
-    Returns:
-        (V, 4) bool evidence flags (seen, blocked, no_return, passed_through), OR-ed over sweeps.
-    """
-    evidence = np.zeros((len(centres), EVIDENCE_COLUMN_COUNT), dtype=bool)
-    for stem in stems:
-        with np.load(Path(render_dir) / f"{stem}.npz", allow_pickle=False) as sweep_arrays:
-            # Step 1: the recorded raster, one row per ray; rays without a finite positive depth carry no geometry.
-            raster = sweep_arrays[RASTER_POINTS_KEY].reshape(-1, RASTER_VALUES_PER_RAY)
-            return_mask = sweep_arrays[RASTER_DID_RETURN_KEY].reshape(-1)
-            lidar_to_map = sweep_arrays[LIDAR_TO_MAP_KEY]
-        valid_rays = np.isfinite(raster).all(axis=1) & (raster[:, RASTER_DEPTH_COLUMN] > 0)
-        # Step 2: ray directions in the map axes (R · d); renormalised against float rounding of R.
-        map_directions = ray_directions(raster[valid_rays, RASTER_AZIMUTH_COLUMN],
-                                        raster[valid_rays, RASTER_ELEVATION_COLUMN]) @ lidar_to_map[:3, :3].T
-        map_directions /= np.linalg.norm(map_directions, axis=1, keepdims=True)
-        # Step 3: cells relative to this sweep's origin; T78 flags, OR-ed so any sweep's evidence counts.
-        evidence |= recorded_ray_evidence(centres - lidar_to_map[:3, 3], voxel_size, map_directions,
-                                          raster[valid_rays, RASTER_DEPTH_COLUMN], return_mask[valid_rays])
-    return evidence
 
 
 def p1_hit_cells(sweeps: Sequence[RenderedSweep], cell_indices: np.ndarray, grid_origin: np.ndarray,
@@ -174,68 +131,5 @@ def p2_cell_outcomes(cells: Mapping[str, np.ndarray], class_names: Sequence[str]
     return {"occupied": occupied, "scored": scored, "on_ground_truth": on_ground_truth}
 
 
-# Archive key of the session-wide hidden flag H per cell (hidden-voxel evaluation).
-HIDDEN_KEY = "hidden"
-# The near-path hidden flag (H_near = H within the near band of the driven path), the headline mask.
-HIDDEN_NEAR_KEY = "hidden_near"
-# Hidden-band choices of hidden_cell_outcomes -> the archive key holding that band's hidden flag.
-HIDDEN_BAND_NEAR, HIDDEN_BAND_FULL = "near", "full"
-HIDDEN_KEY_BY_BAND = {HIDDEN_BAND_NEAR: HIDDEN_NEAR_KEY, HIDDEN_BAND_FULL: HIDDEN_KEY}
-# Archive key of the P2 thresholds the hidden metric was evaluated at.
+# Archive key of the P2 thresholds the metrics were evaluated at.
 P2_THRESHOLDS_KEY = "p2_thresholds"
-
-
-def hidden_cell_outcomes(cells: Mapping[str, np.ndarray], class_name: str, threshold: float,
-                         band: str = HIDDEN_BAND_NEAR) -> Dict[str, np.ndarray]:
-    """Classify the scored cells of one class (or group) on the hidden space with the P2 hidden metric's sets.
-
-    With O = occupancy >= threshold (same inclusive cut as ``p2_cell_outcomes``), G = ``truth_<name>``
-    (GT inside the neighbourhood), N = ``neighbourhood_<name>`` and H = the band's hidden flag (``hidden_near`` for band "near", ``hidden`` for "full"):
-        recall_H    = |O & G & H| / |G & H|
-        precision_H = |O & G & H| / |O & N & H|
-    The returned sets are exactly the terms of those ratios:
-        context     = H & N              (every scored hidden cell of the class)
-        hit         = O & G & H          (true positives of both ratios)
-        false_alarm = O & N & H & ~G     (false positives of precision_H)
-        missed      = G & H & ~O         (false negatives of recall_H)
-    so recall_H = |hit| / (|hit| + |missed|) and precision_H = |hit| / (|hit| + |false_alarm|).
-
-    Args:
-        cells: Arrays of ``gaussian_occupancy_cells.npz``: ``occupancy``, the band's hidden flag
-            (``hidden_near`` or ``hidden``), ``p2_thresholds``
-            and ``neighbourhood_<name>`` / ``truth_<name>`` (V,) bool (name = a class or a group such as ``obstacles``).
-        class_name: Class or group name.
-        threshold: Occupancy cut; must be one of the archive's ``p2_thresholds``.
-        band: "near" (H_near, default) or "full" (H).
-
-    Returns:
-        {"context", "hit", "false_alarm", "missed"}: (V,) bool each.
-
-    Raises:
-        KeyError: If the archive lacks the band's hidden key (``hidden_near`` / ``hidden``), ``p2_thresholds`` or the name's arrays (it predates the hidden evaluation).
-        ValueError: If ``threshold`` is not an evaluated threshold of the archive, or ``band`` is unknown.
-    """
-    # Step 0: the band picks the hidden flag.
-    if band not in HIDDEN_KEY_BY_BAND:
-        raise ValueError(f"band {band!r} is not one of {sorted(HIDDEN_KEY_BY_BAND)}")
-    hidden_key = HIDDEN_KEY_BY_BAND[band]
-    # Step 1: every required key must exist; an old archive is reported by key name.
-    required_keys = (hidden_key, P2_THRESHOLDS_KEY, f"{NEIGHBOURHOOD_KEY_PREFIX}{class_name}", f"{TRUTH_KEY_PREFIX}{class_name}")
-    for key in required_keys:
-        if key not in cells:
-            raise KeyError(f"cells archive has no '{key}': it predates the hidden evaluation (re-run scripts/19)")
-    # Step 2: pictures exist only for thresholds the metric was evaluated at.
-    evaluated_thresholds = np.asarray(cells[P2_THRESHOLDS_KEY], dtype=float).reshape(-1)
-    matching_thresholds = evaluated_thresholds[np.isclose(evaluated_thresholds, float(threshold))]
-    if not len(matching_thresholds):
-        raise ValueError(f"threshold {threshold} was not evaluated; archive has {evaluated_thresholds.tolist()}")
-    # Step 3: the set algebra of the docstring, cut at the archived value scripts/19 scored with (not the
-    # caller's float, which may differ by rounding and would move cells sitting exactly on the cut).
-    occupied = np.asarray(cells["occupancy"]) >= matching_thresholds[0]
-    hidden = np.asarray(cells[hidden_key], dtype=bool)
-    neighbourhood = np.asarray(cells[f"{NEIGHBOURHOOD_KEY_PREFIX}{class_name}"], dtype=bool)
-    truth = np.asarray(cells[f"{TRUTH_KEY_PREFIX}{class_name}"], dtype=bool)
-    return {"context": hidden & neighbourhood,
-            "hit": occupied & truth & hidden,
-            "false_alarm": occupied & neighbourhood & hidden & ~truth,
-            "missed": truth & hidden & ~occupied}

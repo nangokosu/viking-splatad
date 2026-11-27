@@ -63,7 +63,10 @@ REPEAT_RANGE_SEPARATOR = "–"
 # Obstacle classes whose margin the text quotes (keys of provenance["margin_m_by_class"]).
 MARGIN_CLASS_NAMES = ("tree_trunk", "rock", "bush_or_small_tree")
 # Required provenance fields.
-PROVENANCE_FIELDS = ("voxel_size_m", "near_band_m", "max_range_m", "vertical_half_fov_rad", "margin_m_by_class")
+PROVENANCE_FIELDS = ("voxel_size_m", "scored_range_m", "scored_range_quantile", "vertical_half_fov_rad",
+                     "margin_m_by_class")
+# Percent per unit fraction: converts the range quantile (0.9999) to the percent the text quotes (99.99).
+PERCENT_PER_FRACTION = 100.0
 CURVE_SETTING_FIELDS = ("min", "max", "points")
 SCENE_CELL_COUNT_FIELDS = ("on_obstacle", "next_to_obstacle")
 # Names of the figures that have a "how to read" text.
@@ -149,7 +152,7 @@ def repeat_count_text(counts_by_label: Mapping[str, int]) -> str:
     # All arms agree: a single number keeps "each arm is trained N times" true.
     if len(distinct_counts) == 1:
         return str(next(iter(distinct_counts)))
-    # Otherwise state the range, then every arm's own count so nothing is hidden.
+    # Otherwise state the range, then every arm's own count so nothing is left out.
     per_arm_text = ", ".join(f"{label} {count}" for label, count in counts_by_label.items())
     return f"{min(distinct_counts)}{REPEAT_RANGE_SEPARATOR}{max(distinct_counts)} ({per_arm_text})"
 
@@ -168,16 +171,19 @@ def threshold_rule_sentence(binding_threshold: str) -> str:
     # The occupancy 1 - prod(1 - alpha) passes the cut-off exactly when the transmittance prod(1 - alpha)
     # falls below 1 - cut-off, so a larger cut-off than SplatAD's is the stricter rule.
     if math.isclose(binding_value, SPLATAD_MEDIAN_RANGE_TRANSMITTANCE):
-        return (f"Our binding cut-off is that same {binding_threshold}. So \"the cell is filled\" means \"SplatAD's own "
-                "renderer would consider a ray through these Gaussians stopped\".")
+        return (f"Our binding cut-off reuses that value, {binding_threshold}. The cut-off is the same, but \"the cell is filled\" "
+                "does not mean \"SplatAD's renderer would consider a ray stopped\": the occupancy of a cell is a more generous "
+                "call than a single ray's accumulation (see \"How ours differs\" below).")
     comparison_word = "stricter" if binding_value > SPLATAD_MEDIAN_RANGE_TRANSMITTANCE else "looser"
     return (f"SplatAD's rule uses {SPLATAD_MEDIAN_RANGE_TRANSMITTANCE:g}; our binding cut-off is {binding_threshold}, "
-            f"so a filled cell is {comparison_word} than SplatAD's stop rule.")
+            f"so our cut-off is {comparison_word} than SplatAD's value. The occupancy of a cell is in any case a more "
+            "generous call than a single ray's accumulation (see \"How ours differs\" below).")
 
 
 def definition_values(summary: Mapping, curve_settings: Optional[Mapping], scene_cell_counts: Mapping,
                       outcome_counts_by_arm: Mapping,
-                      curve_repeat_counts: Optional[Mapping[str, int]] = None) -> Dict[str, Any]:
+                      curve_repeat_counts: Optional[Mapping[str, int]] = None,
+                      representative_metric: Optional[str] = None) -> Dict[str, Any]:
     """Collect every placeholder value of the definitions text from the report inputs.
 
     Args:
@@ -192,6 +198,8 @@ def definition_values(summary: Mapping, curve_settings: Optional[Mapping], scene
             The worked example uses the ``stock`` entry.
         curve_repeat_counts: Optional ``{figure arm key: repeats behind the curve band}`` (manifest
             ``campaign_run_count``); defaults to the summary's run counts.
+        representative_metric: Flat metric key that picked the drawn run of each arm (manifest
+            ``representative_metric``); None prints "not available".
 
     Returns:
         Flat dict of placeholder name to value.
@@ -255,7 +263,7 @@ def definition_values(summary: Mapping, curve_settings: Optional[Mapping], scene
     # recall = hit / (hit + missed); precision = hit / (hit + false alarm).
     example_recall = example_counts["hit"] / obstacle_cell_count
     example_precision = example_counts["hit"] / filled_scored_count
-    # IoU = hit / (hit + missed + false alarm) = TP / (TP + FP + FN), as pooled_hidden_metrics (T94) computes it.
+    # IoU = hit / (hit + missed + false alarm) = TP / (TP + FP + FN), as pooled_metrics (T94) computes it.
     example_iou = example_counts["hit"] / (obstacle_cell_count + example_counts["false_alarm"])
 
     margins = provenance["margin_m_by_class"]
@@ -265,10 +273,12 @@ def definition_values(summary: Mapping, curve_settings: Optional[Mapping], scene
         "margin_tree_trunk": margins["tree_trunk"],
         "margin_rock": margins["rock"],
         "margin_bush_or_small_tree": margins["bush_or_small_tree"],
-        "max_range_m": provenance["max_range_m"],
+        "scored_range_m": provenance["scored_range_m"],
+        # Stored as a fraction (0.9999); the text quotes percent.
+        "scored_range_percent": f"{provenance['scored_range_quantile'] * PERCENT_PER_FRACTION:g}",
         # Stored in radians by the run reports; the text quotes degrees.
         "vertical_half_fov_deg": float(np.degrees(provenance["vertical_half_fov_rad"])),
-        "near_band_m": provenance["near_band_m"],
+        "representative_metric": representative_metric or NOT_AVAILABLE_TEXT,
         "repeat_count": repeat_count,
         "curve_repeat_count": curve_repeat_count,
         "threshold": thresholds[0],
@@ -335,24 +345,24 @@ def format_reference(reference: Mapping[str, str]) -> str:
             f"{reference['section']}; passages checked {reference['date_checked']}")
 
 
-# Points 1-7 of the definitions. Placeholders are str.format fields; literal subscript braces are doubled.
+# Points 1-6 of the definitions. Placeholders are str.format fields; literal subscript braces are doubled.
 _DEFINITIONS_TEMPLATE = """\
 ## Definitions
 
 Plain words first, the formula last. Every number is read from the run reports, never typed in.
 
-1. **Cells.** The scene is cut into small cubes ("cells") of edge {voxel_size:g} m. Everything below is about cells.
+1. **Cells.** The scene is cut into small cubes ("cells") of edge {voxel_size:g} m. The edge is half the median trunk width of the session's boxes (width = mean of a box's two horizontal sizes), so a typical trunk box is about two cells across, and the trunk margin below equals the cell edge. Everything below is about cells.
 2. **Ground truth, "on an obstacle" and "next to an obstacle".** People drew a box around every tree trunk, rock and bush ("obstacles"). The boxes are used only for scoring, never for training.
    - **On an obstacle (G):** a cell whose **centre** lies inside an obstacle box.
    - **The scored area around a class (N_c):** for each class (trunk, rock, bush) separately:
      1. **Margin:** m_c = half of the class's typical footprint width, i.e. the median over all of the session's boxes of that class of (length + width) / 4. Values for session {session}: trunk {margin_tree_trunk:.3f} m, rock {margin_rock:.3f} m, bush {margin_bush_or_small_tree:.3f} m.
      2. **Grow:** widen every box of the class by m_c on each of its four sides, along the box's own axes, leaving its height unchanged. A typical object's grown box is therefore about twice its own width.
      3. **Collect:** N_c = the cells whose centre lies inside a grown box.
-   - **Only space the lidar could have covered is scored:** a box counts only when its centre is within the lidar's range ({max_range_m:g} m) and vertical field of view (±{vertical_half_fov_deg:.1f}°) of at least one recorded sweep. The same range and field-of-view test is applied to every cell of N_c.
+   - **Only space the lidar could have covered is scored:** a box counts only when its centre is within {scored_range_m:g} m (the distance within which {scored_range_percent}% of the session's lidar returns lie) and the vertical field of view (±{vertical_half_fov_deg:.1f}°) of at least one recorded sweep. The same range and field-of-view test is applied to every cell of N_c.
    - **Obstacles as one group:** N = N_trunk ∪ N_rock ∪ N_bush, minus any cell whose centre lies in a box of a different, non-obstacle annotated class. Those cells count neither for nor against.
    - **Next to an obstacle:** N ∖ G, the cells in the grown area that are not inside any obstacle box.
    - **Scored:** only cells in N; everything else in the scene is ignored.
-   - **Caveat:** the boxes are rectangular and a cell counts by its centre only. So for a trunk thinner than one cell ({voxel_size:g} m), whether the trunk gets 0, 1 or 2 cells across depends on where the grid lines fall.
+   - **Caveat:** the boxes are rectangular and a cell counts by its centre only. So a trunk narrower than the typical one can get one cell across or none, depending on where the grid lines fall.
 3. **What the model contains.** A trained SplatAD model is millions of small fuzzy blobs (3D Gaussians). Each blob has an opacity from 0 (see-through) to 1 (solid).
 4. **Occupancy of a cell** is how solid the model says the cell is, from 0 (empty) to 1 (solid).
    - Each blob adds its opacity to the cell its centre lies in, and a fading share to nearby cells.
@@ -362,15 +372,16 @@ Plain words first, the formula last. Every number is read from the run reports, 
         - **Eq. 4 (§3.2):** [F_p^rgb, F_p] = Σ_i [f_i^rgb, f_i] α_i ∏_{{j=1}}^{{i−1}}(1 − α_j). Each Gaussian's own opacity α_i is multiplied by ∏_{{j<i}}(1 − α_j), the light still left in front of it (the transmittance).
         - **Eq. 5 (§3.2):** α_i = sqrt(|Σ_i^I| / |Σ_i^I + s·I|) · o_i · exp(−½ Δ_iᵀ (Σ_i^I + s·I)⁻¹ Δ_i). The Gaussian's α_i is its learned opacity o_i times its falloff at the ray, projected onto the sensor plane.
         - **§3.3:** "For each lidar point, we α-blend the Gaussians' features 𝐟_i using Eqs. 4, 5 and 6." So the lidar uses exactly these weights.
-     2. **SplatAD's own 0.5 rule, which is our definition.** SplatAD places a rendered lidar point at the median range, "the rolling shutter corrected range of the first Gaussian that satisfies ∏_{{j=1}}^{{i}}(1−α_j) < 0.5 during the α-blending in Eq. 4" (§3.3). It is used at inference: "While we use the expected range for training, the median range is used during inference as it, in contrast to the expected range, does not yield depths between Gaussians." (§3.3). In words: SplatAD says a ray has hit something once **1 − ∏(1 − α) passes 0.5**. Our occupancy is that same quantity. {threshold_rule_sentence}
+     2. **SplatAD's own 0.5 rule, whose value we reuse.** SplatAD places a rendered lidar point at the median range, "the rolling shutter corrected range of the first Gaussian that satisfies ∏_{{j=1}}^{{i}}(1−α_j) < 0.5 during the α-blending in Eq. 4" (§3.3). It is used at inference: "While we use the expected range for training, the median range is used during inference as it, in contrast to the expected range, does not yield depths between Gaussians." (§3.3). In words: SplatAD says a ray has hit something once **1 − ∏(1 − α) passes 0.5**. Our occupancy combines opacities with the same formula, but over the Gaussians of a cell instead of along one ray. {threshold_rule_sentence}
      3. **The lineage.** 3D Gaussian Splatting ({kerbl_reference}) gives the same blending, Eq. 3: C = Σ_{{i∈N}} c_i α_i ∏_{{j=1}}^{{i−1}}(1 − α_j). It states: "Point-based α-blending and NeRF-style volumetric rendering share essentially the same image formation model." (§2.3). So ∏(1 − α_j) is the transmittance T_i of volume rendering (its Eqs. 1–2).
      4. **Why 1 − ∏(1 − α), as one number per cell.** The blending weights along a ray always add up to Σ_i α_i ∏_{{j<i}}(1 − α_j) = 1 − ∏_i(1 − α_i). Proof by telescoping: with T_k = ∏_{{i≤k}}(1 − α_i) and T_0 = 1, each weight equals T_{{k−1}} − T_k, so the sum is T_0 − T_n = 1 − T_n. A unit test checks this identity. The product does not depend on the order of the Gaussians, so no particular ray direction is needed. The result is the total opacity a ray collects from these Gaussians, between 0 and 1.
-   - **How ours differs from SplatAD's α (stated here, not hidden):**
+   - **How ours differs from SplatAD's α (stated openly):**
      - SplatAD evaluates each Gaussian **projected** onto the image or lidar plane, with a small blur term s·I that matches the pixel size or beam divergence (Eq. 5). We evaluate the **3D** Gaussian at a point: α_k(x) = σ(o_k) · exp(−½ (x − μ_k)ᵀ Σ_k⁻¹ (x − μ_k)), at the cell centre, or at its own peak for the cell holding its mean (T81).
      - We combine every Gaussian touching the cell, rather than those along one beam.
-     - So occupancy is a blocking probability at one point of the cell, in the spirit of SplatAD's accumulation. It is not the fraction of the cell that is filled. Like the renderer, it assumes each Gaussian blocks light independently.
-   - **General reference, not the source of our rule.** Using 3D Gaussians to predict 3D occupancy has been done before ({gaussianformer_reference}). It adds up the Gaussians' contributions at voxel positions. Ours combines opacities with the renderer's rule above instead, so that the result stays in [0, 1] and matches SplatAD's stop rule.
-   - It is read from the blobs directly, not from a rendered image, so something hidden behind grass still counts.
+     - In a Gaussian's own cell, its peak opacity counts (T81), and the peaks of several Gaussians sit at different points of the cell. No single ray through the cell meets all of them at their peaks, so these Gaussians count for more than one ray through the cell would collect from them. "The cell is filled" is therefore a more generous call than "SplatAD's renderer would consider a ray stopped". The same rule is applied to every arm, so arm comparisons are unaffected.
+     - Occupancy is not the fraction of the cell that is filled. Like the renderer, it assumes each Gaussian blocks light independently.
+   - **General reference, not the source of our rule.** Using 3D Gaussians to predict 3D occupancy has been done before ({gaussianformer_reference}). It adds up the Gaussians' contributions at voxel positions. Ours combines opacities with the renderer's rule above instead, so that the result stays in [0, 1] and reuses SplatAD's cut-off value.
+   - It is read from the blobs directly, not from a rendered image, so something behind grass that no sensor saw still counts.
 5. **Filled, recall and precision.** Pick a cut-off t; a cell with occupancy ≥ t counts as *filled*. Let O_t be the set of filled cells.
    - **(a) What is scored and what is not.** Only the cells in N are scored: the cells **on** an obstacle (G) and the cells **next to** an obstacle (N ∖ G, the ring, {n_off} cells). "Not ground truth" here means only that ring, not the whole scene. Every other cell is ignored, even if the model fills it, so the ring is what makes false alarms countable: a filled cell far from every obstacle is never counted. Cells on another labelled class are excluded from both metrics.
    - **(b) The 2 × 2 table.** Each scored cell is either filled or empty, and either on an obstacle or next to one:
@@ -387,17 +398,12 @@ Plain words first, the formula last. Every number is read from the run reports, 
    - **(e) Worked example.** The stock arm's drawn run in {session} at t = {threshold}, with its real counts: {example_hit} hits, {example_missed} missed, {example_false_alarm} false alarms → recall {example_recall}, precision {example_precision}, IoU {example_iou}. These are one run; the tables give mean ± std over the repeats.
    - **(f) Pooled vs mean over objects.** Recall, precision and IoU are each reported in two ways. They differ only in how the objects are combined.
      - **Pooled** (T94): add up the cells of all objects first, then divide once. Pooled recall = Σ_k |O_t ∩ G_k| / Σ_k |G_k| = all hits / all obstacle cells; pooled precision = all hits / all filled scored cells. Every *cell* weighs the same, so objects with many cells (tall trunks, big bushes) dominate.
-     - **Mean over objects** (T95): score each object k on its own, inside its own grown box N_k with its own obstacle cells G_k, then take the plain average: mean recall = (1/K) Σ_k recall_k, and likewise precision and IoU. Every *object* weighs the same, however small. K counts only the objects where the ratio is defined (a non-zero denominator): an object with no filled cell in its box has no precision and is left out of the precision mean. A filled cell inside several objects' grown boxes counts as a false alarm of each of them.
+     - **Mean over objects** (T95): score each object k on its own, inside its own grown box N_k with its own obstacle cells G_k, then take the plain average: mean recall = (1/K) Σ_k recall_k, and likewise precision and IoU. Every *object* weighs the same, however small. K counts only the objects where the ratio is defined (a non-zero denominator): an object with no filled cell in its box has no precision and is left out of the precision mean. A filled cell inside several objects' grown boxes counts as a false alarm of each of them. Likewise, inside object k's grown box, a filled cell on a different obstacle (for example a bush beside the trunk) counts as a false alarm of k, because k's own cells are only those inside k's box.
      - **Example (made-up numbers, for illustration only):** {pooling_example_objects}. The per-object recalls are {pooling_example_per_object}. Pooled recall = {pooling_example_pooled}, dominated by the large trunk; mean recall = {pooling_example_mean}, where the small rock counts as much as the trunk.
      - **Reading the two together:** for recall, when objects share no cells, the pooled value is the average of the per-object recalls weighted by each object's cell count. So a mean above the pooled value means objects with few cells are recovered better, relative to their size, than objects with many cells; a mean below means the large objects carry the score.
-   - **(g) Why precision stays below 1.** "Next to an obstacle" is not "empty space". The ring also holds things nobody labelled: grass (tall in June), ground and small plants, which really are solid. It also catches the edges of a trunk's own Gaussians, because a trunk is thinner than one cell. So precision stays below 1 even for a correct model. This is a likely cause, not a tested finding.
+   - **(g) Why precision stays below 1.** "Next to an obstacle" is not "empty space". The ring also holds things nobody labelled: grass (tall in June), ground and small plants, which really are solid. It also catches the Gaussians of an obstacle that spill past its box into the neighbouring cells (cells count by their centre). So precision stays below 1 even for a correct model. This is a likely cause, not a tested finding.
    - **(h) How the threshold changes both.** Raising t moves cells from filled to empty, so recall can only fall; precision usually rises.
-6. **Hidden cells (the second part of the evaluation, read after the whole scene).** We replay every recorded lidar beam.
-   - A cell is *hidden* if no beam reached it, none passed through it, and at least one was stopped before it (by grass, for example).
-   - *H_near* keeps the hidden cells within {near_band_m:g} m of the driven path.
-   - Hidden-cell metrics are the formulas of point 5, restricted to H_near. Their figures take the same form as the whole-scene ones, and are read after them.
-   - Stock SplatAD is expected to leave hidden cells mostly empty, since no lidar or camera signal reached them. That gap is what radar is meant to close.
-7. **Statistics.** Each arm is trained {repeat_count} times. A table cell shows mean ± std over the repeats. Gap = difference of means. "sep" means the two arms' [min, max] ranges do not overlap. A gap is read only when it is larger than the spread within the arms.
+6. **Statistics.** Each arm is trained {repeat_count} times. A table cell shows mean ± std over the repeats. Gap = difference of means. "sep" means the two arms' [min, max] ranges do not overlap. A variant gap counts only when it exceeds the spread between repeats without losing precision.
 """
 
 # "How to read" text per figure, same placeholder rules as above.
@@ -407,7 +413,7 @@ _FIGURE_READING_TEMPLATES = {
 - **GT panel:** the obstacle boxes, coloured by class, for orientation.
 - **Arm panels:** green = hit (filled, on an obstacle); red = false alarm (filled, next to an obstacle); grey = missed (empty, on an obstacle); faint grey = the scored area, the ring included. Correct-empty cells are not drawn. Cut-off t = {threshold}. The terms are defined in point 5.
 - **Difference panel:** hits only radar init + loss has, hits only stock has, and hits both have.
-- One run per arm (the median repeat), so it illustrates and does not decide anything.
+- One run per arm: the median repeat of whole-scene pooled recall at the binding cut-off t = {threshold} (metric `{representative_metric}`), so it illustrates and does not decide anything.
 """,
     "threshold_curves_scene": """\
 **How to read this figure**
@@ -422,7 +428,7 @@ _FIGURE_READING_TEMPLATES = {
 
 
 def definitions_markdown(values: Mapping) -> str:
-    """Render points 1-7 of the definitions as markdown.
+    """Render points 1-6 of the definitions as markdown.
 
     Args:
         values: Output of :func:`definition_values`.

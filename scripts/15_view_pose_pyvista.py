@@ -29,10 +29,6 @@ metric: the run's scored cells from scripts/19's ``eval/gaussian_occupancy_cells
 occupancy >= the archived threshold) as voxel cubes, solid green on GT and translucent red off GT, classified by
 ``p2_cells.p2_cell_outcomes`` (the metric's own rule), with the same scored-box wireframes, classes, radius and
 camera as the P1 maps. The caption carries the report's P2 precision and recall per drawn class.
-``--p2-hidden`` (one ``--run``, with ``--hidden-class``, ``--hidden-threshold`` and ``--hidden-band near|full``, default
-near = H_near, the hidden cells within the near band of the driven path) draws
-``p2_hidden_<band>_<class>_<threshold>_<view>.png``, the picture of the hidden-voxel P2 metric from
-``p2_cells.hidden_cell_outcomes``: hits green, false alarms translucent red, misses grey, hidden scored cells faint grey.
 
 Everything is derived as scripts/13 derives it, through the same functions: the run's split record,
 session and GT, the T67 accumulation threshold, the scored region (``scored_region_cuboids``) and the
@@ -70,7 +66,8 @@ from viking_splatad.eval.detection import (
     visible_neighbourhood_mask,
     voxel_centers,
 )
-from viking_splatad.eval.p2_cells import HIDDEN_BAND_FULL, HIDDEN_BAND_NEAR, hidden_cell_outcomes, p2_cell_outcomes
+from viking_splatad.eval.p2_cells import p2_cell_outcomes
+from viking_splatad.eval.scene_metrics import threshold_key
 from viking_splatad.eval.rendered_pointcloud import (
     RenderedSweep,
     load_test_lidar_sweeps,
@@ -145,19 +142,6 @@ P2_PICTURE_STEM = "p2_occupancy"
 # whole-cloud context as in the P1 map, whose NON_HIT_PRECISION_OPACITY would make sparse false positives vanish), so the red cells
 # must read on their own, yet stay translucent so the green GT cells behind them show through.
 P2_OFF_TRUTH_OPACITY = 0.35
-# Hidden-voxel P2 picture: band choices and defaults, drawn class/group, and the file-name stem of
-# p2_hidden_<band>_<class>_<threshold>_<view>.png.
-HIDDEN_BAND_CHOICES = (HIDDEN_BAND_NEAR, HIDDEN_BAND_FULL)
-DEFAULT_HIDDEN_BAND = HIDDEN_BAND_NEAR
-# Metric-name suffix and wording per band (the near band is the headline hidden mask).
-HIDDEN_BAND_METRIC_SUFFIX = {HIDDEN_BAND_NEAR: "_Hnear", HIDDEN_BAND_FULL: "_H"}
-HIDDEN_BAND_DESCRIPTION = {HIDDEN_BAND_NEAR: "hidden within the near band of the path (H_near)", HIDDEN_BAND_FULL: "hidden, whole session (H)"}
-DEFAULT_HIDDEN_CLASS = "obstacles"
-P2_HIDDEN_PICTURE_STEM = "p2_hidden"
-# Opacities, presentation choices: misses are the fine grey layer to find (clearly visible, translucent); the hidden
-# scored context only frames them, so it must stay near-invisible like RECALL_CONTEXT_OPACITY of the P1 recall map.
-P2_HIDDEN_MISSED_OPACITY = 0.5
-P2_HIDDEN_CONTEXT_OPACITY = 0.03
 
 
 @dataclass
@@ -224,16 +208,6 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--p2", action="store_true",
                         help="with one --run: draw p2_occupancy_<view>.png, the P2 cells of scripts/19 (occupied cells green on GT, "
                              "red off GT, with the scored boxes)")
-    parser.add_argument("--p2-hidden", action="store_true",
-                        help="with one --run: draw p2_hidden_<band>_<class>_<threshold>_<view>.png, the hidden-voxel P2 cells of scripts/19 (hit green, "
-                             "false alarm translucent red, missed grey, hidden scored context faint grey)")
-    parser.add_argument("--hidden-class", default=DEFAULT_HIDDEN_CLASS,
-                        help="with --p2-hidden: class or group name drawn (default: %(default)s)")
-    parser.add_argument("--hidden-band", choices=HIDDEN_BAND_CHOICES, default=DEFAULT_HIDDEN_BAND,
-                        help="with --p2-hidden: hidden mask drawn, near = H within the near band of the driven path, full = whole H "
-                             "(default: %(default)s)")
-    parser.add_argument("--hidden-threshold", type=float, default=None,
-                        help="with --p2-hidden: occupancy threshold, one the archive evaluated (default: its binding threshold)")
     parser.add_argument("--gated", action="store_true",
                         help="use the ray-drop-gated points instead of the ungated set the metric binds to")
     parser.add_argument("--output-dir", type=Path, default=None, help="write <pooled|stem>_<map>.png here; default: interactive window")
@@ -726,7 +700,7 @@ def render_ripples(scene: RunScene, stem: str, selected_class_ids: Sequence[int]
         radius_meters: Horizontal radius around any drawn sweep's lidar position to draw.
 
     Raises:
-        ValueError: If no real or rendered return lies within the radius.
+        ValueError: If no rendered return lies within the radius.
     """
     # PyVista (VTK) is imported here so the module loads in environments without it (tests).
     import pyvista
@@ -735,7 +709,7 @@ def render_ripples(scene: RunScene, stem: str, selected_class_ids: Sequence[int]
     # Continuous light-to-dark green between the two end colours (a bare list would be read as two discrete bins).
     ripple_colormap = LinearSegmentedColormap.from_list("ripple_green", RIPPLE_COLOR_ENDS)
 
-    # Step 1: per sweep, both clouds in the map frame (T70) with each point's beam elevation from the lidar frame.
+    # Step 1: per sweep, the rendered cloud in the map frame (T70) with each point's beam elevation from the lidar frame.
     sweeps = list(scene.sweeps.values()) if stem == POOLED_STEM else [scene.sweeps[stem]]
     lidar_positions_xy = np.array([sweep.lidar_to_map[:2, 3] for sweep in sweeps])
     point_set = "gated" if use_gated or any(sweep.ungated_points is None for sweep in sweeps) else "ungated"
@@ -755,7 +729,7 @@ def render_ripples(scene: RunScene, stem: str, selected_class_ids: Sequence[int]
         map_points, elevations = np.vstack(map_parts), np.concatenate(elevation_parts)
         near = within_radius_of_any(map_points, lidar_positions_xy, radius_meters)
         panels.append((label, map_points[near], elevations[near]))
-    # Step 3: one colour scale over both panels, from the data's own elevation range.
+    # Step 3: one colour scale over every panel, from the data's own elevation range.
     all_elevations = np.concatenate([elevations for _, _, elevations in panels])
     if all_elevations.size == 0:
         raise ValueError(f"{stem}: no returns within {radius_meters:g} m of a lidar")
@@ -876,9 +850,11 @@ def p2_caption(scene: RunScene, report: Dict[str, Any], class_names: Sequence[st
     lines = [scene.run_id,
              f"P2 {settings['occupancy_estimator']}, occupied at >= {settings['occupancy_threshold']:g}, "
              f"drawn within {radius_meters:g} m of a test lidar"]
-    # Step 1: per class, precision TP / (TP + FP) and recall TP / (TP + FN) from the report's own counts.
+    # Step 1: per class, precision TP / (TP + FP) and recall TP / (TP + FN) from the report's own pooled counts at
+    # the drawn cut (schema 3 keys each P2 block by its threshold).
+    drawn_threshold_key = threshold_key(settings["occupancy_threshold"])
     for class_name in class_names:
-        metrics = report["classes"][class_name]["P2"]
+        metrics = report["classes"][class_name]["P2"][drawn_threshold_key]["pooled"]
         true_positive, false_positive, false_negative = (metrics["true_positive"], metrics["false_positive"],
                                                          metrics["false_negative"])
         lines.append(f"{class_name}: P2 precision {ratio_text(true_positive, true_positive + false_positive)}, "
@@ -938,114 +914,6 @@ def render_p2(scene: RunScene, report: Dict[str, Any], cells: Dict[str, np.ndarr
         plotter.close()
 
 
-def hidden_threshold_text(threshold: float) -> str:
-    """Threshold as used in file names: ``0.5`` -> ``0p5``.
-
-    Args:
-        threshold: Occupancy threshold.
-
-    Returns:
-        ``%g`` formatting with the decimal point replaced by ``p``.
-    """
-    return f"{threshold:g}".replace(".", "p")
-
-
-def hidden_cell_layers(cells: Dict[str, np.ndarray], class_name: str, threshold: float, lidar_positions_xy: np.ndarray,
-                       radius_meters: float, band: str = DEFAULT_HIDDEN_BAND) -> Dict[str, Any]:
-    """The hidden-metric cell sets of one class as map-frame voxel centres, plus whole-region counts.
-
-    Args:
-        cells: P2 cells archive (``centres`` plus the arrays ``hidden_cell_outcomes`` reads).
-        class_name: Class or group name.
-        threshold: Evaluated occupancy threshold.
-        lidar_positions_xy: (K, 2) map-frame test lidar positions.
-        radius_meters: Horizontal radius around any of them to keep.
-        band: Hidden mask, "near" (H_near) or "full" (H).
-
-    Returns:
-        {"context" / "hit" / "false_alarm" / "missed": (V, 3) centres within the radius, "totals": the same names ->
-        counts over the whole scored region}.
-    """
-    # Step 1: the metric's own sets; Step 2: whole-region counts, then centres cut to the radius for drawing.
-    outcomes = hidden_cell_outcomes(cells, class_name, threshold, band)
-    centres = np.asarray(cells["centres"])
-    layers: Dict[str, Any] = {"totals": {}}
-    for layer_name, cell_mask in outcomes.items():
-        layers["totals"][layer_name] = int(np.count_nonzero(cell_mask))
-        layer_centres = centres[cell_mask]
-        layers[layer_name] = layer_centres[within_radius_of_any(layer_centres, lidar_positions_xy, radius_meters)]
-    return layers
-
-
-def hidden_caption(scene: RunScene, class_name: str, threshold: float, layers: Dict[str, Any], radius_meters: float,
-                   band: str = DEFAULT_HIDDEN_BAND) -> str:
-    """Caption of the hidden picture: band, class, threshold, counts and the recall / precision they give.
-
-    Args:
-        scene: The run's scene. class_name: Class or group drawn. threshold: Occupancy cut.
-        layers: ``hidden_cell_layers`` result. radius_meters: Drawing radius.
-        band: Hidden mask drawn ("near" or "full"); named in the caption and in the metric names.
-
-    Returns:
-        Caption text, one short line per item.
-    """
-    totals = layers["totals"]
-    hit, false_alarm, missed = totals["hit"], totals["false_alarm"], totals["missed"]
-    # recall_H = hit / (hit + missed); precision_H = hit / (hit + false_alarm); "n/a" when the denominator is empty.
-    return "\n".join([
-        scene.run_id,
-        f"P2 {HIDDEN_BAND_DESCRIPTION[band]}: {class_name}, occupied at >= {threshold:g}, drawn within {radius_meters:g} m of a test lidar",
-        f"hit {hit} (green), false alarm {false_alarm} (red), missed {missed} (grey); hidden scored cells {totals['context']}",
-        f"recall{HIDDEN_BAND_METRIC_SUFFIX[band]} {ratio_text(hit, hit + missed)}, "
-        f"precision{HIDDEN_BAND_METRIC_SUFFIX[band]} {ratio_text(hit, hit + false_alarm)}"])
-
-
-def render_p2_hidden(scene: RunScene, cells: Dict[str, np.ndarray], selected_class_ids: Sequence[int], class_name: str,
-                     threshold: float, output_dir: Optional[Path], radius_meters: float, view: str = VIEW_CHOICES[0],
-                     band: str = DEFAULT_HIDDEN_BAND) -> None:
-    """Draw the hidden-voxel P2 picture of one run: hits, false alarms, misses and the hidden scored context.
-
-    Args:
-        scene: The run's scene. cells: Its cells archive. selected_class_ids: Scored class ids whose boxes are drawn.
-        class_name: Class or group name of the cells. threshold: Evaluated occupancy cut.
-        output_dir: Folder for ``p2_hidden_<band>_<class>_<threshold>_<view>.png``, or None for a window.
-        radius_meters: Horizontal radius around any test lidar. view: ``oblique`` or ``top``.
-        band: Hidden mask drawn, "near" (H_near) or "full" (H).
-
-    Raises:
-        ValueError: If the archive's grid is not the scene's GT grid.
-    """
-    # PyVista (VTK) is imported here so the module loads in environments without it (tests).
-    import pyvista
-
-    # Step 1: same grid check as render_p2.
-    if not (np.array_equal(np.asarray(cells["grid_origin"]), scene.grid_origin)
-            and float(cells["voxel_size"]) == scene.voxel_size):
-        raise ValueError("P2 cells archive grid differs from the run's GT grid")
-    lidar_positions_xy = np.array([sweep.lidar_to_map[:2, 3] for sweep in scene.sweeps.values()])
-    layers = hidden_cell_layers(cells, class_name, threshold, lidar_positions_xy, radius_meters, band)
-    plotter = pyvista.Plotter(off_screen=output_dir is not None, window_size=(PANEL_PIXELS, PANEL_PIXELS))
-    try:
-        # Step 2: faint context, translucent misses and false alarms, solid hits on top, then boxes and caption.
-        draw_voxels(plotter, pyvista, layers["context"], scene.voxel_size, GROUND_TRUTH_VOXEL_RGB, P2_HIDDEN_CONTEXT_OPACITY)
-        draw_voxels(plotter, pyvista, layers["missed"], scene.voxel_size, GROUND_TRUTH_VOXEL_RGB, P2_HIDDEN_MISSED_OPACITY)
-        draw_voxels(plotter, pyvista, layers["false_alarm"], scene.voxel_size, NON_HIT_VOXEL_RGB, P2_OFF_TRUTH_OPACITY)
-        draw_voxels(plotter, pyvista, layers["hit"], scene.voxel_size, HIT_VOXEL_RGB, SOLID_VOXEL_OPACITY)
-        draw_scored_cuboid_wireframes(plotter, pyvista, scene, selected_class_ids, lidar_positions_xy, radius_meters)
-        plotter.add_text(hidden_caption(scene, class_name, threshold, layers, radius_meters, band), font_size=8)
-        if view == "top":
-            plotter.view_xy()
-        plotter.enable_depth_peeling()
-        if output_dir is None:
-            plotter.show()
-        else:
-            output_path = output_dir / f"{P2_HIDDEN_PICTURE_STEM}_{band}_{class_name}_{hidden_threshold_text(threshold)}_{view}.png"
-            plotter.show(screenshot=str(output_path))
-            print(f"wrote {output_path}")
-    finally:
-        plotter.close()
-
-
 def main(argument_list: Optional[List[str]] = None) -> int:
     """Draw the pooled maps and every test sweep (no ``--pose``) or only the chosen poses of the given runs.
 
@@ -1053,7 +921,6 @@ def main(argument_list: Optional[List[str]] = None) -> int:
     shared by the runs; without ``--output-dir`` (windows) it draws the pooled maps only.
     With ``--ripples`` (one run) it draws the ripple view instead, with the same stems.
     With ``--p2`` (one run) it draws only the P2 picture ``p2_occupancy_<view>.png`` of scripts/19's cells.
-    With ``--p2-hidden`` (one run) it draws only ``p2_hidden_<band>_<class>_<threshold>_<view>.png``.
 
     Args:
         argument_list: CLI arguments (default: sys.argv).
@@ -1076,13 +943,6 @@ def main(argument_list: Optional[List[str]] = None) -> int:
                          or arguments.pose is not None or arguments.show_points or arguments.all_points):
         print("refused: --p2 draws one run's pooled P2 cells: give a single --run, without --rerender, --ripples, "
               "--pose, --show-points or --all-points", file=sys.stderr)
-        return 1
-    # The hidden picture is one run's pooled cells too, and excludes every other mode (including --p2).
-    if arguments.p2_hidden and (arguments.p2 or len(arguments.run_dirs) != 1 or arguments.rerender is not None
-                                or arguments.ripples or arguments.pose is not None or arguments.show_points
-                                or arguments.all_points):
-        print("refused: --p2-hidden draws one run's hidden P2 cells: give a single --run, without --p2, --rerender, "
-              "--ripples, --pose, --show-points or --all-points", file=sys.stderr)
         return 1
     # Steps 2-3 run in one guard so a missing file or key is reported as a refusal (exit 1), not a traceback.
     try:
@@ -1107,14 +967,6 @@ def main(argument_list: Optional[List[str]] = None) -> int:
         if arguments.p2:
             p2_report, p2_cells = load_p2_inputs(arguments.run_dirs[0])
             stems = [P2_PICTURE_STEM]
-        # --p2-hidden: one picture of the run's hidden-voxel cells at the chosen (or archived binding) threshold.
-        elif arguments.p2_hidden:
-            # The report is kept: the drawing step takes the hidden class's box ids from it.
-            p2_report, p2_cells = load_p2_inputs(arguments.run_dirs[0])
-            hidden_threshold = float(p2_cells["threshold"]) if arguments.hidden_threshold is None else arguments.hidden_threshold
-            # Fail before drawing on a missing key or an unevaluated threshold (KeyError / ValueError -> refusal).
-            hidden_cell_outcomes(p2_cells, arguments.hidden_class, hidden_threshold, arguments.hidden_band)
-            stems = [P2_HIDDEN_PICTURE_STEM]
         # No --pose: the pooled maps the report is computed on, plus (when writing PNGs) one picture set per test sweep.
         # Interactive windows stay pooled-only: one window per sweep would open dozens. The raw points exist per sweep only.
         elif arguments.pose is None:
@@ -1142,14 +994,6 @@ def main(argument_list: Optional[List[str]] = None) -> int:
             if arguments.p2:
                 render_p2(scenes[0], p2_report, p2_cells, list(selected_class_ids), arguments.output_dir, radius_meters,
                           arguments.view)
-                continue
-            if arguments.p2_hidden:
-                # Boxes drawn = the hidden class's own boxes (a group's member classes), so a drawn box is
-                # always one the hidden metric scores; ids come from the report scripts/19 wrote.
-                hidden_class_entry = p2_report["classes"][arguments.hidden_class]
-                hidden_class_ids = hidden_class_entry.get("class_ids") or [hidden_class_entry["class_id"]]
-                render_p2_hidden(scenes[0], p2_cells, list(hidden_class_ids), arguments.hidden_class, hidden_threshold,
-                                 arguments.output_dir, radius_meters, arguments.view, arguments.hidden_band)
                 continue
             if arguments.ripples:
                 render_ripples(scenes[0], stem, list(selected_class_ids), arguments.gated, arguments.output_dir, radius_meters)

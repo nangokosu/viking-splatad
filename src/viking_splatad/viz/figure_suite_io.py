@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-from viking_splatad.eval.p2_repeats import flatten_hidden_metrics
+from viking_splatad.eval.p2_repeats import flatten_run_metrics
 from viking_splatad.eval.run_context import file_sha256
 from viking_splatad.viz.figure_runs import median_repeat
 
@@ -28,9 +28,9 @@ REPORT_RELATIVE_PATH = Path("eval") / "gaussian_occupancy.json"
 # Per-figure statuses recorded in the manifest: drawn, skipped for a stated reason (not an error), or failed.
 STATUS_WRITTEN, STATUS_SKIPPED, STATUS_FAILED = "written", "skipped", "failed"
 # Keys of the archive that do not depend on the model (must agree across runs of a session). ``threshold`` and
-# ``p2_thresholds`` fix the cut every arm's outcomes use; ``evidence`` is the shared hidden-space labelling.
-MODEL_INDEPENDENT_KEYS = ("cell_indices", "centres", "hidden", "hidden_near", "grid_origin", "voxel_size",
-                          "threshold", "p2_thresholds", "evidence", "object_box_ids", "object_class_ids",
+# ``p2_thresholds`` fix the cut every arm's outcomes use.
+MODEL_INDEPENDENT_KEYS = ("cell_indices", "centres", "grid_origin", "voxel_size",
+                          "threshold", "p2_thresholds", "object_box_ids", "object_class_ids",
                           "object_cell_offsets", "object_cells", "object_inside")
 MODEL_INDEPENDENT_PREFIXES = ("neighbourhood_", "truth_")
 # Archive keys of the binding threshold and of the evaluated thresholds.
@@ -136,8 +136,8 @@ def choose_drawn_run(metric_by_run: Mapping[Path, Optional[float]], override: Op
 def check_runs_consistent(cells_by_run: Mapping[str, Mapping[str, np.ndarray]]) -> None:
     """Require every run's model-independent arrays to be identical to the first run's.
 
-    The figures draw several runs on one cell grid, which is valid only when the grid, hidden flags,
-    evidence labels, objects, neighbourhoods, truth masks and the binding threshold do not depend on the run.
+    The figures draw several runs on one cell grid, which is valid only when the grid, objects,
+    neighbourhoods, truth masks and the binding threshold do not depend on the run.
 
     Args:
         cells_by_run: run label -> cells archive arrays.
@@ -206,7 +206,7 @@ def representative_value(run_dir: Path, metric_key: str) -> Optional[float]:
 
     Args:
         run_dir: Run folder.
-        metric_key: Flat metric key (``flatten_hidden_metrics``).
+        metric_key: Flat metric key (``flatten_run_metrics``).
 
     Returns:
         The value (None when undefined for the run).
@@ -215,17 +215,17 @@ def representative_value(run_dir: Path, metric_key: str) -> Optional[float]:
         KeyError: When the key is not a metric of the report.
     """
     report = json.loads((run_dir / REPORT_RELATIVE_PATH).read_text())
-    return flatten_hidden_metrics(report)[metric_key]
+    return flatten_run_metrics(report)[metric_key]
 
 
 def ledger_profile_by_run(rows: Sequence[Mapping[str, str]]) -> Dict[str, str]:
     """run_id -> profile from ledger rows.
 
     Args:
-        rows: Ledger rows.
+        rows: Ledger rows (each with ``run_id`` and ``profile``).
 
     Returns:
-        Mapping.
+        run_id -> profile; a run id on several rows keeps the profile of its last row.
     """
     return {row["run_id"]: row["profile"] for row in rows}
 

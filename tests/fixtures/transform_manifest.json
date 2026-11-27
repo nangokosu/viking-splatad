@@ -70,13 +70,11 @@
     "T75",
     "T76",
     "T77",
-    "T78",
     "T79",
     "T7a",
     "T7b",
     "T7c",
     "T8",
-    "T80",
     "T81",
     "T82",
     "T83",
@@ -87,9 +85,6 @@
     "T88",
     "T89",
     "T90",
-    "T91",
-    "T92",
-    "T93",
     "T94",
     "T95",
     "T9a",
@@ -294,7 +289,7 @@
     },
     {
       "id": "T57",
-      "qualified_name": "viking_splatad.eval.hidden_geometry.gaussian_occupancy_at_centres"
+      "qualified_name": "viking_splatad.eval.voxel_occupancy.gaussian_occupancy_at_centres"
     },
     {
       "id": "T58",
@@ -377,10 +372,6 @@
       "qualified_name": "viking_splatad.radar_init.clock.clock_search_domain"
     },
     {
-      "id": "T78",
-      "qualified_name": "viking_splatad.eval.hidden_geometry.recorded_ray_evidence"
-    },
-    {
       "id": "T79",
       "qualified_name": "viking_splatad.eval.gaussian_detection.cuboid_occupied_fractions"
     },
@@ -401,12 +392,8 @@
       "qualified_name": "viking_splatad.extract.camera.decode_and_resize_image"
     },
     {
-      "id": "T80",
-      "qualified_name": "viking_splatad.eval.gaussian_detection.present_but_hidden"
-    },
-    {
       "id": "T81",
-      "qualified_name": "viking_splatad.eval.hidden_geometry.peak_alpha_voxel_occupancy"
+      "qualified_name": "viking_splatad.eval.voxel_occupancy.peak_alpha_voxel_occupancy"
     },
     {
       "id": "T82",
@@ -445,24 +432,12 @@
       "qualified_name": "viking_splatad.export.viewer_frame.rotate_directions_to_viewer"
     },
     {
-      "id": "T91",
-      "qualified_name": "viking_splatad.eval.hidden_geometry.hidden_space_mask"
-    },
-    {
-      "id": "T92",
-      "qualified_name": "viking_splatad.eval.range_margin.cross_sweep_plane_residuals"
-    },
-    {
-      "id": "T93",
-      "qualified_name": "viking_splatad.eval.session_rays.sweep_rays_in_map"
-    },
-    {
       "id": "T94",
-      "qualified_name": "viking_splatad.eval.hidden_metrics.pooled_hidden_metrics"
+      "qualified_name": "viking_splatad.eval.scene_metrics.pooled_metrics"
     },
     {
       "id": "T95",
-      "qualified_name": "viking_splatad.eval.hidden_metrics.per_object_hidden_metrics"
+      "qualified_name": "viking_splatad.eval.scene_metrics.per_object_metrics"
     },
     {
       "id": "T9a",

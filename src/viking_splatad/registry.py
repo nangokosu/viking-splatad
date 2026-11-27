@@ -39,12 +39,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         "T51", "T52", "T53", "T54", "T55",
         # P2: a run's checkpoint Gaussians in the map frame (eval/gaussian_occupancy.py).
         "T56", "T57",
-        # Evaluation-only recorded-beam evidence for matched hidden-trunk cells.
-        "T78",
-        # P2 cuboid detection over f_min and present-but-hidden cells per T78 evidence stratum
-        # (eval/gaussian_detection.py).
-        "T79", "T80",
-        # P2 peak-alpha voxel occupancy (eval/hidden_geometry.py): replaces T57's centre sample,
+        # P2 cuboid detection over f_min (eval/gaussian_detection.py).
+        "T79",
+        # P2 peak-alpha voxel occupancy (eval/voxel_occupancy.py): replaces T57's centre sample,
         # which misses SplatAD's thin Gaussians at the GT voxel size.
         "T81",
         # SuperSplat export (export/): PLY writer, principal axes -> quaternion, SH basis/fit,
@@ -90,12 +87,9 @@ PLANNED_TRANSFORM_IDS = frozenset(
         # every ~1/(1-f)-th lidar sweep is test and every sensor holds out the same instants (T71);
         # only an evenly spaced fraction of those is rendered test, the rest is guard (T72).
         "T71", "T72",
-        # Session-wide hidden space (evaluation only): the hidden-voxel label from T78 flags with a
-        # range margin (T91, eval/hidden_geometry.py), the margin measured as cross-sweep
-        # point-to-plane residuals (T92, eval/range_margin.py), one recorded sweep as map-frame rays
-        # (T93, eval/session_rays.py), and the hidden metrics pooled over voxels (T94) and averaged
-        # over objects (T95, eval/hidden_metrics.py).
-        "T91", "T92", "T93", "T94", "T95",
+        # Whole-scene voxel metrics (evaluation only, eval/scene_metrics.py): recall, precision and
+        # IoU pooled over the scored cells (T94) and averaged over objects (T95).
+        "T94", "T95",
     }
 )
 

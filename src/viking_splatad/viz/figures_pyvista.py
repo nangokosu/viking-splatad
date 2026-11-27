@@ -163,7 +163,7 @@ def scene_camera_points(centres: np.ndarray, outcomes_by_arm: Mapping[str, Mappi
 
     Args:
         centres: (V, 3) cell centres.
-        outcomes_by_arm: arm -> outcome masks (``hidden_cell_outcomes``).
+        outcomes_by_arm: arm -> outcome masks (scripts/26 ``scene_outcomes``).
         difference_sets: Difference masks (``arm_difference_sets``).
         cuboids: GT boxes drawn in the ground-truth panel.
 
@@ -403,7 +403,7 @@ def render_arm_panels(pyvista_module, centres: np.ndarray, voxel_size: float,
         pyvista_module: The imported ``pyvista``.
         centres: (V, 3) cell centres.
         voxel_size: Voxel edge (m).
-        outcomes_by_arm: arm -> {"context","hit","false_alarm","missed"} (V,) bool (``hidden_cell_outcomes``).
+        outcomes_by_arm: arm -> {"context","hit","false_alarm","missed"} (V,) bool (scripts/26 ``scene_outcomes``).
         difference_sets: {"only_first","only_second","both"} (V,) bool (``arm_difference_sets``).
         settings: Figure settings (arm order, colours, box opacity).
         window_size: (width, height) of the whole window in pixels.

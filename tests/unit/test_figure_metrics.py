@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import yaml
 
-from viking_splatad.eval.hidden_metrics import csr_from_lists, hidden_class_report, threshold_key
+from viking_splatad.eval.scene_metrics import class_metric_report, csr_from_lists, threshold_key
 from viking_splatad.viz.figure_metrics import class_ids_for_name, occupancy_samples, threshold_curves
 
 TOLERANCE = 1e-12
@@ -36,11 +36,11 @@ def mask(*indices):
 
 
 def build_cells():
-    """Synthetic cells archive: N={0..7}, G={0,1,2,5,6}, H_near={1,2,3,5,6,7}, H={1..9}."""
+    """Synthetic cells archive: N={0..7}, G={0,1,2,5,6}."""
     offsets, object_cells, object_inside = csr_from_lists(
         [np.array(entry[2]) for entry in OBJECT_TABLE], [np.array(entry[3]) for entry in OBJECT_TABLE])
     return {
-        "occupancy": np.array(OCCUPANCY_VALUES), "hidden_near": mask(1, 2, 3, 5, 6, 7), "hidden": mask(*range(1, 10)),
+        "occupancy": np.array(OCCUPANCY_VALUES),
         "centres": np.stack([np.arange(CELL_COUNT, dtype=float), np.zeros(CELL_COUNT), np.zeros(CELL_COUNT)], axis=1),
         "voxel_size": np.float64(VOXEL_EDGE_M), "gt_class_ids": np.zeros(CELL_COUNT, dtype=int),
         f"neighbourhood_{GROUP_NAME}": mask(*range(8)), f"truth_{GROUP_NAME}": mask(0, 1, 2, 5, 6),
@@ -51,26 +51,26 @@ def build_cells():
     }
 
 
-def expected_recall_precision(occupied, truth, neighbourhood, hidden, cell_set):
-    """First-principles recall and precision over ``cell_set`` (a boolean mask) restricted to the band."""
+def expected_recall_precision(occupied, truth, neighbourhood, cell_set):
+    """First-principles recall and precision over ``cell_set`` (a boolean mask) of the scored cells."""
     scored = cell_set & neighbourhood
-    true_positive = np.count_nonzero(occupied & truth & hidden & scored)
-    return (true_positive / np.count_nonzero(truth & hidden & scored),
-            true_positive / np.count_nonzero(occupied & neighbourhood & hidden & scored))
+    true_positive = np.count_nonzero(occupied & truth & scored)
+    return (true_positive / np.count_nonzero(truth & scored),
+            true_positive / np.count_nonzero(occupied & neighbourhood & scored))
 
 
 def test_threshold_curves_known_answer():
-    """Pooled and mean values at t=0.5 on H_near, from the set algebra of the synthetic archive."""
+    """Pooled and mean values at t=0.5 on the whole scene, from the set algebra of the synthetic archive."""
     cells = build_cells()
-    curves = threshold_curves(cells, GROUP_NAME, THRESHOLDS, "near", class_ids=OBSTACLE_CLASS_IDS)
+    curves = threshold_curves(cells, GROUP_NAME, THRESHOLDS, class_ids=OBSTACLE_CLASS_IDS)
     occupied = np.array(OCCUPANCY_VALUES) >= THRESHOLDS[0]
-    neighbourhood, truth, hidden = cells[f"neighbourhood_{GROUP_NAME}"], cells[f"truth_{GROUP_NAME}"], cells["hidden_near"]
-    pooled_recall, pooled_precision = expected_recall_precision(occupied, truth, neighbourhood, hidden, np.ones(CELL_COUNT, dtype=bool))
+    neighbourhood, truth = cells[f"neighbourhood_{GROUP_NAME}"], cells[f"truth_{GROUP_NAME}"]
+    pooled_recall, pooled_precision = expected_recall_precision(occupied, truth, neighbourhood, np.ones(CELL_COUNT, dtype=bool))
     assert curves["pooled_recall"][0] == pytest.approx(pooled_recall, abs=TOLERANCE)
     assert curves["pooled_precision"][0] == pytest.approx(pooled_precision, abs=TOLERANCE)
     # Per-object means over the two obstacle objects (their cell masks are the unions of the object cells).
     per_object = [expected_recall_precision(occupied, truth,
-                                            neighbourhood, hidden, mask(*entry[2])) for entry in OBJECT_TABLE[:2]]
+                                            neighbourhood, mask(*entry[2])) for entry in OBJECT_TABLE[:2]]
     # Object 10's G_k excludes the non-inside cell 3, which is outside truth anyway, so the plain masks agree.
     assert curves["mean_recall"][0] == pytest.approx(np.mean([pair[0] for pair in per_object]), abs=TOLERANCE)
     assert curves["mean_precision"][0] == pytest.approx(np.mean([pair[1] for pair in per_object]), abs=TOLERANCE)
@@ -79,25 +79,15 @@ def test_threshold_curves_known_answer():
 
 def test_threshold_curves_undefined_is_nan():
     """A threshold above every occupancy leaves no occupied cell: precision is undefined, so NaN."""
-    curves = threshold_curves(build_cells(), GROUP_NAME, [1.5], "near", class_ids=OBSTACLE_CLASS_IDS)
+    curves = threshold_curves(build_cells(), GROUP_NAME, [1.5], class_ids=OBSTACLE_CLASS_IDS)
     assert np.isnan(curves["pooled_precision"][0]) and curves["pooled_recall"][0] == 0.0
 
 
 def test_occupancy_samples_known_answer():
-    """truth = occupancy at G n H_near = {1,2,5,6}; off_truth = at (N n H_near) \\ G = {3,7}."""
-    samples = occupancy_samples(build_cells(), GROUP_NAME, "near")
-    assert samples["truth"].tolist() == [OCCUPANCY_VALUES[index] for index in (1, 2, 5, 6)]
-    assert samples["off_truth"].tolist() == [OCCUPANCY_VALUES[index] for index in (3, 7)]
-    # Band "all": G = {0,1,2,5,6}, N \ G = {3,4,7}.
-    whole = occupancy_samples(build_cells(), GROUP_NAME, "all")
-    assert whole["truth"].tolist() == [OCCUPANCY_VALUES[index] for index in (0, 1, 2, 5, 6)]
-    assert whole["off_truth"].tolist() == [OCCUPANCY_VALUES[index] for index in (3, 4, 7)]
-
-
-def test_unknown_band_rejected():
-    """A band outside near/full/all is an error."""
-    with pytest.raises(ValueError):
-        occupancy_samples(build_cells(), GROUP_NAME, "wide")
+    """truth = occupancy at G = {0,1,2,5,6}; off_truth = at N \\ G = {3,4,7}."""
+    samples = occupancy_samples(build_cells(), GROUP_NAME)
+    assert samples["truth"].tolist() == [OCCUPANCY_VALUES[index] for index in (0, 1, 2, 5, 6)]
+    assert samples["off_truth"].tolist() == [OCCUPANCY_VALUES[index] for index in (3, 4, 7)]
 
 
 def test_class_ids_for_name_reads_eval_config():
@@ -109,15 +99,14 @@ def test_class_ids_for_name_reads_eval_config():
         class_ids_for_name("not_a_class", eval_config)
 
 
-@pytest.mark.parametrize("band,hidden_key", [("near", "hidden_near"), ("full", "hidden")])
-def test_consistent_with_hidden_class_report(band, hidden_key):
-    """Curves at each p2 threshold equal what scripts/19's hidden_class_report records."""
+def test_consistent_with_class_metric_report():
+    """Curves at each p2 threshold equal what scripts/19's class_metric_report records."""
     cells = build_cells()
     class_ids = OBSTACLE_CLASS_IDS
     objects = {key: cells[key] for key in ("object_box_ids", "object_class_ids", "object_cell_offsets", "object_cells", "object_inside")}
-    report = hidden_class_report(class_ids, cells[f"neighbourhood_{GROUP_NAME}"], cells[f"truth_{GROUP_NAME}"], cells[hidden_key],
+    report = class_metric_report(class_ids, cells[f"neighbourhood_{GROUP_NAME}"], cells[f"truth_{GROUP_NAME}"],
                                  np.zeros(CELL_COUNT, dtype=bool), cells["occupancy"], THRESHOLDS, objects)
-    curves = threshold_curves(cells, GROUP_NAME, THRESHOLDS, band, class_ids=class_ids)
+    curves = threshold_curves(cells, GROUP_NAME, THRESHOLDS, class_ids=class_ids)
     for threshold_index, threshold in enumerate(THRESHOLDS):
         block = report["P2"][threshold_key(threshold)]
         assert curves["pooled_recall"][threshold_index] == pytest.approx(block["pooled"]["recall"], abs=TOLERANCE)
