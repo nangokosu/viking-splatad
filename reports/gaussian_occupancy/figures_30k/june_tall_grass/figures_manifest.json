@@ -9,7 +9,7 @@
       "drawn_run_id": "june_tall_grass-june_scene_a_radar_init_cam_30k-20261125-142309-e458f7f",
       "profile": "june_scene_a_radar_init_cam_30k",
       "repeat_metric_values": {
-        "june_tall_grass-june_scene_a_radar_init_cam_30k-20261125-142309-e458f7f": 0.16789316260664688
+        "june_tall_grass-june_scene_a_radar_init_cam_30k-20261125-142309-e458f7f": 0.32765823283676204
       }
     },
     "radar_init_loss": {
@@ -21,7 +21,7 @@
       "drawn_run_id": "june_tall_grass-june_scene_a_radar_init_loss_cam_30k-20261125-183814-7e63987",
       "profile": "june_scene_a_radar_init_loss_cam_30k",
       "repeat_metric_values": {
-        "june_tall_grass-june_scene_a_radar_init_loss_cam_30k-20261125-183814-7e63987": 0.1923777483193961
+        "june_tall_grass-june_scene_a_radar_init_loss_cam_30k-20261125-183814-7e63987": 0.38519744620477653
       }
     },
     "stock": {
@@ -33,7 +33,7 @@
       "drawn_run_id": "june_tall_grass-june_scene_a_cam_30k-20261125-141953-e458f7f",
       "profile": "june_scene_a_cam_30k",
       "repeat_metric_values": {
-        "june_tall_grass-june_scene_a_cam_30k-20261125-141953-e458f7f": 0.10643785178411849
+        "june_tall_grass-june_scene_a_cam_30k-20261125-141953-e458f7f": 0.34373768424371404
       }
     }
   },
@@ -58,14 +58,14 @@
   },
   "git": {
     "dirty": true,
-    "head_sha": "b00d6fa3e4ce3f12732c17770f1e2f0c369a436f"
+    "head_sha": "009ae26e8b41b8e2d526cb9b45ec17af43e6c9d3"
   },
   "input_sha256": {
     "data/gt/june_tall_grass/cuboids.json": "e4e1e73d112a5db16cc8e513cb24dc88d434e84672b813a500dffbde69d5e53d",
-    "runs/june_tall_grass-june_scene_a_cam_30k-20261125-141953-e458f7f/eval/gaussian_occupancy.json": "dc0d515e84e292f6bf3059b11b8eab170350369643da43eed3222f3072e0a23a",
-    "runs/june_tall_grass-june_scene_a_cam_30k-20261125-141953-e458f7f/eval/gaussian_occupancy_cells.npz": "b67a1306401f898e26524458f9412d76c78211c91694412bf02d12f7b1d3b0fc",
-    "runs/june_tall_grass-june_scene_a_radar_init_cam_30k-20261125-142309-e458f7f/eval/gaussian_occupancy_cells.npz": "024c160f6ab9bd6fce054e49746a81c6c0ff03292859bb84de33aa258e51f462",
-    "runs/june_tall_grass-june_scene_a_radar_init_loss_cam_30k-20261125-183814-7e63987/eval/gaussian_occupancy_cells.npz": "aa970649d8fff20d93c08f602ee3ea9358b1397889643efaa46d5f1c10e5ad22"
+    "runs/june_tall_grass-june_scene_a_cam_30k-20261125-141953-e458f7f/eval/gaussian_occupancy.json": "5e8a0b11d7ddaf7615b8d13018082be1a765222c781596318d9ca6a81a66b157",
+    "runs/june_tall_grass-june_scene_a_cam_30k-20261125-141953-e458f7f/eval/gaussian_occupancy_cells.npz": "e2e801e8f470d35e42383b003d5578f3f5bf722fe21f08f1e7fb916c280e9949",
+    "runs/june_tall_grass-june_scene_a_radar_init_cam_30k-20261125-142309-e458f7f/eval/gaussian_occupancy_cells.npz": "c553ae74d7bf9b0c848378a3ca93d308a2f6ab41a7b51208163bba0ed1695d19",
+    "runs/june_tall_grass-june_scene_a_radar_init_loss_cam_30k-20261125-183814-7e63987/eval/gaussian_occupancy_cells.npz": "30c7d123ec08dc32a6a1f41ef7aba408a0e8f8179b84500ce0ece7a5c8003304"
   },
   "p2_thresholds": [
     0.5,
@@ -165,7 +165,6 @@
       }
     },
     "scene_counts": {
-      "band": "all",
       "cell_counts": {
         "next_to_obstacle": 11751,
         "on_obstacle": 12687
@@ -192,7 +191,6 @@
       }
     },
     "threshold_curves_scene": {
-      "band": "all",
       "campaign_bands": {
         "radar_init": {
           "mean_precision": {
@@ -873,7 +871,7 @@
       }
     }
   },
-  "representative_metric": "obstacles/P2@0.5/recall_Hnear/mean",
+  "representative_metric": "obstacles/P2@0.5/recall/pooled",
   "schema": "occupancy-figures/1",
   "scope": "arms",
   "session": "june_tall_grass"

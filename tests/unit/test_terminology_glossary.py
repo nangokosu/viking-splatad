@@ -33,7 +33,7 @@ def synthetic_values(offset: float) -> dict:
         ``definition_values`` output.
     """
     summary = {"session": "s", "p2_thresholds": ["0.5", "0.8"], "arms": {"a": {"runs": [{}, {}]}, "b": {"runs": [{}, {}]}},
-               "provenance": {"voxel_size_m": 0.25 + offset, "near_band_m": 20.0 + offset, "max_range_m": 70.0 + offset,
+               "provenance": {"voxel_size_m": 0.25 + offset, "scored_range_m": 70.0 + offset, "scored_range_quantile": 0.9999,
                               "vertical_half_fov_rad": 0.5,
                               "margin_m_by_class": {"tree_trunk": 0.5 + offset, "rock": 0.6, "bush_or_small_tree": 0.9}}}
     return definition_values(summary, {"min": 0.1, "max": 0.9, "points": 9},
@@ -117,3 +117,11 @@ def test_values_table_equals_the_session_values():
 def test_whole_scene_gap_table_prints_sep_ovl_na():
     """The separated flag prints as sep / ovl / n/a, never as True / False / None."""
     assert [report_opening.separation_label(flag) for flag in (True, False, None)] == ["sep", "ovl", "n/a"]
+
+
+def test_glossary_has_no_hidden_cell_terms():
+    """The rendered glossary names no hidden-cell, near-band or range-margin term."""
+    rendered = glossary_markdown()
+    for forbidden in ("hidden", "Hidden", "H_near", "near band", "Range margin", "T92", "T93"):
+        assert forbidden not in rendered
+    assert not any(code_reference[1].anchor == "T92" for code_reference in CODE_REFERENCES)

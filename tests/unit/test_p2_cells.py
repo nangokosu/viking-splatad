@@ -8,15 +8,10 @@ import pytest
 from viking_splatad.eval.p2_cells import (
     IMAGE_FACTORS_MOUNT,
     IMAGE_REPO_MOUNT,
-    RASTER_VALUES_PER_RAY,
-    accumulate_recorded_evidence,
     factor_export_command,
     p1_hit_cells,
 )
 from viking_splatad.eval.rendered_pointcloud import RenderedSweep
-
-# Evidence column order of T78 (hidden_geometry.recorded_ray_evidence).
-SEEN, BLOCKED, NO_RETURN, PASSED_THROUGH = range(4)
 
 
 def yaw_pose(yaw_radians: float, translation: np.ndarray) -> np.ndarray:
@@ -54,46 +49,6 @@ def test_p1_hit_cells_refuses_sweeps_without_ungated_points():
                           real_points=np.zeros((1, 3)))
     with pytest.raises(ValueError):
         p1_hit_cells([sweep], np.zeros((1, 3), dtype=int), np.zeros(3), 1.0, (2, 2, 2))
-
-
-def write_sweep(path: Path, rays_az_el_depth: np.ndarray, did_return: np.ndarray, pose: np.ndarray) -> None:
-    """Write a minimal rendered-sweep npz holding only the recorded raster and the pose.
-
-    Args:
-        path: Output file. rays_az_el_depth: (R, 3) azimuth deg, elevation deg, depth.
-        did_return: (R,) bool. pose: (4, 4) lidar_to_map.
-    """
-    raster = np.zeros((len(rays_az_el_depth), RASTER_VALUES_PER_RAY))
-    raster[:, :3] = rays_az_el_depth
-    np.savez(path, raster_pts=raster, raster_did_return=did_return, lidar_to_map=pose)
-
-
-def test_recorded_evidence_follows_one_ray_through_a_row_of_cells(tmp_path):
-    """One forward ray returning at 5 m from a sensor at x=10 yawed by 180 deg (looking along -x):
-    the cell around the return is seen, nearer cells are passed through, farther cells are blocked,
-    and a cell off the ray is unobserved. A second sweep with a no-return beam adds no_return."""
-    voxel_size = 1.0
-    sensor_position = np.array([10.0, 0.0, 0.0])
-    pose = yaw_pose(np.pi, sensor_position)
-    return_depth = 5.0
-    # Map cells on the ray (the -x axis from the sensor) at depths 2, 5 and 8 m, and one cell 3 m off the ray.
-    depths_on_ray = np.array([2.0, return_depth, 8.0])
-    centres = np.vstack([sensor_position - np.outer(depths_on_ray, [1.0, 0.0, 0.0]),
-                         sensor_position + np.array([-return_depth, 3.0, 0.0])])
-    write_sweep(tmp_path / "0_1.npz", np.array([[0.0, 0.0, return_depth]]), np.array([True]), pose)
-    evidence = accumulate_recorded_evidence(tmp_path, ["0_1"], centres, voxel_size)
-    expected = np.zeros((4, 4), dtype=bool)
-    expected[0, PASSED_THROUGH] = True
-    expected[1, SEEN] = True
-    expected[2, BLOCKED] = True
-    assert np.array_equal(evidence, expected)
-    # A no-return beam pointing at the off-ray cell (azimuth from the cell's direction in the lidar frame).
-    off_ray_lidar = (centres[3] - sensor_position) @ pose[:3, :3]
-    azimuth_degrees = np.degrees(np.arctan2(off_ray_lidar[1], off_ray_lidar[0]))
-    write_sweep(tmp_path / "1_2.npz", np.array([[azimuth_degrees, 0.0, 1.0]]), np.array([False]), pose)
-    evidence = accumulate_recorded_evidence(tmp_path, ["0_1", "1_2"], centres, voxel_size)
-    expected[3, NO_RETURN] = True
-    assert np.array_equal(evidence, expected)
 
 
 def test_factor_export_command_mounts_repo_read_only_and_only_the_factor_folder_writable(tmp_path):

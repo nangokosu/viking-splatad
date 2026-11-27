@@ -1,7 +1,7 @@
 """The GT boxes the evaluation scores, for the ground-truth panel of the scene figure (display only).
 
 The cells archive of a run lists every scored object (``object_box_ids`` / ``object_class_ids``, one per cuboid
-that ``session_hidden_space.scored_neighbourhoods`` kept), so the boxes drawn are exactly the boxes counted. The count
+that ``scored_cells.scored_neighbourhoods`` kept), so the boxes drawn are exactly the boxes counted. The count
 per class is checked against the run report's ``scored_cuboids``.
 """
 

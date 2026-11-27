@@ -142,7 +142,7 @@ Extra June runs with camera training on (`train-lidar-only False`) need your app
 - **P1, rendered lidar** asks what a lidar at the eval poses would see.
 - **P2, Gaussian occupancy** asks what the model contains.
 
-R must beat B on at least one of them on hidden-space cells (H_near first, below), and must not lose precision on either.
+R must beat B on at least one of them over the whole scene (class `obstacles`), and must not lose precision on either.
 
 **P1, rendered lidar point cloud** (`08_render_lidar_pointcloud.py`, in the SplatAD job on Slurm). For each eval lidar pose:
 1. call `get_lidar_outputs` on the scan's rays;
@@ -170,30 +170,18 @@ R must beat B on at least one of them on hidden-space cells (H_near first, below
   - A voxel is occupied if occupancy ≥ `eval.render_accumulation_threshold`, the same value as P1. So the two grids differ only by visibility.
 - **Thresholds:** P2 is scored at `eval.p2_thresholds: [0.5, 0.8]`. 0.5 is binding. 0.8 is a strictness check (lowered from 0.9 because radar adds faint Gaussians); it can weaken a result but never replace 0.5. The 11-point sweep is retired. P1 occupied = an ungated rendered point in the cell.
 - **Scripts:**
-  - `scripts/24_build_hidden_space.py` builds the session's hidden space H once (below) into `data/gt/<session>/hidden_space.{npz,json}`. `scripts/25_hidden_label_transitions.py` is an optional diagnostic of how GT cells move from the old test-sweep labels to H; it needs a schema `/1` cells archive and its reports are not kept in the repo.
-  - `scripts/19_eval_gaussian_occupancy.py` scores one run (P1 and P2 on the same cells, restricted to H and H_near, T79 detection curve, T80 present-but-hidden) into `<run>/eval/gaussian_occupancy.{json,md}` (schema `gaussian-occupancy/2`, with `hidden_near` and `hidden` blocks) and `gaussian_occupancy_cells.npz`. The archive holds `hidden`, `hidden_near`, `gt_class_ids`, `p2_thresholds` and the per-object CSR arrays. Its pictures come from `scripts/15 --p2` and `scripts/15 --p2-hidden`.
-  - `scripts/20_summarize_gaussian_occupancy.py` (summary schema `/2`) groups a session's runs by profile and compares the arms over their repeats (descriptive: each gap beside the spread within both arms). It recomputes the hidden blocks from the archive and adds the guard and report-only tables. `scripts/21_compare_sessions.py` puts the sessions side by side with the headline class `obstacles` first.
-- **Scored cells:** only cells within the scored range and FOV of at least one recorded sweep of the session (T32; train, guard and test sweeps, not only the test sweeps). The scored range is the `hidden_space.scored_range_quantile` (0.9999) of all return ranges, because the farthest single return is a stray (`data/gt/<session>/hidden_space.json`: `max_range_m` vs `scored_range_m`). P2 also counts Gaussians in space no sensor saw (e.g. SplatAD's random init points).
+  - `scripts/24_build_scored_cells.py` builds the session's scored cells once (below) into `data/gt/<session>/scored_cells.{npz,json}`.
+  - `scripts/19_eval_gaussian_occupancy.py` scores one run (P1 and P2 on the same cells over the whole scene, T79 detection curve) into `<run>/eval/gaussian_occupancy.{json,md}` (schema `gaussian-occupancy/3`, with the `scored_cells` record) and `gaussian_occupancy_cells.npz`. The archive holds `gt_class_ids`, `p2_thresholds`, the per-entry `neighbourhood_*` and `truth_*` masks and the per-object CSR arrays. Its pictures come from `scripts/15 --p2`.
+  - `scripts/20_summarize_gaussian_occupancy.py` (summary schema `/2`) groups a session's runs by profile and compares the arms over their repeats (descriptive: each gap beside the spread within both arms). It adds the guard and report-only tables. `scripts/21_compare_sessions.py` puts the sessions side by side with the headline class `obstacles` first.
+- **Scored cells:** only cells within the scored range and FOV of at least one recorded sweep of the session (T32; train, guard and test sweeps, not only the test sweeps). The scored range is the `scored_cells.scored_range_quantile` (0.9999) of all return ranges, because the farthest single return is a stray (`data/gt/<session>/scored_cells.json`: `max_range_m` vs `scored_range_m`). P2 also counts Gaussians in space no sensor saw (e.g. SplatAD's random init points).
 - **Precision is essential here:** P2 exposes radar-invented trunks that a render could hide behind grass.
 
-**Why the lidar missed each GT cell: the hidden space H** (`scripts/24_build_hidden_space.py`, T91, T92; once per session, over ALL recorded Ouster sweeps: train, guard and test, about 2000). With a range margin m, a cell is:
-- **seen:** a return within [entry − m, exit + m] of the cell;
-- **blocked:** a return shorter than entry − m;
-- **passed:** a return beyond exit + m.
-
-**H = ¬seen ∧ blocked ∧ ¬passed.** No-return beams do not affect H. The margin m (T92, T78 `range_margin`) is the 95th percentile of cross-sweep point-to-plane residuals on near planar returns, measured from the data, keeping only residuals whose 10 plane-fit neighbours lie within half a GT voxel, 0.261 m (June 0.1065 m, May 0.0657 m: `hidden_space.json`; evaluation_caveats §6). H is stored with its input hashes in `data/gt/<session>/hidden_space.{npz,json}`.
-
-**Hidden band H_near (read second, after the whole scene):** H within `hidden_space.near_band_m` (20 m) horizontal distance of the nearest sweep origin (the driven path). User's decision at the gate, 2026-11-24: most of H lies 30 m or more from the path (distance tables from `scripts/25_hidden_label_transitions.py`, measured with the earlier unbounded margin), which is distant occlusion rather than grass next to the robot. Full H is reported beside it.
-
-The radar claim concerns H and H_near cells. B and R should agree on cells the lidar saw.
-
-**Classes and metrics** (O occupied, G GT in the neighbourhood N, H the hidden band):
+**Classes and metrics** (O occupied, G GT in the neighbourhood N):
 - Classes: `obstacles` (tree_trunk + rock + bush_or_small_tree, the objects a robot could collide with) first, then each class. In every class row, cells on another annotated class's GT count neither for nor against.
-- recall_H = |O∩G∩H|/|G∩H|; precision_H = |O∩G∩H|/|O∩N∩H|; IoU_H = |O∩G∩H|/|(O∪G)∩N∩H| (T94, pooled).
-- Per object k with grown box N_k (T95): the same ratios averaged over the objects where they are defined, with the count; an occupied cell in several N_k counts against each object.
-- Baseline: the same ratios without H.
+- recall = |O∩G|/|G|; precision = |O∩G|/|O∩N|; IoU = |O∩G|/|(O∪G)∩N| (T94, pooled over the scored cells).
+- Per object k with grown box N_k (T95): the same ratios averaged over the objects where they are defined, with the count. An occupied cell in several N_k counts against each object, and inside object k's grown box a filled cell on a different obstacle is a false alarm of k.
 
-**Picture:** `scripts/15 --p2-hidden [--hidden-band near|full] [--hidden-class obstacles] [--hidden-threshold t]` writes `eval/viz_p2/p2_hidden_<band>_<class>_<t>_<view>.png` (green = O∩G∩H, translucent red = O∩N∩H∖G, grey = G∩H missed, faint grey = H∩N); `scripts/19` launches it.
+**Picture:** `scripts/15 --p2` writes the whole-scene voxel pictures under `eval/viz_p2/`; `scripts/19` launches it.
 
 **Ground truth: files and frame** (evaluation only; never a SplatAD input, seed, seed filter or loss target, CLAUDE.md rule 6).
 - **Source labels:** `short_and_tall_grass_labels.json`. This is one file, with byte-identical copies at `data/raw/{may_short_grass,june_tall_grass}/extracted/ros2_jazzy/cuboid_labels/` (config `session.labels_json`). It holds two samples:
@@ -213,26 +201,24 @@ The radar claim concerns H and H_near cells. B and R should agree on cells the l
 
 | metric | definition | role / expectation |
 |---|---|---|
-| **Detection rate per class (T45)**, P1 and P2, on H and H_near | P1 (`scripts/13_eval_semantic_occupancy.py`, done without the hidden-space restriction): fraction of kept cuboids with ≥ n_min ungated rendered points inside, plus the curve over n; n_min per class = lower quartile (`configs/eval.yaml`) of the real test sweeps' point counts in the class's hit cuboids, same session, same poses. P2: fraction of kept cuboids whose occupied-voxel fraction is ≥ f_min, reported as a curve over f_min (no single threshold tuned on GT) | **primary**: R > B on H_near (then H) in P1 or P2; R ≈ B on seen cells |
+| **Detection rate per class (T45)**, P1 and P2 | P1 (`scripts/13_eval_semantic_occupancy.py`): fraction of kept cuboids with ≥ n_min ungated rendered points inside, plus the curve over n; n_min per class = lower quartile (`configs/eval.yaml`) of the real test sweeps' point counts in the class's hit cuboids, same session, same poses. P2: fraction of kept cuboids whose occupied-voxel fraction is ≥ f_min, reported as a curve over f_min (no single threshold tuned on GT) | **primary**: R > B in P1 or P2 |
 | **Trunk precision / false-positive trunks (T46)**, P1 and P2 | (a) fraction of rendered points (P1) or occupied voxels (P2) near a class's cuboids (each grown horizontally by the class's median half-footprint, same z span; the hill rules out one global height band) that fall inside one (P1 done in scripts/13, per scored class, with voxel IoU/P/R in the same region); (b) trunk-like vertical clusters matching no cuboid | **primary**: R ≥ B on both (radar must not invent trunks) |
-| Present but hidden | per GT cell: occupied in P2 but no rendered point in P1 (P1 recall_H should be near zero for a faithful lidar model: the evidence that lidar-only evaluation is inadequate) | explains P1 vs P2; expected larger for R (trunks behind grass Gaussians) |
 | Gated P1 metrics | as T45/T46 with SplatAD's ray-drop gate | report (sensor-faithful view) |
 | Lidar depth / Chamfer / ray-drop | SplatAD built-in, on eval lidars | report only |
 | Camera PSNR / SSIM / LPIPS | final test-view values (training-eval split = test + guard frames) as a guard; extension runs also inside the trunk-above-grass mask (§4.3) | R+cam ≈ B+cam (radar must not hurt) |
 
 **Reading the results:**
 - **Whole scene first:** class `obstacles`, June, P2 recall and precision at 0.5 over every scored cell, pooled and mean over objects side by side.
-- **Then the hidden band:** P2 recall_H_near and precision_H_near at 0.5, pooled and mean over objects side by side.
-- **Reading rule (both):** a result needs the variant gap to exceed the spread between repeats (n = 5) without losing precision. 0.8 can weaken but never replace 0.5. May is the low-grass comparison.
-- **Caveats to state:** unannotated objects lower precision; box GT caps recall; pooled values are dominated by large objects (hence the per-object mean); the radar response differs by class; bushes are porous (cells a beam passed through are excluded from H: quote the `passed_through_not_seen` counts); H_near is small, so per-object counts are low (quote `hidden_near_gt_cell_count_by_class` of both sessions); May's near band has almost no hidden trunk cells, consistent with short grass. Details: `docs/research/evaluation_caveats.md` §6–§7.
+- **Reading rule:** a result needs the variant gap to exceed the spread between repeats (n = 5) without losing precision. 0.8 can weaken but never replace 0.5. May is the low-grass comparison.
+- **Caveats to state:** unannotated objects lower precision; box GT caps recall; pooled values are dominated by large objects (hence the per-object mean); the radar response differs by class; bushes are porous, so a beam can pass through cells that hold GT. Details: `docs/research/evaluation_caveats.md` §7.
 - **R > B in P2 but not in P1:** the radar trunks exist in the model but are hidden behind grass from these poses. The claim "radar puts trunks into the reconstruction" holds. Showing them in a render needs other views: the backtrack split, or an approved raised-sensor extension (`evaluation_caveats.md` §4).
 - **R > B in P1 too:** visible gain.
 - **R > B in neither:** no gain.
 - **R precision < B in either test:** radar invents geometry.
 
 **Figures (`scripts/26_occupancy_figures.py`, viz env; the planned `09_compare_runs.py` was never written):**
-whole scene only for now (user's decision 2026-11-25; the H_near versions take the same form and come next).
-One run per arm, the arm's median repeat on P2 recall_Hnear (mean over objects, binding threshold), so the
+whole scene only (user's decisions 2026-11-25 and 2026-11-27).
+One run per arm, the arm's median repeat on the whole-scene pooled P2 recall of `obstacles` at the binding threshold (`representative_metric` in `configs/eval.yaml`), so the
 pictures illustrate and the repeat spread decides. `arms_scene_3d.png`: a GT-box panel and the hit-difference
 panel on top, the three arms' hit / false alarm / missed cells below, one shared camera, cropped to content.
 `threshold_curves_scene.png`: recall and precision for t in [0.2, 0.9] with the 5-repeat band. The per-run
@@ -274,7 +260,6 @@ defined in `reports/gaussian_occupancy/terminology.md` (written by scripts/21). 
 | T56 (done) | checkpoint Gaussians → map-frame means, covariances, opacities (P2) | a hand-made state dict: log-scales, an unnormalised quaternion and logit opacity give the exact Σ = R·diag(e^s)²·Rᵀ and sigmoid; `inv(w2m)` moves μ and rotates Σ |
 | T57 (done) | Gaussian occupancy grid (P2) | one Gaussian gives occupancy σ(o) at its centre and visits exactly its 3σ voxels; two overlapping Gaussians give 1 − (1−α₁)(1−α₂) |
 | T79 (done) | P2 cuboid detection over f_min (P2 form of T45) | a yawed synthetic cuboid with a hand-set occupied pattern gives the exact per-cuboid fractions and curve; a cuboid with no GT cell is undefined and leaves the denominator |
-| T80 (done) | present but hidden per T78 stratum | hand-made P1/P2/GT masks with known evidence give the exact counts per stratum |
 | T81 (done) | peak-alpha voxel occupancy (binding P2 estimator) | a 1 mm Gaussian off its voxel centre gives σ(o) in its own voxel and 0 elsewhere (T57: 0 everywhere); two in one voxel give 1 − (1−o₁)(1−o₂); a wide one on a centre gives the T57 tails; a far one adds nothing |
 
 ## 7. File structure
@@ -289,7 +274,7 @@ src/viking_splatad/
   dataset/schema.py  contract/splatad_contract.py (validate_radar_inputs)
   eval/rendered_pointcloud.py detection.py  +bev.py  # T67, T68, T45, T46 (scripts/13); T47
   eval/gaussian_occupancy.py                           # T56 (checkpoint -> gaussians.npz, torch, CPU)
-  eval/hidden_geometry.py gaussian_detection.py p2_cells.py p2_repeats.py run_context.py   # T57, T78, T81; T79, T80 (scripts/19, 20)
+  eval/voxel_occupancy.py scene_metrics.py scored_cells.py occupancy_settings.py gaussian_detection.py p2_cells.py p2_repeats.py run_context.py   # T57, T81; T94, T95; T79 (scripts/24, 19, 20)
 scripts/07_build_radar_seeds.py  +08_render_lidar_pointcloud.py  +09_compare_runs.py  slurm/{splatad_run.sbatch,submit_run.py}
 ```
 

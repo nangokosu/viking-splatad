@@ -1,14 +1,14 @@
-"""P2 cuboid detection and present-but-hidden counts on shared GT-grid cells.
+"""P2 cuboid detection and the occupancy-threshold sweep on shared GT-grid cells.
 
 Inputs are arrays over V scored cells: map-frame voxel centres [V,3] and
-boolean masks [V] (GT truth, P2 Gaussian occupancy, P1 ungated rendered hits),
-plus the [V,4] T78 evidence flags. Nothing here enters a parser, seed set or
-training loss; GT cuboids are used only to score (project rule 6).
+boolean masks [V] (GT truth, P2 Gaussian occupancy). Nothing here enters a
+parser, seed set or training loss; GT cuboids are used only to score
+(project rule 6).
 """
 
 import numpy as np
 
-from viking_splatad.eval.hidden_geometry import EVIDENCE_NAMES, exclusive_evidence_labels, occupied_cell_metrics
+from viking_splatad.eval.scene_metrics import pooled_metrics
 from viking_splatad.labels.cuboids import compute_cuboid_geometry, points_in_cuboid
 from viking_splatad.registry import transform
 
@@ -18,9 +18,6 @@ F_MIN_LOWER = 0.0
 F_MIN_UPPER = 1.0
 # A grid must hold both ends of [F_MIN_LOWER, F_MIN_UPPER], hence two points minimum.
 MIN_F_MIN_POINT_COUNT = 2
-# Number of T78 evidence columns (seen, blocked, no_return, passed_through);
-# the fifth EVIDENCE_NAMES entry, "unobserved", is the all-false row.
-EVIDENCE_COLUMN_COUNT = len(EVIDENCE_NAMES) - 1
 
 
 def _validated_cell_mask(mask, cell_count, name):
@@ -40,23 +37,6 @@ def _validated_cell_mask(mask, cell_count, name):
     if mask.dtype != bool or mask.shape != (cell_count,):
         raise ValueError(f"{name} must be a boolean [V] mask matching the scored cells")
     return mask
-
-
-def _validated_evidence(evidence, cell_count):
-    """Return T78 evidence flags after checking dtype and the [V,4] shape.
-
-    Args:
-        evidence: Array-like [V,4] bool flags from recorded_ray_evidence.
-        cell_count: Expected V.
-    Returns:
-        numpy.ndarray [V,4] of bool.
-    Raises:
-        ValueError: on non-bool dtype or wrong shape.
-    """
-    evidence = np.asarray(evidence)
-    if evidence.dtype != bool or evidence.shape != (cell_count, EVIDENCE_COLUMN_COUNT):
-        raise ValueError("evidence must be boolean [V,4] flags matching the scored cells")
-    return evidence
 
 
 @transform("T79", "P2 cuboid detection: per-cuboid occupied-voxel fraction and detection curve over f_min")
@@ -155,7 +135,7 @@ def f_min_grid(point_count):
     Returns:
         numpy.ndarray [point_count] of float64 thresholds.
     Raises:
-        ValueError: when point_count is not an int (bool rejected) or is below 2.
+        ValueError: when point_count is not an int (bool rejected) or is below MIN_F_MIN_POINT_COUNT.
     """
     if isinstance(point_count, bool) or not isinstance(point_count, (int, np.integer)) \
             or point_count < MIN_F_MIN_POINT_COUNT:
@@ -164,66 +144,20 @@ def f_min_grid(point_count):
     return F_MIN_LOWER + (F_MIN_UPPER - F_MIN_LOWER) * step_indices / (int(point_count) - 1)
 
 
-@transform("T80", "Present but hidden: GT cells occupied in P2 with no ungated P1 point, per T78 evidence stratum")
-def present_but_hidden(p2_occupied, p1_hit, truth, evidence):
-    """Count GT cells that the Gaussians fill but the rendered lidar never hits.
-
-    present_but_hidden = truth & p2_occupied & ~p1_hit. Each GT cell is assigned
-    one stratum by exclusive_evidence_labels (seen > blocked > no_return >
-    passed_through > unobserved), so the strata partition the GT cells and their
-    counts sum to the totals.
-
-    Args:
-        p2_occupied: [V] bool P2 Gaussian occupancy.
-        p1_hit: [V] bool, a cell holds at least one ungated rendered P1 point.
-        truth: [V] bool GT occupancy.
-        evidence: [V,4] bool T78 recorded-ray evidence flags.
-    Returns:
-        dict with "strata" (EVIDENCE_NAMES -> dict of int counts "gt_cells",
-        "p2_occupied", "p1_hit", "present_but_hidden", all restricted to GT
-        cells) and "totals" (the same four counts over every GT cell).
-    Raises:
-        ValueError: on non-bool or mismatched masks or evidence.
-    """
-    # Step 1: validate every mask against the same V.
-    truth = np.asarray(truth)
-    cell_count = truth.shape[0] if truth.ndim == 1 else -1
-    truth = _validated_cell_mask(truth, cell_count, "truth")
-    p2_occupied = _validated_cell_mask(p2_occupied, cell_count, "p2_occupied")
-    p1_hit = _validated_cell_mask(p1_hit, cell_count, "p1_hit")
-    labels = exclusive_evidence_labels(_validated_evidence(evidence, cell_count))
-    # Step 2: GT-restricted masks; hidden = filled by Gaussians, missed by P1.
-    gt_p2 = truth & p2_occupied
-    gt_p1 = truth & p1_hit
-    hidden = gt_p2 & ~p1_hit
-
-    def counts(selection):
-        """Return the four GT-cell counts inside a [V] bool selection."""
-        return {"gt_cells": int(np.count_nonzero(truth & selection)),
-                "p2_occupied": int(np.count_nonzero(gt_p2 & selection)),
-                "p1_hit": int(np.count_nonzero(gt_p1 & selection)),
-                "present_but_hidden": int(np.count_nonzero(hidden & selection))}
-
-    # Step 3: one entry per exclusive evidence stratum, then the totals.
-    strata = {name: counts(labels == label_index) for label_index, name in enumerate(EVIDENCE_NAMES)}
-    return {"strata": strata, "totals": counts(np.ones(cell_count, dtype=bool))}
-
-
-def threshold_sweep(probabilities, truth, evidence, thresholds):
+def threshold_sweep(probabilities, truth, thresholds):
     """Score P2 occupancy at several probability thresholds (floater/haze sensitivity).
 
-    occupied(t) = probabilities >= t, scored with occupied_cell_metrics. Raising t
-    shrinks the occupied set, so recall is non-increasing in t.
+    occupied(t) = probabilities >= t, scored over every cell with scene_metrics.pooled_metrics.
+    Raising t shrinks the occupied set, so recall is non-increasing in t.
 
     Args:
         probabilities: [V] T81 occupancy probabilities in [0, 1].
         truth: [V] bool GT occupancy.
-        evidence: [V,4] bool T78 evidence flags (stratifies recall).
         thresholds: [T] finite thresholds.
     Returns:
-        List of T dicts {"threshold": float, "metrics": occupied_cell_metrics output}.
+        List of T dicts {"threshold": float, "metrics": pooled_metrics output}.
     Raises:
-        ValueError: on malformed probabilities, masks, evidence or thresholds.
+        ValueError: on malformed probabilities, masks or thresholds.
     """
     # Step 1: validate probabilities and thresholds; masks share V.
     probabilities = np.asarray(probabilities, dtype=np.float64)
@@ -234,8 +168,9 @@ def threshold_sweep(probabilities, truth, evidence, thresholds):
         raise ValueError("[V] probabilities in [0, 1] and finite one-dimensional thresholds required")
     cell_count = len(probabilities)
     truth = _validated_cell_mask(truth, cell_count, "truth")
-    evidence = _validated_evidence(evidence, cell_count)
-    # Step 2: one metric set per threshold.
+    # Step 2: every cell is scored, so the neighbourhood is all True.
+    whole_scene = np.ones_like(truth, dtype=bool)
+    # Step 3: one metric set per threshold.
     return [{"threshold": float(threshold),
-             "metrics": occupied_cell_metrics(probabilities >= threshold, truth, evidence)}
+             "metrics": pooled_metrics(probabilities >= threshold, truth, whole_scene)}
             for threshold in thresholds]

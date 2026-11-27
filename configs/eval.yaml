@@ -45,47 +45,15 @@ eval:
   # Scored class names scripts/15 draws (a list of names from scored_class_ids); null = all scored
   # classes. Override per run with --classes (scripts/15) or --viz-classes (scripts/13).
   viz_classes: null
-  # Session-wide hidden space H (scripts/24_build_hidden_space.py): space no recorded lidar sweep
-  # could see, built from all sweeps with a range margin m measured from the data (cross-sweep
-  # point-to-plane residuals on static surfaces).
-  hidden_space:
-    # The margin m is this quantile of the residuals, so it covers 95% of measured static-surface
-    # residuals while the worst 5% (mismatched planes, moving points) do not inflate it.
-    margin_quantile: 0.95
-    # Sweeps between the two sweeps of a residual pair. Sweep period ~0.102 s (manifest
-    # lidar.sweep_period): 10 sweeps = ~1.02 s apart. A different viewpoint is wanted so that
-    # pose error enters the residual, not only sensor noise.
-    margin_sweep_gap: 10
-    # First sweeps of pairs are taken every this many sweeps: 100 gives ~20 pairs over ~2000
-    # sweeps, deterministic coverage of the whole drive.
-    margin_sweep_stride: 100
-    # Neighbours per plane fit: 10 is the smallest neighbourhood that gives a stable 3x3
-    # covariance (9 values from 3 unknown directions) with some redundancy.
-    margin_neighbour_count: 10
-    # Minimum planarity (l2 - l3) / l1 of the neighbourhood covariance eigenvalues for a point to
-    # count as planar; 0.5 is the usual cut in the dimensionality-features literature (Weinmann
-    # et al.), separating planes from edges and scattered returns.
-    margin_planarity_min: 0.5
-    # Only returns up to this range (m) are used: at 20 m the beam spacing at 0.35 deg azimuth
-    # (0.0061359 rad) is 20 * 0.0061359 = 0.123 m (~12 cm), so the plane fit stays local.
-    margin_max_range_m: 20.0
+  # Scored cells (scripts/24_build_scored_cells.py): the voxel cells of the class neighbourhoods
+  # that the whole-scene occupancy evaluation scores.
+  scored_cells:
     # Share of all real returns within the scored range limit, the range that decides which boxes are
     # scored (a box is scored when its centre is within this range and the FOV of some sweep). The
-    # old rule, the farthest single return, is set by strays over ~2000 sweeps: on June 99.99 % of
-    # 49.8 M returns lie within 40.2 m, 99.999 % within 86.8 m, the farthest at 201 m. 0.9999 keeps
-    # all but one return in 10^4 (diagnostic: range percentiles over all June sweeps). The per-sweep
-    # reach cull of the evidence keeps the exact farthest return, so no evidence is lost.
+    # farthest single return is set by strays over ~2000 sweeps: on June 99.99 % of 49.8 M returns
+    # lie within 40.2 m, 99.999 % within 86.8 m, the farthest at 201 m. 0.9999 keeps all but one
+    # return in 10^4 (diagnostic: range percentiles over all June sweeps).
     scored_range_quantile: 0.9999
-    # Headline hidden space H_near = H within this horizontal distance (m) of the nearest sweep origin
-    # (the driven path). User's decision at the hidden-space gate (2026-11-24): most of H lies 30 m or
-    # more from the path (scripts/25_hidden_label_transitions.py distance table, unbounded margin), where
-    # "hidden" means distant occlusion rather than grass next to the robot; the research question is
-    # about the latter. 20 m equals margin_max_range_m, the range within which the plane fits behind the
-    # range margin are local. One value for both sessions, so May and June compare like for like. Full
-    # H is reported beside it.
-    near_band_m: 20.0
-    # CPU workers; null = all CPU cores. Compute policy only, results do not depend on it.
-    worker_count: null
 
   # ---- Figure suite (src/viking_splatad/viz/figure_runs.py parses and validates this block) ----
   figures:
@@ -152,10 +120,10 @@ eval:
       class_bush_or_small_tree: [204, 121, 167]
       # Dark edges of those boxes.
       cuboid_edge: [40, 40, 40]
-    # Flat metric key (p2_repeats.flatten_hidden_metrics) that picks the run drawn per arm: the
-    # median repeat on the headline P2 recall_Hnear (mean over objects, binding threshold 0.5), so
-    # the drawn run is neither the arm's best nor its worst. The user chose 20k runs (2026-11-25).
-    representative_metric: "obstacles/P2@0.5/recall_Hnear/mean"
+    # Flat metric key (p2_repeats.flatten_run_metrics) that picks the run drawn per arm: the median
+    # repeat on the headline whole-scene pooled P2 recall at the binding threshold 0.5, so the drawn
+    # run is neither the arm's best nor its worst. The user chose 20k runs (2026-11-25).
+    representative_metric: "obstacles/P2@0.5/recall/pooled"
     # Printed under every figure of the campaign profile set (the default).
     footer_note: "One run per arm (the median repeat of its 20k arm): illustrative. Arm separation is judged on the 5-repeat spread."
     # Printed under every figure of the presentation profile set (one 30k run per arm, no repeats).

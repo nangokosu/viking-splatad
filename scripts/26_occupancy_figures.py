@@ -10,9 +10,9 @@ Everything is read-only on the runs, GT and session data.
 
 Figures:
     ``arms_scene_3d.png``         whole-scene per-arm outcome panels (hit / false alarm / missed / context) plus a
-                                  hit-difference panel; ``draw_arm_outcome_panels`` also takes the H_near band
+                                  hit-difference panel
     ``hit_difference_scene.png``  the hit-difference panel alone (only init+loss / only stock / both), camera
-                                  fitted to the difference cells so the scene fills the frame (presentation)
+                                  fitted to the difference cells so the scene fills the frame (both profile sets)
     ``threshold_curves_scene.png``  whole-scene recall and precision against the occupancy threshold (the configured curve range),
                                   with each line's repeat min/max band (not drawn when it has zero width,
                                   e.g. one run per arm)
@@ -44,10 +44,10 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import yaml
 
-from viking_splatad.eval.p2_cells import HIDDEN_BAND_NEAR, hidden_cell_outcomes, p2_cell_outcomes
+from viking_splatad.eval.p2_cells import p2_cell_outcomes
 from viking_splatad.eval.detection import load_cuboids_json
 from viking_splatad.viz.figure_grids import arm_difference_sets
-from viking_splatad.viz.figure_metrics import BAND_ALL, class_ids_for_name, occupancy_samples, threshold_curves
+from viking_splatad.viz.figure_metrics import class_ids_for_name, occupancy_samples, threshold_curves
 from viking_splatad.viz.figure_runs import FigureSettings, load_figure_settings, resolve_arm_runs
 from viking_splatad.viz.figure_suite_io import (
     PROJECT_ROOT,
@@ -96,14 +96,13 @@ OUTPUT_ROOT_BY_PROFILE_SET = {PROFILE_SET_CAMPAIGN: DEFAULT_OUTPUT_ROOT,
 GT_DIR = PROJECT_ROOT / "data" / "gt"
 CUBOIDS_FILE_NAME = "cuboids.json"
 
-# The headline class group and the hidden band of the headline figures.
+# The headline class group of the figures.
 HEADLINE_CLASS_NAME = "obstacles"
-HEADLINE_BAND = HIDDEN_BAND_NEAR
 # Arm roles of the difference panels: first = the arm whose hits are blue, second = the baseline.
 DIFFERENCE_FIRST_ARM = "radar_init_loss"
 DIFFERENCE_SECOND_ARM = "stock"
-# Display text of the bands in titles.
-BAND_TEXT = {HEADLINE_BAND: "H_near", BAND_ALL: "whole scene"}
+# Scope text of the figure titles.
+SCENE_TEXT = "whole scene"
 # Bounds of the unit interval: the default ends of ``threshold_grid``.
 UNIT_INTERVAL_MIN = 0.0
 UNIT_INTERVAL_MAX = 1.0
@@ -128,7 +127,7 @@ def threshold_grid(point_count: int, p2_thresholds: Sequence[float], minimum: fl
     The step is (maximum - minimum) / (point_count - 1); a P2 threshold t lies on the grid when
     (t - minimum) / step is an integer.
     A grid point that matches a P2 threshold (``np.isclose``) is replaced by the archived value itself, as
-    ``hidden_cell_outcomes`` does, so a curve evaluated at that point cuts occupancy at exactly the value
+    ``p2_cell_outcomes`` does, so a curve evaluated at that point cuts occupancy at exactly the value
     scripts/19 scored with (a linspace point can differ from it by one rounding step and move cells that sit
     on the cut).
 
@@ -400,7 +399,7 @@ def context_manifest(context: FigureContext, scope_label: str, figures: Mapping[
 
     Args:
         context: Shared context.
-        scope_label: "arms" or "run:<arm>".
+        scope_label: Manifest scope label (this script writes only "arms").
         figures: name -> status record.
         reported_numbers: Numbers printed in or behind the scope's figures.
 
@@ -510,7 +509,7 @@ def scene_counts(context: FigureContext) -> Dict[str, Any]:
         context: Shared context.
 
     Returns:
-        {"band": "all", "cell_counts": {"on_obstacle", "next_to_obstacle"},
+        {"cell_counts": {"on_obstacle", "next_to_obstacle"},
          "outcome_counts_by_arm": {arm: {"hit", "false_alarm", "missed", "context"}}} with int counts, from the drawn
         runs' ``scene_outcomes`` (the archived threshold equals ``context.threshold``, checked at setup).
     """
@@ -522,11 +521,11 @@ def scene_counts(context: FigureContext) -> Dict[str, Any]:
         outcome_counts_by_arm[arm] = {name: int(outcomes[name].sum())
                                       for name in ("hit", "false_alarm", "missed", "context")}
     # Step 2: model-independent cell counts (checked equal across arms).
-    return {"band": BAND_ALL, "cell_counts": whole_scene_cell_counts(context),
+    return {"cell_counts": whole_scene_cell_counts(context),
             "outcome_counts_by_arm": outcome_counts_by_arm}
 
 
-def draw_arm_outcome_panels(context: FigureContext, output_path: Path, band: str) -> Dict[str, Any]:
+def draw_arm_outcome_panels(context: FigureContext, output_path: Path) -> Dict[str, Any]:
     """Ground truth, hit difference (first = init+loss, second = stock) and one outcome panel per arm.
 
     Layout: a 2 x 3 grid on one linked camera fitted to the drawn cells and boxes; the window has the shape of
@@ -535,7 +534,6 @@ def draw_arm_outcome_panels(context: FigureContext, output_path: Path, band: str
     Args:
         context: Shared context.
         output_path: PNG path.
-        band: ``HEADLINE_BAND`` (H_near cells) or ``BAND_ALL`` (whole scene).
 
     Returns:
         Outcome cell counts per arm and the difference sets (for the manifest), plus ``gt_box_counts``
@@ -546,9 +544,8 @@ def draw_arm_outcome_panels(context: FigureContext, output_path: Path, band: str
     scored_boxes = (load_scored_boxes(context.session, context.cuboids_path, context.drawn[context.settings.arm_order[0]],
                                       context.eval_section, context.class_ids)
                     if context.cuboids_path is not None else list(context.scored_boxes))
-    # Steps 1-2: outcome sets per arm on the band, and the hit difference of the two compared arms.
-    outcomes_by_arm, difference_sets = band_outcomes_and_difference(context, band)
-    band_text = BAND_TEXT[band]
+    # Steps 1-2: outcome sets per arm, and the hit difference of the two compared arms.
+    outcomes_by_arm, difference_sets = scene_outcomes_and_difference(context)
     titles = [context.arm_label(arm) for arm in arms_in_order(context)]
     titles.append(f"hits: {context.arm_label(DIFFERENCE_FIRST_ARM)} vs {context.arm_label(DIFFERENCE_SECOND_ARM)}")
     # Step 3: window shaped like the scene's projection (cells and GT box corners the panels draw).
@@ -579,7 +576,7 @@ def draw_arm_outcome_panels(context: FigureContext, output_path: Path, band: str
     legend_entries += [(f"{class_name} ({box_count})", colours[f"{GT_CLASS_COLOUR_PREFIX}{class_name}"],
                         LEGEND_KIND_PATCH) for class_name, box_count in gt_box_counts.items()]
     figure = compose_scene_figure(
-        image, context.short_title(f"{band_text} {HEADLINE_CLASS_NAME} @ {context.threshold}"), legend_entries,
+        image, context.short_title(f"{SCENE_TEXT} {HEADLINE_CLASS_NAME} @ {context.threshold}"), legend_entries,
         context.settings, panel_count=SCENE_GRID_COLUMNS, run_note=context.run_note(),
         panel_titles=scene_panel_titles(arms_in_order(context), titles, GT_PANEL_TITLE), grid_rows=SCENE_GRID_ROWS)
     save_matplotlib_figure(figure, output_path, context.settings.dpi)
@@ -591,26 +588,24 @@ def draw_arm_outcome_panels(context: FigureContext, output_path: Path, band: str
     return counts
 
 
-def band_outcomes_and_difference(context: FigureContext, band: str
-                                 ) -> Tuple[Dict[str, Dict[str, np.ndarray]], Dict[str, np.ndarray]]:
-    """Outcome masks of every drawn arm on a band and the hit difference of the two compared arms.
+def scene_outcomes_and_difference(context: FigureContext
+                                  ) -> Tuple[Dict[str, Dict[str, np.ndarray]], Dict[str, np.ndarray]]:
+    """Whole-scene outcome masks of every drawn arm and the hit difference of the two compared arms.
 
     Records each drawn run's cells archive as an input of the calling figure.
 
     Args:
         context: Shared context.
-        band: ``HEADLINE_BAND`` (H_near cells) or ``BAND_ALL`` (whole scene).
 
     Returns:
         (arm -> outcome name -> mask, difference set name -> mask from ``arm_difference_sets``).
     """
-    # Step 1: outcome sets per arm on the band.
+    # Step 1: outcome sets per arm.
     outcomes_by_arm: Dict[str, Dict[str, np.ndarray]] = {}
     for arm in arms_in_order(context):
         context.hashes.record(context.drawn[arm].cells_path)
         cells = context.drawn[arm].cells
-        outcomes_by_arm[arm] = (scene_outcomes(cells, HEADLINE_CLASS_NAME) if band == BAND_ALL else
-                                hidden_cell_outcomes(cells, HEADLINE_CLASS_NAME, context.threshold, band))
+        outcomes_by_arm[arm] = scene_outcomes(cells, HEADLINE_CLASS_NAME)
     # Step 2: hits of the two compared arms -> only-first / only-second / both.
     difference_sets = arm_difference_sets(outcomes_by_arm[DIFFERENCE_FIRST_ARM]["hit"],
                                           outcomes_by_arm[DIFFERENCE_SECOND_ARM]["hit"])
@@ -633,7 +628,7 @@ def difference_legend_entries(context: FigureContext) -> List[Tuple[str, Sequenc
             ("both", colours["both"], LEGEND_KIND_PATCH)]
 
 
-def draw_difference_figure(context: FigureContext, output_path: Path, band: str) -> Dict[str, Any]:
+def draw_difference_figure(context: FigureContext, output_path: Path) -> Dict[str, Any]:
     """The hit-difference panel alone (first = init+loss, second = stock), zoomed to fill the frame.
 
     The camera is fitted to the difference cells only (``render_difference_panel``), so the scene fills the
@@ -644,7 +639,6 @@ def draw_difference_figure(context: FigureContext, output_path: Path, band: str)
     Args:
         context: Shared context.
         output_path: PNG path.
-        band: ``HEADLINE_BAND`` (H_near cells) or ``BAND_ALL`` (whole scene).
 
     Returns:
         Cell counts of each difference set and the crop report (for the manifest).
@@ -654,8 +648,8 @@ def draw_difference_figure(context: FigureContext, output_path: Path, band: str)
     """
     # Step 0: the compared arms exist.
     check_difference_arms(context)
-    # Step 1: the difference sets of the two compared arms on the band.
-    _, difference_sets = band_outcomes_and_difference(context, band)
+    # Step 1: the difference sets of the two compared arms.
+    _, difference_sets = scene_outcomes_and_difference(context)
     # Cube corners (not centres), as the renderer frames them: a finite aspect > 0 even for one cell or a line.
     camera_points = difference_frame_points(context.reference_cells["centres"], difference_sets, context.voxel_size)
     if camera_points.shape[0] == 0:
@@ -671,7 +665,7 @@ def draw_difference_figure(context: FigureContext, output_path: Path, band: str)
     # Step 3: title, difference legend with each set's cell count, footer and run note.
     cell_counts = {name: int(mask.sum()) for name, mask in difference_sets.items()}
     title = (f"hits: {context.arm_label(DIFFERENCE_FIRST_ARM)} vs {context.arm_label(DIFFERENCE_SECOND_ARM)}, "
-             f"{BAND_TEXT[band]} {HEADLINE_CLASS_NAME} @ {context.threshold}")
+             f"{SCENE_TEXT} {HEADLINE_CLASS_NAME} @ {context.threshold}")
     figure = compose_scene_figure(image, context.short_title(title), difference_legend_entries(context),
                                   context.settings, panel_count=SCENE_GRID_COLUMNS, run_note=context.run_note())
     save_matplotlib_figure(figure, output_path, context.settings.dpi)
@@ -711,25 +705,24 @@ def load_scored_boxes(session: str, cuboids_path: Path, reference_run: ArmRun,
                                  reference_run.cells["object_class_ids"], class_name_by_id, reported_counts)
 
 
-def curves_of_run(context: FigureContext, run: ArmRun, band: str) -> Dict[str, np.ndarray]:
-    """Threshold curves of one run on one band (always with the headline class ids).
+def curves_of_run(context: FigureContext, run: ArmRun) -> Dict[str, np.ndarray]:
+    """Whole-scene threshold curves of one run (always with the headline class ids).
 
     Args:
         context: Shared context.
         run: The run.
-        band: Band name.
 
     Returns:
         ``threshold_curves`` dict.
     """
-    return threshold_curves(run.cells, HEADLINE_CLASS_NAME, context.curve_grid, band, class_ids=context.class_ids)
+    return threshold_curves(run.cells, HEADLINE_CLASS_NAME, context.curve_grid, class_ids=context.class_ids)
 
 
 def whole_scene_cell_counts(context: FigureContext) -> Dict[str, int]:
     """Whole-scene cell counts of the headline class: the obstacle cells G and the cells next to them N \\ G.
 
     The masks come from the ground truth, not the model, so the counts are the same for every arm: they are the
-    sizes of the ``occupancy_samples`` series of band "all", the cells the threshold curves are computed on.
+    sizes of the ``occupancy_samples`` series, the cells the threshold curves are computed on.
 
     Args:
         context: Shared context.
@@ -743,7 +736,7 @@ def whole_scene_cell_counts(context: FigureContext) -> Dict[str, int]:
     # Step 1: count each arm's drawn-run samples (every G and N \ G cell; no value is filtered out).
     counts_by_arm = {}
     for arm in arms_in_order(context):
-        samples = occupancy_samples(context.drawn[arm].cells, HEADLINE_CLASS_NAME, BAND_ALL)
+        samples = occupancy_samples(context.drawn[arm].cells, HEADLINE_CLASS_NAME)
         counts_by_arm[arm] = {"on_obstacle": int(samples["truth"].size),
                               "next_to_obstacle": int(samples["off_truth"].size)}
     # Step 2: model-independent, so every arm must agree with the first.
@@ -755,8 +748,8 @@ def whole_scene_cell_counts(context: FigureContext) -> Dict[str, int]:
     return counts_by_arm[reference_arm]
 
 
-def draw_threshold_curves(context: FigureContext, output_path: Path, band: str) -> Dict[str, Any]:
-    """Threshold curves of one band: curves of the drawn run per arm, each with its min/max band over all repeats.
+def draw_threshold_curves(context: FigureContext, output_path: Path) -> Dict[str, Any]:
+    """Whole-scene threshold curves: curves of the drawn run per arm, each with its min/max band over all repeats.
 
     An arm without campaign runs (an override stands in) has its curves but no band; a zero-width band (a single
     run) is recorded in the manifest but not filled (``threshold_curves_figure``).
@@ -764,38 +757,34 @@ def draw_threshold_curves(context: FigureContext, output_path: Path, band: str) 
     Args:
         context: Shared context.
         output_path: PNG path.
-        band: ``BAND_ALL`` (whole scene) or ``HEADLINE_BAND`` (H_near).
 
     Returns:
         The numbers drawn: the grid, the repeat count per arm, each drawn curve and each band envelope
         (NaN as None).
     """
     arms = arms_in_order(context)
-    band_text = BAND_TEXT[band]
     # Step 1: the drawn run's curves, and the spread over every repeat of the arm (all campaign runs, whichever
     # was drawn).
-    drawn_curves = {arm: curves_of_run(context, context.drawn[arm], band) for arm in arms}
-    campaign_bands = {arm: campaign_envelope([curves_of_run(context, repeat, band) for repeat in context.repeats[arm]])
+    drawn_curves = {arm: curves_of_run(context, context.drawn[arm]) for arm in arms}
+    campaign_bands = {arm: campaign_envelope([curves_of_run(context, repeat) for repeat in context.repeats[arm]])
                       for arm in arms if context.repeats[arm]}
     # Step 2: the same numbers as JSON-ready lists, for the manifest.
     reported: Dict[str, Any] = {
-        "band": band, "curve_grid": json_number_list(context.curve_grid),
+        "curve_grid": json_number_list(context.curve_grid),
         "repeat_counts": {arm: len(context.repeats[arm]) for arm in arms},
         "drawn_curves": {arm: {key: json_number_list(values) for key, values in curves.items() if key != "thresholds"}
                          for arm, curves in drawn_curves.items()},
         "campaign_bands": {arm: {curve_key: {"lower": json_number_list(lower), "upper": json_number_list(upper)}
                                  for curve_key, (_, lower, upper) in envelope.items()}
-                           for arm, envelope in campaign_bands.items()}}
-    if band == BAND_ALL:
-        # The cell counts are the whole scene's, so they belong to this band only (``scene_counts`` also has them).
-        reported["cell_counts"] = whole_scene_cell_counts(context)
-    # Step 3: every repeat's archive fed a band, so all of them are inputs of this figure.
+                           for arm, envelope in campaign_bands.items()},
+        "cell_counts": whole_scene_cell_counts(context)}
+    # Step 3: every repeat's archive fed a spread band, so all of them are inputs of this figure.
     for repeats in context.repeats.values():
         for repeat in repeats:
             context.hashes.record(repeat.cells_path)
     figure = threshold_curves_figure(
         drawn_curves, context.settings, p2_thresholds=context.p2_thresholds, campaign_bands=campaign_bands,
-        title=context.short_title(f"{HEADLINE_CLASS_NAME} recall and precision vs occupancy threshold ({band_text})"),
+        title=context.short_title(f"{HEADLINE_CLASS_NAME} recall and precision vs occupancy threshold ({SCENE_TEXT})"),
         run_note=context.run_note())
     save_matplotlib_figure(figure, output_path, context.settings.dpi)
     return reported
@@ -830,11 +819,11 @@ def generate_arm_figures(context: FigureContext, output_dir: Path) -> FigureReco
 
     # Step 1: one attempt per figure; a failure is recorded and the next figure still runs.
     attempt_with_numbers("arms_scene_3d", "arms_scene_outcome_counts",
-                         lambda path: draw_arm_outcome_panels(context, path, BAND_ALL))
+                         lambda path: draw_arm_outcome_panels(context, path))
     attempt_with_numbers("hit_difference_scene", "hit_difference_scene",
-                         lambda path: draw_difference_figure(context, path, BAND_ALL))
+                         lambda path: draw_difference_figure(context, path))
     attempt_with_numbers("threshold_curves_scene", "threshold_curves_scene",
-                         lambda path: draw_threshold_curves(context, path, BAND_ALL))
+                         lambda path: draw_threshold_curves(context, path))
     # Step 2: the manifest is written whatever happened.
     write_manifest(output_dir, context_manifest(context, "arms", recorder.figures, reported))
     return recorder
@@ -886,7 +875,7 @@ def build_context(arguments: argparse.Namespace) -> FigureContext:
 
     Raises:
         ValueError: On unknown session/arm, an arm without runs or override, non-comparable runs (any
-            model-independent array, the archived threshold or the evidence labels differ), a run whose archived
+            model-independent array, the archived threshold differs), a run whose archived
             threshold differs from ``p2_thresholds[0]``, or a P2 threshold off the curve grid.
     """
     eval_section = yaml.safe_load(Path(arguments.eval_config).read_text())["eval"]

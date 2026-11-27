@@ -51,8 +51,6 @@ def tiny_cells(occupancy_values):
         "p2_thresholds": np.array([0.5, 0.8]),
         "voxel_size": np.array(VOXEL_EDGE),
         "grid_origin": np.zeros(3),
-        "hidden": np.ones(CELL_COUNT, dtype=bool),
-        "hidden_near": np.ones(CELL_COUNT, dtype=bool),
         "neighbourhood_obstacles": np.array([True, True, True, True, False, False]),
         "truth_obstacles": np.array([True, True, False, False, False, False]),
     }
@@ -248,7 +246,7 @@ def test_difference_colour_names_follow_the_arm_constants(tmp_path):
 
 
 # Cell layout of the drawing tests: object 7 has cells 0, 1, 2 (0 and 1 inside its box), object 8 has cells 0, 1, 2
-# (1 and 2 inside). Truth = cells 0 and 1, so both objects have hidden GT cells (2 and 1 on the all-hidden band).
+# (1 and 2 inside). Truth = cells 0 and 1, so both objects have GT cells (2 and 1 inside their boxes).
 OBJECT_BOX_IDS = [7, 8]
 OBLIQUE_CLASS_ID = 1
 OBJECT_CELL_OFFSETS = [0, 3, 6]
@@ -256,22 +254,17 @@ OBJECT_CELLS = [0, 1, 2, 0, 1, 2]
 OBJECT_INSIDE = [True, True, False, False, True, True]
 
 
-def cells_with_objects(occupancy_values, hidden_near_flags=None):
+def cells_with_objects(occupancy_values):
     """The tiny archive plus two headline-class objects and the arrays the figure functions read.
 
     Args:
         occupancy_values: (6,) occupancy per cell.
-        hidden_near_flags: Optional (6,) hidden flags (default: all hidden).
 
     Returns:
         dict of arrays.
     """
     cells = tiny_cells(occupancy_values)
     cells["centres"] = np.arange(CELL_COUNT)[:, None] * np.array([VOXEL_EDGE, 0.0, 0.0])
-    cells["evidence"] = np.zeros((CELL_COUNT, 4), dtype=bool)
-    if hidden_near_flags is not None:
-        cells["hidden_near"] = np.asarray(hidden_near_flags, dtype=bool)
-    cells["hidden"] = cells["hidden_near"].copy()
     cells["object_box_ids"] = np.array(OBJECT_BOX_IDS)
     cells["object_class_ids"] = np.array([OBLIQUE_CLASS_ID, OBLIQUE_CLASS_ID])
     cells["object_cell_offsets"] = np.array(OBJECT_CELL_OFFSETS)
@@ -310,7 +303,7 @@ def test_threshold_curve_cell_counts_equal_the_mask_sizes(tmp_path):
     cells = context.drawn["stock"].cells
     truth_size = int(cells["truth_obstacles"].sum())
     off_truth_size = int((cells["neighbourhood_obstacles"] & ~cells["truth_obstacles"]).sum())
-    reported = script.draw_threshold_curves(context, tmp_path / "curves.png", script.BAND_ALL)
+    reported = script.draw_threshold_curves(context, tmp_path / "curves.png")
     assert reported["cell_counts"] == {"on_obstacle": truth_size, "next_to_obstacle": off_truth_size}
     assert (truth_size, off_truth_size) == (2, 2)
     # An arm with a different ground-truth mask is refused.
@@ -325,12 +318,12 @@ def test_threshold_curve_numbers_and_title_state_the_repeat_count(tmp_path):
     occupancy = {"stock": [0.5, 0.2, 0.9, 0.1, 0.0, 0.0], "radar_init": [0.5, 0.6, 0.0, 0.0, 0.0, 0.0],
                  "radar_init_loss": [0.9, 0.9, 0.9, 0.0, 0.0, 0.0]}
     context = context_with_objects(script, tmp_path, occupancy)
-    reported = script.draw_threshold_curves(context, tmp_path / "curves.png", script.HEADLINE_BAND)
+    reported = script.draw_threshold_curves(context, tmp_path / "curves.png")
     assert reported["repeat_counts"] == {arm: 1 for arm in ARMS}
     grid = reported["curve_grid"]
     assert len(grid) == context.settings.threshold_curve_points and 0.5 in grid
     half_position = grid.index(0.5)
-    # Stock at threshold 0.5 on H_near (all hidden): occupied = cells 0 (0.5, inclusive) and 2 (0.9). Neighbourhood
+    # Stock at threshold 0.5 on the whole scene: occupied = cells 0 (0.5, inclusive) and 2 (0.9). Neighbourhood
     # cells 0-3, truth cells 0, 1: hits = 1, false alarms = 1 (cell 2), missed = 1 (cell 1), so recall = precision = 1/2.
     stock_curves = reported["drawn_curves"]["stock"]
     assert stock_curves["pooled_recall"][half_position] == pytest.approx(1 / 2)
@@ -346,7 +339,7 @@ def test_threshold_curves_without_campaign_runs_has_no_band(tmp_path):
     occupancy = {arm: [0.9, 0.9, 0.0, 0.0, 0.0, 0.0] for arm in ARMS}
     context = context_with_objects(script, tmp_path, occupancy)
     context.repeats["radar_init_loss"] = []
-    reported = script.draw_threshold_curves(context, tmp_path / "curves.png", script.BAND_ALL)
+    reported = script.draw_threshold_curves(context, tmp_path / "curves.png")
     assert reported["repeat_counts"]["radar_init_loss"] == 0
     assert "radar_init_loss" not in reported["campaign_bands"]
     assert "radar_init_loss" in reported["drawn_curves"]
@@ -385,7 +378,7 @@ def test_scene_counts_are_written_before_and_outside_every_figure(tmp_path, monk
     recorder = script.generate_arm_figures(context, output_dir)
     assert recorder.any_failed()
     counts = json.loads((output_dir / suite_io.MANIFEST_FILE_NAME).read_text())["reported_numbers"]["scene_counts"]
-    assert counts["band"] == "all" and counts["cell_counts"] == {"on_obstacle": 2, "next_to_obstacle": 2}
+    assert counts["cell_counts"] == {"on_obstacle": 2, "next_to_obstacle": 2}
     # Stock O = cells 0 (0.5, inclusive) and 2; N = cells 0-3, G = cells 0, 1: hit 1, false alarm 1 (cell 2), missed 1
     # (cell 1), context |N| = 4. Computed from the sets, not from the code under test.
     assert counts["outcome_counts_by_arm"]["stock"] == {"hit": 1, "false_alarm": 1, "missed": 1, "context": 4}

@@ -169,7 +169,7 @@ def manifest_definition_values(summary: Mapping, manifest: Mapping) -> Dict[str,
     if len(curve_repeat_counts) != len(manifest["arms"]):
         curve_repeat_counts = None
     return definition_values(summary, curve_settings, scene_counts["cell_counts"], scene_counts["outcome_counts_by_arm"],
-                             curve_repeat_counts)
+                             curve_repeat_counts, manifest.get("representative_metric"))
 
 
 def whole_scene_row_key(class_name: str, threshold_text: str, metric_name: str) -> str:
@@ -290,6 +290,7 @@ def whole_scene_opening_markdown(summary: Mapping, manifest: Mapping, figures_re
 
     Raises:
         KeyError: The summary or manifest lacks a required field.
+        ValueError: Manifest and summary disagree, or ``definition_values`` rejects the counts.
     """
     values = manifest_definition_values(summary, manifest)
     return (definitions_markdown(values) + "\n"
@@ -322,9 +323,8 @@ VALUE_TABLE_ROWS = (
     ("Margin, tree_trunk (m)", "margin_tree_trunk", ".3f"),
     ("Margin, rock (m)", "margin_rock", ".3f"),
     ("Margin, bush_or_small_tree (m)", "margin_bush_or_small_tree", ".3f"),
-    ("Scored range (m)", "max_range_m", "g"),
+    ("Scored range (m)", "scored_range_m", "g"),
     ("Vertical half field of view (degrees)", "vertical_half_fov_deg", ".1f"),
-    ("Near band (m)", "near_band_m", "g"),
     ("Cells on obstacles, whole scene", "n_on", "d"),
     ("Cells next to obstacles, whole scene", "n_off", "d"),
     ("Repeats per arm", "repeat_count", "d"),
@@ -335,13 +335,16 @@ VALUE_TABLE_ROWS = (
 )
 # Section 6: assumptions and caveats, each stated as the evaluation reports state them.
 CAVEAT_BULLETS = (
-    "**Centre-of-cell rule and thin trunks.** A cell belongs to a box by its centre only, and boxes are rectangular. A trunk "
-    "thinner than one cell therefore gets 0, 1 or 2 cells across depending on where the grid lines fall.",
+    "**Centre-of-cell rule and narrow trunks.** A cell belongs to a box by its centre only, and boxes are rectangular. A trunk "
+    "narrower than the typical one (about two cells across) can therefore get one cell across or none, depending on where the "
+    "grid lines fall.",
     "**Unlabelled grass and ground next to obstacles.** The ring of cells next to an obstacle also holds things nobody labelled "
     "(grass, ground, small plants) that really are solid, so precision stays below 1 even for a correct model. This is a likely "
     "cause of low precision, not a tested finding.",
-    "**Occupancy is a blocking probability at a point, not filled volume.** It is evaluated at the cell centre (or at a "
-    "Gaussian's peak for the cell holding its mean) and assumes each Gaussian blocks light independently.",
+    "**Occupancy is a generous reading of what one ray collects, not filled volume.** It is evaluated at the cell centre (or at a "
+    "Gaussian's peak for the cell holding its mean, and the peaks of several Gaussians sit at different points), so a filled cell is "
+    "a more generous call than \"SplatAD's renderer would stop a ray\". It assumes each Gaussian blocks light independently, "
+    "and the same rule applies to every arm.",
     "**One drawn run per arm in the 3D figure.** The 3D figure shows the median repeat of each arm. It illustrates and decides nothing; "
     "arms are separated only by the spread over all repeats.",
     "**Run-to-run noise.** SplatAD runs with the same seed differ, so every comparison needs repeats and is read as the gap against the "

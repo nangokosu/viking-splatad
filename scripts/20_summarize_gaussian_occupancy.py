@@ -1,22 +1,21 @@
-"""Compare the arms of one session over their repeats: P1 and P2 from scripts/19 (PLAN §5).
+"""Compare the arms of one session over their repeats: whole-scene P1 and P2 from scripts/19 (PLAN §5).
 
 Runs are grouped into arms by the Slurm profile they were submitted with (``runs/submitted.tsv``);
 every run of a profile is a repeat of that arm. Before anything is pooled:
 - every run must be of ``--session`` and its split must equal the committed reference record
   ``configs/reference_splits/<session>.json`` (CLAUDE.md rule 12; ``--allow-split-change`` lets a
   differing run through with a recorded reason);
-- every run's per-class P1 and P2 voxel metrics and its hidden block (T94/T95) are recomputed from its
-  cells archive and must equal its report exactly (present-but-hidden, detection and threshold-sweep
-  values are not re-checked);
-- all runs must share the same scored cells and the same hidden-space build, so the per-cell
-  consistency counts are meaningful.
+- every run's per-class P1 and P2 voxel metrics (T94 pooled, T95 per object) are recomputed from its
+  cells archive and must equal its report exactly (detection and threshold-sweep values are not
+  re-checked);
+- all runs must share the same scored cells (the same ``scored_cells`` build), so every arm is scored on
+  the same cells.
 
 Output (``reports/gaussian_occupancy/<session>/`` by default): ``gaussian_occupancy_summary.{json,md}`` with,
-per arm, n / mean / sample std / min / max of every P1, P2 and hidden-voxel metric and of the run quality
+per arm, n / mean / sample std / min / max of every P1 and P2 voxel metric and of the run quality
 (test-view image metrics, lidar render metrics), and for every arm pair the gap between means beside
-both arms' spreads, plus the GT cells recovered in every repeat of one arm and in no repeat of the
-other, per evidence stratum. Reading rule: a variant gap counts only when it exceeds the spread
-between repeats without losing precision_H. Descriptive only (eval/p2_repeats.py).
+both arms' spreads. Reading rule: a variant gap counts only when it exceeds the spread
+between repeats without losing precision. Descriptive only (eval/p2_repeats.py).
 The markdown opens with the plain-language definitions and the whole-scene section
 (``eval/report_opening.py``), which need scripts/26's ``figures_manifest.json`` of the session; without it
 the script refuses.
@@ -38,15 +37,10 @@ from viking_splatad.config import find_project_root
 from viking_splatad.dataset.reference_split import compare_with_reference
 from viking_splatad.dataset.run_split import SplitFrame
 from viking_splatad.eval.evaluation_terminology import MARGIN_CLASS_NAMES
-from viking_splatad.eval.hidden_geometry import occupied_cell_metrics
-from viking_splatad.eval.hidden_metrics import OBJECT_ARRAY_KEYS, hidden_class_report, threshold_key
-from viking_splatad.eval.p2_cells import HIDDEN_KEY, HIDDEN_NEAR_KEY
 from viking_splatad.eval.p2_repeats import (
     arm_pairs,
     compare_arms,
-    consistent_cell_counts,
     describe_arm,
-    flatten_hidden_metrics,
     flatten_quality_metrics,
     flatten_run_metrics,
 )
@@ -60,9 +54,10 @@ from viking_splatad.eval.run_quality import (
 )
 from viking_splatad.eval.report_opening import FIGURES_RELATIVE_DIR, load_figure_manifest, whole_scene_opening_markdown
 from viking_splatad.eval.run_context import file_sha256
+from viking_splatad.eval.scene_metrics import OBJECT_ARRAY_KEYS, class_metric_report, threshold_key
 
-REPORT_SCHEMA = "viking-splatad/gaussian-occupancy-summary/2"
-RUN_REPORT_SCHEMA = "viking-splatad/gaussian-occupancy/2"
+REPORT_SCHEMA = "viking-splatad/gaussian-occupancy-summary/3"
+RUN_REPORT_SCHEMA = "viking-splatad/gaussian-occupancy/3"
 RUN_REPORT_RELATIVE_PATH = Path("eval") / "gaussian_occupancy.json"
 RUN_CELLS_RELATIVE_PATH = Path("eval") / "gaussian_occupancy_cells.npz"
 SPLIT_JSON_NAME = "split.json"
@@ -76,27 +71,18 @@ SHORT_SHA_LENGTH = 7
 # Split differences quoted in a refusal; the full list comes from scripts/16_check_reference_split.py.
 QUOTED_DIFFERENCE_COUNT = 3
 # Report fields that must be identical across pooled runs: one GT, one estimator and the same grids.
-SHARED_REPORT_FIELDS = ("ground_truth", "settings", "split_membership_sha256", "hidden_space")
-# Cells-archive arrays that depend on the model; every other array (cells, GT masks, evidence) must match.
+SHARED_REPORT_FIELDS = ("ground_truth", "settings", "split_membership_sha256", "scored_cells")
+# Cells-archive arrays that depend on the model; every other array (cells, GT masks, objects) must match.
 PER_MODEL_CELL_ARRAYS = ("occupancy", "p1_hit")
 # Arm order in tables: stock first, then the radar variants as they build on each other (CLAUDE.md
 # scope); unknown methods follow. Gaps read "later arm - earlier arm" so a radar gain is positive.
 METHOD_ORDER = ("splatad", "splatad-radar-init", "splatad-radar-init-lidar")
 # Metrics of the markdown tables, in reading order (the JSON holds all of them). ``{threshold}`` is a P2
-# threshold key. 1) whole scene, read first: P2 recall, precision, IoU over the whole neighbourhood, then the
-# lidar view P1 recall, precision; 2) hidden cells, read after the whole scene: H_near (hidden within the near
-# band of the path, ``_Hnear``) P2 recall, precision, IoU, P1 recall_Hnear, then the context counts (hidden GT
-# cells, objects having one); 3) full H (``_H``): P2 recall, precision, IoU, its context counts, and P1 recall_H.
-# P1/P2 recall_blocked is retired from the tables (still in the JSON).
+# threshold key: the P2 recall, precision, IoU over the whole neighbourhood, then the lidar view P1 recall,
+# precision.
 HEADLINE_METRIC_SUFFIXES = ("P2@{threshold}/recall", "P2@{threshold}/precision", "P2@{threshold}/iou",
-                            "P1/recall", "P1/precision",
-                            "P2@{threshold}/recall_Hnear", "P2@{threshold}/precision_Hnear", "P2@{threshold}/iou_Hnear",
-                            "P1/recall_Hnear", "hidden_near/gt_cells", "hidden_near/objects_with_hidden_gt",
-                            "P2@{threshold}/recall_H", "P2@{threshold}/precision_H", "P2@{threshold}/iou_H",
-                            "hidden/gt_cells", "hidden/objects_with_hidden_gt", "P1/recall_H")
-# Context suffixes start with this segment and have no pooled / mean variants.
-CONTEXT_SEGMENT_PREFIXES = ("hidden/", "hidden_near/")
-# Variants of every other headline metric: pooled over cells, then averaged over objects.
+                            "P1/recall", "P1/precision")
+# Variants of every headline metric: pooled over cells, then averaged over objects.
 HEADLINE_VARIANTS = ("pooled", "mean")
 # Section titles of the quality tables.
 GUARD_TABLE_TITLE = "Guard: image quality (test + guard frames)"
@@ -143,15 +129,12 @@ def headline_keys(class_name: str, threshold_text: str) -> List[str]:
         threshold_text: A P2 threshold key (``threshold_key``).
 
     Returns:
-        Keys of ``flatten_hidden_metrics``: pooled then mean for each metric, the context keys once.
+        Keys of ``flatten_run_metrics``: pooled then mean for each metric.
     """
     keys: List[str] = []
     for suffix_template in HEADLINE_METRIC_SUFFIXES:
         suffix = suffix_template.format(threshold=threshold_text)
-        if suffix.startswith(CONTEXT_SEGMENT_PREFIXES):
-            keys.append(f"{class_name}/{suffix}")
-        else:
-            keys += [f"{class_name}/{suffix}/{variant}" for variant in HEADLINE_VARIANTS]
+        keys += [f"{class_name}/{suffix}/{variant}" for variant in HEADLINE_VARIANTS]
     return keys
 
 
@@ -199,7 +182,7 @@ def split_differences(run_dir: Path, record: Dict[str, Any]) -> List[str]:
 
 
 def verify_cells_reproduce_report(report: Dict[str, Any], cells: Dict[str, np.ndarray], run_dir: Path) -> None:
-    """Recompute every class's P1, P2 and hidden-block metrics from the archive; they must equal the report.
+    """Recompute every class's P1 and P2 metric blocks (T94/T95) from the archive; they must equal the report.
 
     Args:
         report: scripts/19 report.
@@ -209,27 +192,18 @@ def verify_cells_reproduce_report(report: Dict[str, Any], cells: Dict[str, np.nd
     Raises:
         ValueError: On any mismatch (stale or edited archive or report).
     """
-    occupied = cells["occupancy"] >= float(cells["threshold"])
     objects = {key: cells[key] for key in OBJECT_ARRAY_KEYS}
     p2_thresholds = [float(threshold) for threshold in cells["p2_thresholds"]]
     for class_name, class_report in report["classes"].items():
-        class_cells = cells[f"neighbourhood_{class_name}"]
-        truth, evidence = cells[f"truth_{class_name}"][class_cells], cells["evidence"][class_cells]
+        # Full-length masks: the object cell lists index all scored cells.
+        recomputed = class_metric_report(class_report["class_ids"], cells[f"neighbourhood_{class_name}"],
+                                         cells[f"truth_{class_name}"], cells["p1_hit"], cells["occupancy"],
+                                         p2_thresholds, objects)
         # JSON round trip so the recomputed dict compares with the parsed report value for value.
-        for test_name, mask in (("P1", cells["p1_hit"]), ("P2", occupied)):
-            recomputed = json.loads(json.dumps(occupied_cell_metrics(mask[class_cells], truth, evidence)))
-            if recomputed != class_report[test_name]:
+        recomputed = json.loads(json.dumps(recomputed))
+        for test_name in ("P1", "P2"):
+            if recomputed[test_name] != class_report[test_name]:
                 raise ValueError(f"{run_dir}: {class_name} {test_name} metrics do not recompute from the cells archive")
-        # The hidden block uses the full-length masks (hidden flags and object lists index all scored cells).
-        # Both bands: H_near (read second, after the whole scene) and full H, each from its own archive mask.
-        for hidden_key in (HIDDEN_NEAR_KEY, HIDDEN_KEY):
-            if hidden_key not in cells or hidden_key not in class_report:
-                raise ValueError(f"{run_dir}: no '{hidden_key}' in the cells archive or report (scored before the near band; rerun scripts/19)")
-            recomputed_hidden = json.loads(json.dumps(hidden_class_report(
-                class_report["class_ids"], class_cells, cells[f"truth_{class_name}"], cells[hidden_key], cells["p1_hit"],
-                cells["occupancy"], p2_thresholds, objects)))
-            if recomputed_hidden != class_report[hidden_key]:
-                raise ValueError(f"{run_dir}: {class_name} {hidden_key} metrics do not recompute from the cells archive")
 
 
 def load_scored_run(run_dir: Path, session: str, record: Optional[Dict[str, Any]],
@@ -275,9 +249,9 @@ def load_scored_run(run_dir: Path, session: str, record: Optional[Dict[str, Any]
     with np.load(cells_path, allow_pickle=False) as archive:
         cells = {key: archive[key] for key in archive.files}
     verify_cells_reproduce_report(report, cells, run_dir)
-    # Step 3: every scalar metric of the run: P1/P2, hidden block, and the run's own image/lidar quality.
+    # Step 3: every scalar metric of the run: P1/P2 and the run's own image/lidar quality.
     quality = run_quality(run_dir)
-    metrics = {**flatten_run_metrics(report), **flatten_hidden_metrics(report), **flatten_quality_metrics(quality)}
+    metrics = {**flatten_run_metrics(report), **flatten_quality_metrics(quality)}
     return {"run_dir": run_dir, "report": report, "cells": cells, "metrics": metrics, "image_step": quality[IMAGE_RESULT_KEY][STEP_KEY], "split_note": split_note}
 
 
@@ -303,21 +277,21 @@ def run_provenance(report: Dict[str, Any]) -> Dict[str, Any]:
         report: scripts/19 run report.
 
     Returns:
-        {"voxel_size_m", "near_band_m", "max_range_m", "vertical_half_fov_rad", "margin_m_by_class"}.
+        {"voxel_size_m", "scored_range_m", "scored_range_quantile", "vertical_half_fov_rad", "margin_m_by_class"}.
 
     Raises:
         KeyError: The report lacks a field (rerun scripts/19).
     """
     return {"voxel_size_m": report["ground_truth"]["voxel_size_m"],
-            "near_band_m": report["hidden_space"]["near_band_m"],
-            "max_range_m": report["settings"]["max_range_m"],
+            "scored_range_m": report["settings"]["scored_range_m"],
+            "scored_range_quantile": report["settings"]["scored_range_quantile"],
             "vertical_half_fov_rad": report["settings"]["vertical_half_fov_rad"],
             "margin_m_by_class": {class_name: report["classes"][class_name]["margin_m"]
                                   for class_name in MARGIN_CLASS_NAMES}}
 
 
 def summarize(scored_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Per-arm descriptions, pairwise comparisons and consistent-cell counts.
+    """Per-arm descriptions and pairwise comparisons.
 
     Args:
         scored_runs: ``load_scored_run`` outputs of one session.
@@ -336,8 +310,8 @@ def summarize(scored_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
         if len({run["report"]["train_method"] for run in runs}) != 1:
             raise ValueError(f"profile {profile} mixes training methods")
     arm_names = sorted(arms, key=lambda profile: arm_sort_key(profile, arms[profile]))
-    # Step 2: one scoring domain. Each run once; same GT, estimator, grids and split; same cells, GT
-    # masks and recorded evidence (these depend only on the split's test sweeps and the GT).
+    # Step 2: one scoring domain. Each run once; same GT, estimator, grids and split; same cells and GT
+    # masks (these depend only on the scored-cells build of scripts/24, the GT and the settings).
     run_ids = [run["report"]["run_id"] for run in scored_runs]
     if len(set(run_ids)) != len(run_ids):
         raise ValueError(f"a run is listed twice: {sorted({run_id for run_id in run_ids if run_ids.count(run_id) > 1})}")
@@ -352,12 +326,12 @@ def summarize(scored_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
             if array_name not in scored_run["cells"] or array_name not in reference_cells or not np.array_equal(
                     scored_run["cells"][array_name], reference_cells[array_name]):
                 raise ValueError(f"{scored_run['run_dir']}: cells archive {array_name!r} differs from {reference_run['run_dir']}")
-    # The range margin is not inside SHARED_REPORT_FIELDS (it sits in each class entry), so check it here:
+    # The class margins are not inside SHARED_REPORT_FIELDS (they sit in each class entry), so check them here:
     # the definitions text quotes one margin per class for the whole summary.
     provenance = run_provenance(reference_run["report"])
     for scored_run in scored_runs[1:]:
         if run_provenance(scored_run["report"]) != provenance:
-            raise ValueError(f"{scored_run['run_dir']}: provenance (cell edge, band, range, field of view or class "
+            raise ValueError(f"{scored_run['run_dir']}: provenance (cell edge, range, field of view or class "
                              f"margins) differs from {reference_run['run_dir']} (rerun scripts/19)")
     descriptions = {name: describe_arm([run["metrics"] for run in arms[name]]) for name in arm_names}
     class_names = report_class_order(scored_runs[0]["report"]["classes"])
@@ -365,17 +339,8 @@ def summarize(scored_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     # Step 3: every pair, later arm first so "gap" = later - earlier (radar minus stock reads positive for a gain).
     comparisons = []
     for earlier_arm, later_arm in arm_pairs(arm_names):
-        consistent = {}
-        for class_name in class_names:
-            class_cells = reference_cells[f"neighbourhood_{class_name}"]
-            occupied_by_arm = {name: [(run["cells"]["occupancy"] >= float(run["cells"]["threshold"]))[class_cells]
-                                      for run in arms[name]] for name in (later_arm, earlier_arm)}
-            consistent[class_name] = consistent_cell_counts(
-                occupied_by_arm[later_arm], occupied_by_arm[earlier_arm],
-                reference_cells[f"truth_{class_name}"][class_cells], reference_cells["evidence"][class_cells])
         comparisons.append({"first": later_arm, "second": earlier_arm,
-                            "metrics": compare_arms(descriptions[later_arm], descriptions[earlier_arm]),
-                            "consistent_gt_cells": consistent})
+                            "metrics": compare_arms(descriptions[later_arm], descriptions[earlier_arm])})
     return {
         "schema": REPORT_SCHEMA,
         "session": scored_runs[0]["report"]["session"],
@@ -390,7 +355,7 @@ def summarize(scored_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
                         "metrics": descriptions[name]} for name in arm_names},
         "comparisons": comparisons,
         "settings": scored_runs[0]["report"]["settings"],
-        # Additive (schema stays /2): the values the report's definitions quote.
+        # The values the report's definitions quote.
         "provenance": provenance,
     }
 
@@ -472,7 +437,7 @@ def summary_markdown(summary: Dict[str, Any]) -> str:
     class_names, threshold_texts = summary["class_names"], summary["p2_thresholds"]
     lines = [f"# P1/P2 over repeats: {summary['session']}", "",
              "Descriptive only: a variant gap counts only when it exceeds the spread between repeats without "
-             "losing precision_H. Repeats share one seed, so they are not paired. Cells are mean ± sample std (n = repeats).", ""]
+             "losing precision. Repeats share one seed, so they are not paired. Cells are mean ± sample std (n = repeats).", ""]
     # Step 1: runs per arm with their code and split status.
     for name in arm_names:
         arm = summary["arms"][name]
@@ -491,8 +456,6 @@ def summary_markdown(summary: Dict[str, Any]) -> str:
             for threshold_text in threshold_texts:
                 lines += [f"#### {class_name}, P2 >= {threshold_text}", ""]
                 lines += comparison_table_lines(comparison, headline_keys(class_name, threshold_text)) + [""]
-        lines += ["GT cells occupied in every repeat of one arm and none of the other: "
-                  + json.dumps(comparison["consistent_gt_cells"], sort_keys=True), ""]
     # Step 4: run quality, guard first, then the report-only lidar render metrics.
     lines += [f"## {GUARD_TABLE_TITLE}", ""]
     lines += arm_table_lines(summary, quality_keys(IMAGE_RESULT_KEY, IMAGE_METRIC_NAMES), len(QUALITY_KEY_PREFIX) + 1)

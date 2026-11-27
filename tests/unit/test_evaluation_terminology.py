@@ -10,15 +10,18 @@ from viking_splatad.eval import evaluation_terminology as terminology
 
 # Synthetic inputs; the expected strings are derived in the tests from these same numbers.
 HALF_FOV_DEGREES = 15.0
+# A farthest-single-return value that differs from the scored range; the text must never print it.
+FARTHEST_RETURN_M = 91.5
 SYNTHETIC_SUMMARY = {
     "session": "synthetic_session",
     "p2_thresholds": ["0.5", "0.8"],
     "arms": {"arm_a": {"runs": [{}, {}, {}]}, "arm_b": {"runs": [{}, {}, {}]}},
     "provenance": {
         "voxel_size_m": 0.25,
-        "near_band_m": 12.0,
-        "max_range_m": 70.0,
+        "scored_range_m": 70.0,
+        "scored_range_quantile": 0.9999,
         "vertical_half_fov_rad": float(np.radians(HALF_FOV_DEGREES)),
+        "max_range_m": FARTHEST_RETURN_M,
         "margin_m_by_class": {"tree_trunk": 0.123, "rock": 0.234, "bush_or_small_tree": 0.345},
     },
 }
@@ -68,12 +71,12 @@ def test_definitions_fill_every_placeholder():
                   "does not yield depths between Gaussians.",
                   "Point-based α-blending and NeRF-style volumetric rendering share essentially the same image formation model."):
         assert quote in text
-    for expected in ("0.25 m", "0.123 m", "0.234 m", "0.345 m", "70 m", "±15.0°", "12 m",
+    for expected in ("0.25 m", "0.123 m", "0.234 m", "0.345 m", "70 m (the distance within which 99.99% of the session's lidar returns lie)", "±15.0°",
                      "trained 3 times", "arXiv:2411.16816", "arXiv:2308.04079", "arXiv:2405.17429",
                      terminology.REFERENCE_CHECK_DATE, "telescoping"):
         assert expected in text
-    # Points 1-7 all present, in order.
-    point_positions = [text.index(f"\n{point_number}. **") for point_number in range(1, 8)]
+    # Points 1-6 all present, in order.
+    point_positions = [text.index(f"\n{point_number}. **") for point_number in range(1, 7)]
     assert point_positions == sorted(point_positions)
 
 
@@ -110,15 +113,16 @@ def test_unequal_repeat_counts_give_a_text_not_an_error():
 def test_threshold_sentence_follows_the_binding_cut_off():
     """Equal to SplatAD's 0.5: the same-cut-off wording; otherwise both values and stricter or looser."""
     equal_text = terminology.definitions_markdown(build_values())
-    assert "binding cut-off is that same 0.5" in equal_text
+    assert "binding cut-off reuses that value, 0.5" in equal_text
+    assert "does not mean \"SplatAD's renderer would consider a ray stopped\"" in equal_text
     for cut_off, comparison_word in (("0.8", "stricter"), ("0.3", "looser")):
         changed_summary = copy.deepcopy(SYNTHETIC_SUMMARY)
         changed_summary["p2_thresholds"] = [cut_off, "0.9"]
         text = terminology.definitions_markdown(
             terminology.definition_values(changed_summary, SYNTHETIC_CURVE, SYNTHETIC_CELLS, SYNTHETIC_OUTCOMES))
-        assert "binding cut-off is that same" not in text
+        assert "binding cut-off reuses that value" not in text
         assert (f"SplatAD's rule uses {terminology.SPLATAD_MEDIAN_RANGE_TRANSMITTANCE:g}; our binding cut-off is {cut_off}, "
-                f"so a filled cell is {comparison_word} than SplatAD's stop rule") in text
+                f"so our cut-off is {comparison_word} than SplatAD's value") in text
 
 
 def test_curve_settings_none_renders_fallbacks_and_session_is_named():
@@ -253,3 +257,37 @@ def test_point_5f_defines_pooled_and_mean_and_the_curve_guide_names_solid_and_da
     assert "made-up numbers" in definitions
     guide = terminology.figure_reading_markdown("threshold_curves_scene", values)
     assert "solid = *pooled*" in guide and "dashed = *mean over objects*" in guide and "point 5(f)" in guide
+
+
+def test_definitions_print_the_scored_range_not_the_farthest_return():
+    """The range text quotes scored_range_m and its quantile in percent, never max_range_m; no hidden-cell wording remains."""
+    values = build_values()
+    text = terminology.definitions_markdown(values)
+    assert (f"within {SYNTHETIC_SUMMARY['provenance']['scored_range_m']:g} m (the distance within which "
+            f"{SYNTHETIC_SUMMARY['provenance']['scored_range_quantile'] * 100:g}% of the session's lidar returns lie)") in text
+    assert f"{FARTHEST_RETURN_M:g}" not in text and "max_range_m" not in values
+    # The word "hidden" and the hidden-cell names are gone from the definitions and both figure guides.
+    guides = " ".join(terminology.figure_reading_markdown(name, values) for name in terminology.FIGURE_NAMES)
+    for forbidden in ("hidden", "Hidden", "H_near", "near band", "near_band"):
+        assert forbidden not in text and forbidden not in guides
+
+
+def test_definitions_state_the_cell_edge_origin_and_the_neighbour_rule():
+    """The cell edge is half the median trunk width; a filled cell on another obstacle is a false alarm of k."""
+    text = terminology.definitions_markdown(build_values())
+    assert "half the median trunk width" in text and "about two cells across" in text
+    assert "a filled cell on a different obstacle (for example a bush beside the trunk) counts as a false alarm of k" in text
+    # The corrected occupancy wording: home-cell peaks count for more than one ray collects, a more generous call, the same for every arm.
+    assert "count for more than one ray through the cell would collect from them" in text
+    assert "blocking probability at one point of the cell" not in text
+    assert "The same rule is applied to every arm" in text
+
+
+def test_figure_guide_names_the_representative_metric():
+    """The 3D figure guide says the drawn run is the median repeat of whole-scene pooled recall at the binding cut-off."""
+    metric_key = "obstacles/P2@0.5/recall/pooled"
+    values = terminology.definition_values(SYNTHETIC_SUMMARY, SYNTHETIC_CURVE, SYNTHETIC_CELLS, SYNTHETIC_OUTCOMES,
+                                           representative_metric=metric_key)
+    text = terminology.figure_reading_markdown("arms_scene_3d", values)
+    assert "median repeat of whole-scene pooled recall at the binding cut-off t = 0.5" in text and metric_key in text
+    assert "without losing precision" in terminology.definitions_markdown(values)

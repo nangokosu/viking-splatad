@@ -87,3 +87,28 @@ def test_p2_refuses_several_runs_and_other_modes_before_loading(extra_arguments)
     """--p2 draws one run's pooled cells; the refusal comes before any run is read (the paths do not exist)."""
     viewer = load_viewer_script()
     assert viewer.main(["--run", "runs/a", "--p2", *extra_arguments]) == 1
+
+
+def test_parser_rejects_the_removed_hidden_picture_flag():
+    """``--p2-hidden`` no longer exists: argparse exits with its usage error (code 2)."""
+    viewer = load_viewer_script()
+    with pytest.raises(SystemExit) as exit_info:
+        viewer.build_argument_parser().parse_args(["--run", "runs/a", "--p2-hidden"])
+    assert exit_info.value.code == 2
+
+
+def test_caption_reads_the_schema3_pooled_counts_at_the_drawn_threshold():
+    """The caption quotes TP / (TP + FP) and TP / (TP + FN) of the P2 block keyed by the drawn cut, not another cut."""
+    viewer = load_viewer_script()
+    # Two P2 cuts with different counts: only the block of occupancy_threshold may be quoted.
+    drawn_block = {"pooled": {"true_positive": 3, "false_positive": 1, "false_negative": 2}}
+    other_block = {"pooled": {"true_positive": 7, "false_positive": 7, "false_negative": 7}}
+    report = {"settings": {"occupancy_estimator": "T81 peak alpha in voxel", "occupancy_threshold": 0.5},
+              "classes": {"obstacles": {"P2": {"0.5": drawn_block, "0.8": other_block}}}}
+    scene = type("Scene", (), {"run_id": "run-a"})()
+    layers = {"totals": {"on_truth": 3, "off_truth": 1}}
+    caption = viewer.p2_caption(scene, report, ["obstacles"], layers, 25.0)
+    # Expected ratios from the drawn block's counts: precision 3 / (3 + 1), recall 3 / (3 + 2).
+    assert f"precision {viewer.ratio_text(3, 3 + 1)}" in caption
+    assert f"recall {viewer.ratio_text(3, 3 + 2)}" in caption
+    assert viewer.ratio_text(7, 7 + 7) not in caption
