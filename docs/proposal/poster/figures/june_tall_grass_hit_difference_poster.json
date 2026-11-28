@@ -1,0 +1,57 @@
+{
+  "session": "june_tall_grass",
+  "cell_counts": {
+    "only_first": 1356,
+    "only_second": 846,
+    "both": 3474
+  },
+  "colours_rgb": {
+    "only_radar_init_loss": [
+      44,
+      160,
+      44
+    ],
+    "only_stock": [
+      31,
+      119,
+      180
+    ],
+    "both": [
+      84,
+      98,
+      118
+    ]
+  },
+  "slot_in": [
+    15.54,
+    4.89
+  ],
+  "dpi": 300,
+  "render_window_px": [
+    2039,
+    967
+  ],
+  "panel_crop": {
+    "union_box": [
+      190,
+      957,
+      310,
+      1833
+    ],
+    "cell_shape": [
+      767,
+      1523
+    ],
+    "title_band_px": 0,
+    "fill_by_cell": {
+      "0,0": {
+        "before_crop": 0.5269281076911295,
+        "after_crop": 0.88940547416793
+      }
+    }
+  },
+  "legend": true,
+  "legend_stacked": true,
+  "manifest_path": "reports/gaussian_occupancy/figures/june_tall_grass/figures_manifest.json",
+  "manifest_sha256": "264915379d5d986fb059a548a201e433a446bf9335b282fa274c9f202a663943"
+}
