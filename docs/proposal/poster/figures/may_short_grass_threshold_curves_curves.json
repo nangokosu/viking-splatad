@@ -1,0 +1,18 @@
+{
+  "manifest_path": "reports/gaussian_occupancy/figures/may_short_grass/figures_manifest.json",
+  "manifest_sha256": "60980e0e87497768a82a916df093544c68f2fab7cb084ef0a9a819ed95e28c02",
+  "session": "may_short_grass",
+  "width_in": 10.9,
+  "height_in": 8.14,
+  "dpi": 300,
+  "y_limits": {
+    "pooled_recall": [
+      0.1,
+      0.5
+    ],
+    "pooled_precision": [
+      0.6,
+      0.9
+    ]
+  }
+}

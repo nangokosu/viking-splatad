@@ -13,6 +13,8 @@ dependencies = [
   "numpy>=1.24",
   "scipy>=1.10",
   "pyyaml>=6",
+  # Poster builder (docs/proposal/poster/build_poster_v2.py): edits the poster .pptx.
+  "python-pptx>=1.0",
   # The root package supplies the shared helpers (viking_splatad.viz, .eval, .labels).
   "viking_splatad",
 ]
